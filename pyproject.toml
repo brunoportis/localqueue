@@ -1,0 +1,67 @@
+[project]
+name = "persistentretry"
+version = "0.1.0"
+description = "Durable local queues for Python, with persistent retry state powered by Tenacity."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "lmdb>=2.2.0",
+    "tenacity>=9.1.4",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.optional-dependencies]
+all = [
+    "pyyaml>=6.0.3",
+    "rich>=15.0.0",
+    "typer>=0.16.0",
+]
+
+[project.scripts]
+persistentretry = "persistentretry.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["persistentretry", "persistentqueue"]
+include = ["persistent_retry.py"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/CHANGELOG.md",
+    "/README.md",
+    "/docs",
+    "/examples",
+    "/persistent_retry.py",
+    "/persistentqueue",
+    "/persistentretry",
+    "/pyproject.toml",
+    "/tests",
+    "/uv.lock",
+]
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.39.2",
+    "pytest>=9.0.3",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.15.11",
+    "zensical>=0.0.33",
+]
+
+[tool.basedpyright]
+pythonVersion = "3.11"
+pythonPlatform = "All"
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "standard"
