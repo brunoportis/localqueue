@@ -1,0 +1,62 @@
+[project]
+site_name = "persistentretry"
+site_description = "Durable local queues for Python, with persistent retry state powered by Tenacity."
+site_author = "persistentretry authors"
+copyright = "Copyright &copy; 2026 The authors"
+
+nav = [
+  { "Overview" = "index.md" },
+  { "Persistent queues" = "queues.md" },
+  { "Persistent retries" = "retries.md" },
+  { "API reference" = "api.md" },
+  { "Release" = "release.md" },
+]
+
+[project.theme]
+language = "en"
+features = [
+  "content.code.copy",
+  "content.code.select",
+  "content.tabs.link",
+  "navigation.footer",
+  "navigation.indexes",
+  "navigation.instant",
+  "navigation.path",
+  "navigation.sections",
+  "navigation.top",
+  "navigation.tracking",
+  "search.highlight",
+]
+
+[project.theme.icon]
+logo = "lucide/inbox"
+
+[[project.theme.palette]]
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to light mode"
+
+[project.markdown_extensions.admonition]
+[project.markdown_extensions.attr_list]
+[project.markdown_extensions.def_list]
+[project.markdown_extensions.footnotes]
+[project.markdown_extensions.md_in_html]
+[project.markdown_extensions.toc]
+permalink = true
+[project.markdown_extensions.pymdownx.details]
+[project.markdown_extensions.pymdownx.highlight]
+anchor_linenums = true
+line_spans = "__span"
+pygments_lang_class = true
+[project.markdown_extensions.pymdownx.inlinehilite]
+[project.markdown_extensions.pymdownx.superfences]
+[project.markdown_extensions.pymdownx.tabbed]
+alternate_style = true
+combine_header_slug = true
+[project.markdown_extensions.pymdownx.tasklist]
+custom_checkbox = true
