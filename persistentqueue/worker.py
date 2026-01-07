@@ -1,0 +1,143 @@
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Callable
+from typing import Any, TypeVar, cast
+
+from persistentretry import PersistentAsyncRetrying, PersistentRetrying
+
+from .queue import PersistentQueue
+
+WrappedFn = TypeVar("WrappedFn", bound=Callable[..., Any])
+_UNSET = object()
+
+
+class PersistentWorkerConfig:
+    dead_letter_on_exhaustion: bool
+    release_delay: float
+    retry_kwargs: dict[str, Any]
+
+    def __init__(
+        self,
+        *,
+        dead_letter_on_exhaustion: bool = True,
+        release_delay: float = 0.0,
+        **retry_kwargs: Any,
+    ) -> None:
+        self.dead_letter_on_exhaustion = dead_letter_on_exhaustion
+        self.release_delay = release_delay
+        self.retry_kwargs = dict(retry_kwargs)
+
+    def with_overrides(
+        self,
+        *,
+        dead_letter_on_exhaustion: bool | object = _UNSET,
+        release_delay: float | object = _UNSET,
+        **retry_kwargs: Any,
+    ) -> PersistentWorkerConfig:
+        merged_retry_kwargs = {**self.retry_kwargs, **retry_kwargs}
+        return PersistentWorkerConfig(
+            dead_letter_on_exhaustion=(
+                self.dead_letter_on_exhaustion
+                if dead_letter_on_exhaustion is _UNSET
+                else cast(bool, dead_letter_on_exhaustion)
+            ),
+            release_delay=(
+                self.release_delay
+                if release_delay is _UNSET
+                else cast(float, release_delay)
+            ),
+            **merged_retry_kwargs,
+        )
+
+
+def _resolve_config(
+    config: PersistentWorkerConfig | None,
+    *,
+    dead_letter_on_exhaustion: bool | object,
+    release_delay: float | object,
+    retry_kwargs: dict[str, Any],
+) -> PersistentWorkerConfig:
+    base = config if config is not None else PersistentWorkerConfig()
+    return base.with_overrides(
+        dead_letter_on_exhaustion=dead_letter_on_exhaustion,
+        release_delay=release_delay,
+        **retry_kwargs,
+    )
+
+
+def persistent_worker(
+    queue: PersistentQueue,
+    *,
+    config: PersistentWorkerConfig | None = None,
+    dead_letter_on_exhaustion: bool | object = _UNSET,
+    release_delay: float | object = _UNSET,
+    **retry_kwargs: Any,
+) -> Callable[[WrappedFn], Callable[..., Any]]:
+    worker_config = _resolve_config(
+        config,
+        dead_letter_on_exhaustion=dead_letter_on_exhaustion,
+        release_delay=release_delay,
+        retry_kwargs=retry_kwargs,
+    )
+
+    def decorator(fn: WrappedFn) -> Callable[..., Any]:
+        def wrapped(*args: Any, **kwargs: Any) -> Any:
+            message = queue.get_message()
+            retryer = PersistentRetrying(key=message.id, **worker_config.retry_kwargs)
+            try:
+                result = retryer(fn, message.value, *args, **kwargs)
+            except Exception as exc:
+                if worker_config.dead_letter_on_exhaustion:
+                    queue.dead_letter(message, error=exc)
+                else:
+                    queue.release(message, delay=worker_config.release_delay, error=exc)
+                raise
+            queue.ack(message)
+            return result
+
+        return wrapped
+
+    return decorator
+
+
+def persistent_async_worker(
+    queue: PersistentQueue,
+    *,
+    config: PersistentWorkerConfig | None = None,
+    dead_letter_on_exhaustion: bool | object = _UNSET,
+    release_delay: float | object = _UNSET,
+    **retry_kwargs: Any,
+) -> Callable[[WrappedFn], Callable[..., Any]]:
+    worker_config = _resolve_config(
+        config,
+        dead_letter_on_exhaustion=dead_letter_on_exhaustion,
+        release_delay=release_delay,
+        retry_kwargs=retry_kwargs,
+    )
+
+    def decorator(fn: WrappedFn) -> Callable[..., Any]:
+        async def wrapped(*args: Any, **kwargs: Any) -> Any:
+            message = await asyncio.to_thread(queue.get_message)
+            retryer = PersistentAsyncRetrying(
+                key=message.id, **worker_config.retry_kwargs
+            )
+            try:
+                result = await retryer(fn, message.value, *args, **kwargs)
+            except Exception as exc:
+                if worker_config.dead_letter_on_exhaustion:
+                    await asyncio.to_thread(queue.dead_letter, message, error=exc)
+                else:
+                    await asyncio.to_thread(
+                        queue.release,
+                        message,
+                        delay=worker_config.release_delay,
+                        error=exc,
+                    )
+                raise
+            await asyncio.to_thread(queue.ack, message)
+            return result
+
+        return wrapped
+
+    return decorator
