@@ -1,0 +1,580 @@
+from __future__ import annotations
+
+import asyncio
+import tempfile
+import unittest
+from typing import Any, cast
+from unittest import mock
+
+import lmdb
+
+from persistentretry import (
+    AttemptStoreLockedError,
+    LMDBAttemptStore,
+    MemoryAttemptStore,
+    PersistentAsyncRetrying,
+    PersistentRetryExhausted,
+    PersistentRetrying,
+    RetryRecord,
+    SQLiteAttemptStore,
+    configure_default_store,
+    configure_default_store_factory,
+    idempotency_key_from_id,
+    key_from_argument,
+    key_from_attr,
+    persistent_async_retry,
+    persistent_retry,
+)
+from persistentretry.core import _sqlite_default_store_factory
+
+
+class AbortRun(Exception):
+    pass
+
+
+class PersistentRetryTests(unittest.TestCase):
+    def test_constructor_rejects_invalid_store_and_stop_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(ValueError):
+                _ = PersistentRetrying(
+                    store=MemoryAttemptStore(),
+                    store_path=tmpdir,
+                    max_tries=1,
+                )
+
+        with self.assertRaises(ValueError):
+            _ = PersistentRetrying(
+                store=MemoryAttemptStore(),
+                max_tries=1,
+                stop=lambda state: state.attempt_number >= 1,
+            )
+
+    def test_key_is_required_when_not_configured_explicitly(self) -> None:
+        store = MemoryAttemptStore()
+        calls = {"count": 0}
+
+        @persistent_retry(store=store, max_tries=1, wait=lambda _: 0)  # pyright: ignore[reportUnknownLambdaType]
+        def by_task_id(*, task_id: str) -> None:
+            calls["count"] += 1
+            raise RuntimeError(task_id)
+
+        with self.assertRaises(ValueError):
+            by_task_id(task_id="kw-task")
+
+        self.assertIsNone(store.load("kw-task"))
+
+        @persistent_retry(store=store, max_tries=1, wait=lambda _: 0)  # pyright: ignore[reportUnknownLambdaType]
+        def by_first_arg(value: str) -> None:
+            calls["count"] += 1
+            raise RuntimeError(value)
+
+        with self.assertRaises(ValueError):
+            by_first_arg("first-arg")
+
+        self.assertIsNone(store.load("first-arg"))
+
+        @persistent_retry(store=store, max_tries=1, wait=lambda _: 0)  # pyright: ignore[reportUnknownLambdaType]
+        def missing_key() -> None:
+            raise RuntimeError("unreachable")
+
+        with self.assertRaises(ValueError):
+            missing_key()
+
+        self.assertEqual(calls["count"], 0)
+
+    def test_key_from_argument_factory(self) -> None:
+        store = MemoryAttemptStore()
+
+        @persistent_retry(
+            store=store,
+            max_tries=1,
+            wait=lambda _: 0,  # pyright: ignore[reportUnknownLambdaType]
+            key_fn=key_from_argument("job_id"),
+        )
+        def by_job_id(*, job_id: str) -> None:
+            raise RuntimeError(job_id)
+
+        with self.assertRaises(RuntimeError):
+            by_job_id(job_id="explicit-job")
+
+        self.assertIsNotNone(store.load("explicit-job"))
+
+        with self.assertRaises(ValueError):
+            _ = key_from_argument("")
+
+        key_fn = key_from_argument("missing")
+        with self.assertRaises(ValueError):
+            _ = key_fn(lambda value: value, ("value",), {})
+
+    def test_key_from_attr_factory(self) -> None:
+        store = MemoryAttemptStore()
+
+        class Job:
+            def __init__(self, job_id: str) -> None:
+                self.id = job_id
+
+        @persistent_retry(
+            store=store,
+            max_tries=1,
+            wait=lambda _: 0,  # pyright: ignore[reportUnknownLambdaType]
+            key_fn=key_from_attr("job", "id", prefix="video"),
+        )
+        def by_job(job: Job) -> None:
+            raise RuntimeError(job.id)
+
+        with self.assertRaises(RuntimeError):
+            by_job(Job("job-123"))
+
+        self.assertIsNotNone(store.load("video:job-123"))
+
+        with self.assertRaises(ValueError):
+            _ = key_from_attr("", "id")
+
+        with self.assertRaises(ValueError):
+            _ = key_from_attr("job", "")
+
+        with self.assertRaises(ValueError):
+            _ = key_from_attr("job", "id", prefix="")
+
+        missing_arg_key_fn = key_from_attr("missing", "id")
+        with self.assertRaises(ValueError):
+            _ = missing_arg_key_fn(lambda value: value, (Job("job-123"),), {})
+
+        missing_attr_key_fn = key_from_attr("job", "missing")
+        with self.assertRaises(ValueError):
+            _ = missing_attr_key_fn(lambda job: job, (Job("job-123"),), {})
+
+    def test_idempotency_key_from_id_factory(self) -> None:
+        store = MemoryAttemptStore()
+
+        class Task:
+            def __init__(self, task_id: int) -> None:
+                self.id = task_id
+
+        @persistent_retry(
+            store=store,
+            max_tries=1,
+            wait=lambda _: 0,  # pyright: ignore[reportUnknownLambdaType]
+            key_fn=idempotency_key_from_id("task", prefix="process-video"),
+        )
+        def by_task(*, task: Task) -> None:
+            raise RuntimeError(str(task.id))
+
+        with self.assertRaises(RuntimeError):
+            by_task(task=Task(42))
+
+        self.assertIsNotNone(store.load("process-video:42"))
+
+    def test_default_store_can_be_configured(self) -> None:
+        original = MemoryAttemptStore()
+        replacement = MemoryAttemptStore()
+
+        try:
+            configure_default_store(original)
+            retryer = PersistentRetrying(
+                key="configured", max_tries=1, wait=lambda _: 0
+            )
+
+            with self.assertRaises(RuntimeError):
+                _ = retryer(lambda: (_ for _ in ()).throw(RuntimeError("fail")))
+
+            self.assertIsNotNone(original.load("configured"))
+            self.assertIsNone(replacement.load("configured"))
+
+            configure_default_store_factory(lambda: replacement)
+            retryer = PersistentRetrying(key="factory", max_tries=1, wait=lambda _: 0)
+
+            with self.assertRaises(RuntimeError):
+                _ = retryer(lambda: (_ for _ in ()).throw(RuntimeError("fail")))
+
+            self.assertIsNotNone(replacement.load("factory"))
+        finally:
+            configure_default_store_factory(_sqlite_default_store_factory)
+            configure_default_store(None)
+
+    def test_attempts_resume_after_interrupted_run(self) -> None:
+        store = MemoryAttemptStore()
+        calls = {"count": 0}
+
+        def fail(task_id: str) -> None:
+            calls["count"] += 1
+            raise ValueError(task_id)
+
+        def aborting_sleep(_: float) -> None:
+            raise AbortRun()
+
+        retryer = PersistentRetrying(
+            store=store,
+            key="job-1",
+            max_tries=3,
+            wait=lambda _: 0,  # pyright: ignore[reportUnknownLambdaType]
+            sleep=aborting_sleep,
+        )
+
+        with self.assertRaises(AbortRun):
+            _ = retryer(fail, "job-1")
+
+        record = retryer.get_record("job-1")
+        assert record is not None
+        self.assertEqual(record.attempts, 1)
+        self.assertFalse(record.exhausted)
+
+        retryer = PersistentRetrying(
+            store=store,
+            key="job-1",
+            max_tries=3,
+            wait=lambda _: 0,  # pyright: ignore[reportUnknownLambdaType]
+        )
+
+        with self.assertRaises(ValueError):
+            _ = retryer(fail, "job-1")
+
+        self.assertEqual(calls["count"], 3)
+        record = retryer.get_record("job-1")
+        assert record is not None
+        self.assertEqual(record.attempts, 3)
+        self.assertTrue(record.exhausted)
+
+        with self.assertRaises(PersistentRetryExhausted):
+            _ = retryer(fail, "job-1")
+
+    def test_success_clears_retry_record(self) -> None:
+        store = MemoryAttemptStore()
+        calls = {"count": 0}
+
+        @persistent_retry(
+            store=store,
+            max_tries=3,
+            wait=lambda _: 0,  # pyright: ignore[reportUnknownLambdaType]
+            key_fn=key_from_argument("task_id"),
+        )
+        def flaky(task_id: str) -> str:
+            calls["count"] += 1
+            if calls["count"] < 2:
+                raise ValueError("not yet")
+            return "ok"
+
+        self.assertEqual(flaky("job-2"), "ok")
+        self.assertEqual(calls["count"], 2)
+        self.assertIsNone(store.load("job-2"))
+
+    def test_success_can_keep_record_and_reset_can_clear_it(self) -> None:
+        store = MemoryAttemptStore()
+
+        retryer = PersistentRetrying(
+            store=store,
+            key="job-keep",
+            max_tries=2,
+            clear_on_success=False,
+            wait=lambda _: 0,  # pyright: ignore[reportUnknownLambdaType]
+        )
+
+        calls = {"count": 0}
+
+        def flaky() -> str:
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise RuntimeError("not yet")
+            return "ok"
+
+        self.assertEqual(retryer(flaky), "ok")
+        record = retryer.get_record("job-keep")
+        assert record is not None
+        self.assertEqual(record.attempts, 1)
+        self.assertFalse(record.exhausted)
+
+        retryer.reset("job-keep")
+        self.assertIsNone(store.load("job-keep"))
+
+    def test_callbacks_receive_persistent_retry_state(self) -> None:
+        store = MemoryAttemptStore()
+        seen: dict[str, Any] = {}
+
+        def before(state: Any) -> None:
+            seen["before_attempt"] = state.attempt_number
+            seen["start_time"] = state.start_time
+
+        def after(state: Any) -> None:
+            seen["after_attempt"] = state.attempt_number
+            seen["seconds"] = state.seconds_since_start
+
+        def before_sleep(state: Any) -> None:
+            seen["before_sleep_attempt"] = state.attempt_number
+
+        retryer = PersistentRetrying(
+            store=store,
+            key="job-callback",
+            max_tries=2,
+            wait=lambda state: state.attempt_number * 0,
+            before=before,
+            after=after,
+            before_sleep=before_sleep,
+        )
+
+        calls = {"count": 0}
+
+        def flaky() -> str:
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise RuntimeError("try again")
+            return "ok"
+
+        self.assertEqual(retryer(flaky), "ok")
+        self.assertEqual(seen["before_attempt"], 2)
+        self.assertEqual(seen["after_attempt"], 1)
+        self.assertEqual(seen["before_sleep_attempt"], 1)
+        self.assertIsInstance(seen["start_time"], float)
+        self.assertIsInstance(seen["seconds"], float)
+
+    def test_async_retrying_persists_attempts(self) -> None:
+        async def scenario() -> None:
+            store = MemoryAttemptStore()
+            calls = {"count": 0}
+
+            async def fail(task_id: str) -> None:
+                calls["count"] += 1
+                raise ValueError(task_id)
+
+            async def aborting_sleep(_: float) -> None:
+                raise AbortRun()
+
+            retryer = PersistentAsyncRetrying(
+                store=store,
+                key="job-3",
+                max_tries=2,
+                wait=lambda _: 0,  # pyright: ignore[reportUnknownLambdaType]
+                sleep=aborting_sleep,
+            )
+
+            with self.assertRaises(AbortRun):
+                await retryer(fail, "job-3")
+
+            retryer = PersistentAsyncRetrying(
+                store=store,
+                key="job-3",
+                max_tries=2,
+                wait=lambda _: 0,  # pyright: ignore[reportUnknownLambdaType]
+            )
+
+            with self.assertRaises(ValueError):
+                await retryer(fail, "job-3")
+
+            self.assertEqual(calls["count"], 2)
+            record = store.load("job-3")
+            assert record is not None
+            self.assertTrue(record.exhausted)
+
+        asyncio.run(scenario())
+
+    def test_async_retrying_supports_decorator_and_async_callbacks(self) -> None:
+        async def scenario() -> None:
+            store = MemoryAttemptStore()
+            seen: dict[str, Any] = {}
+
+            async def retry(state: Any) -> bool:
+                seen["retry_attempt"] = state.attempt_number
+                return True
+
+            async def wait(state: Any) -> float:
+                seen["wait_attempt"] = state.attempt_number
+                return 0.0
+
+            async def stop(state: Any) -> bool:
+                seen["stop_attempt"] = state.attempt_number
+                return state.attempt_number >= 2
+
+            async def before(state: Any) -> None:
+                seen["before_attempt"] = state.attempt_number
+
+            async def after(state: Any) -> None:
+                seen["after_attempt"] = state.attempt_number
+
+            async def before_sleep(state: Any) -> None:
+                seen["before_sleep_attempt"] = state.attempt_number
+
+            @persistent_async_retry(
+                store=store,
+                key="async-decorator",
+                retry=retry,
+                wait=wait,
+                stop=stop,
+                before=before,
+                after=after,
+                before_sleep=before_sleep,
+            )
+            async def fail() -> None:
+                raise RuntimeError("async")
+
+            with self.assertRaises(RuntimeError):
+                await fail()
+
+            self.assertEqual(seen["retry_attempt"], 2)
+            self.assertEqual(seen["wait_attempt"], 2)
+            self.assertEqual(seen["stop_attempt"], 2)
+            self.assertEqual(seen["before_attempt"], 2)
+            self.assertEqual(seen["after_attempt"], 2)
+            self.assertEqual(seen["before_sleep_attempt"], 1)
+
+        asyncio.run(scenario())
+
+    def test_retry_error_callback_marks_record_exhausted(self) -> None:
+        store = MemoryAttemptStore()
+
+        def on_error(state: Any) -> str:
+            return f"fallback-{state.attempt_number}"
+
+        retryer = PersistentRetrying(
+            store=store,
+            key="job-fallback",
+            max_tries=1,
+            wait=lambda _: 0,  # pyright: ignore[reportUnknownLambdaType]
+            retry_error_callback=on_error,
+        )
+
+        self.assertEqual(
+            retryer(lambda: (_ for _ in ()).throw(RuntimeError("fail"))),
+            "fallback-1",
+        )
+
+        record = store.load("job-fallback")
+        assert record is not None
+        self.assertTrue(record.exhausted)
+
+    def test_async_retry_error_callback_marks_record_exhausted(self) -> None:
+        async def scenario() -> None:
+            store = MemoryAttemptStore()
+
+            async def on_error(state: Any) -> str:
+                return f"fallback-{state.attempt_number}"
+
+            retryer = PersistentAsyncRetrying(
+                store=store,
+                key="async-fallback",
+                max_tries=1,
+                wait=lambda _: 0,  # pyright: ignore[reportUnknownLambdaType]
+                retry_error_callback=on_error,
+            )
+
+            async def fail() -> None:
+                raise RuntimeError("fail")
+
+            self.assertEqual(await retryer(fail), "fallback-1")
+
+            record = store.load("async-fallback")
+            assert record is not None
+            self.assertTrue(record.exhausted)
+
+        asyncio.run(scenario())
+
+    def test_lmdb_store_roundtrip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LMDBAttemptStore(tmpdir)
+            retryer = PersistentRetrying(
+                store=store,
+                key="job-4",
+                max_tries=1,
+                wait=lambda _: 0,  # pyright: ignore[reportUnknownLambdaType]
+            )
+
+            with self.assertRaises(ValueError):
+                _ = retryer(
+                    lambda task_id: (_ for _ in ()).throw(ValueError(task_id)),
+                    "job-4",  # pyright: ignore[reportUnknownArgumentType, reportUnknownLambdaType]
+                )
+
+            record = store.load("job-4")
+            assert record is not None
+            self.assertEqual(record.attempts, 1)
+            self.assertTrue(record.exhausted)
+
+            store.delete("job-4")
+            self.assertIsNone(store.load("job-4"))
+
+    def test_sqlite_store_roundtrip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SQLiteAttemptStore(f"{tmpdir}/retries.sqlite3")
+            store.save(
+                "job-sqlite",
+                RetryRecord(attempts=2, first_attempt_at=123.0, exhausted=True),
+            )
+
+            reopened = SQLiteAttemptStore(f"{tmpdir}/retries.sqlite3")
+            record = reopened.load("job-sqlite")
+            assert record is not None
+            self.assertEqual(record.attempts, 2)
+            self.assertTrue(record.exhausted)
+
+            reopened.delete("job-sqlite")
+            self.assertIsNone(store.load("job-sqlite"))
+            store.close()
+            reopened.close()
+
+    def test_memory_store_returns_record_copies(self) -> None:
+        store = MemoryAttemptStore()
+        store.save("job-copy", RetryRecord(attempts=1))
+
+        loaded = store.load("job-copy")
+        assert loaded is not None
+        loaded.attempts = 99
+
+        loaded_again = store.load("job-copy")
+        assert loaded_again is not None
+        self.assertEqual(loaded_again.attempts, 1)
+
+    def test_store_path_is_opened_lazily(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch("persistentretry.core.LMDBAttemptStore") as store_cls:
+                retryer = PersistentRetrying(
+                    store_path=tmpdir,
+                    key="job-lazy",
+                    max_tries=1,
+                    wait=lambda _: 0,  # pyright: ignore[reportUnknownLambdaType]
+                )
+                store_cls.assert_not_called()
+
+                fake_store = mock.Mock()
+                fake_store.load.return_value = None
+                store_cls.return_value = fake_store
+
+                with self.assertRaises(RuntimeError):
+                    _ = retryer(
+                        lambda task_id: (_ for _ in ()).throw(RuntimeError(task_id)),  # pyright: ignore[reportUnknownArgumentType, reportUnknownLambdaType]
+                        "job-lazy",
+                    )
+
+                store_cls.assert_called_once()
+                fake_store.save.assert_called_once()
+
+    def test_retry_with_max_tries_overrides_existing_stop(self) -> None:
+        store = MemoryAttemptStore()
+
+        @persistent_retry(
+            store=store,
+            stop=lambda state: state.attempt_number >= 5,
+            wait=lambda _: 0,  # pyright: ignore[reportUnknownLambdaType, reportUnknownMemberType]
+            key_fn=key_from_argument("task_id"),
+        )
+        def fail(task_id: str) -> None:
+            raise RuntimeError(task_id)
+
+        with self.assertRaises(RuntimeError):
+            _ = cast(Any, fail).retry_with(max_tries=1)("job-5")
+
+        record = store.load("job-5")
+        assert record is not None
+        self.assertEqual(record.attempts, 1)
+        self.assertTrue(record.exhausted)
+
+    def test_lmdb_lock_error_is_reworded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch(
+                "persistentretry.store.lmdb.open", side_effect=lmdb.LockError("busy")
+            ):
+                with self.assertRaises(AttemptStoreLockedError) as exc_info:
+                    _ = LMDBAttemptStore(tmpdir)
+
+        self.assertIn("locked by another process", str(exc_info.exception))
+
+
+if __name__ == "__main__":
+    _ = unittest.main()
