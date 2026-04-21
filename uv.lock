@@ -258,15 +258,23 @@ name = "persistentretry"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "lmdb" },
     { name = "tenacity" },
 ]
 
 [package.optional-dependencies]
 all = [
+    { name = "lmdb" },
     { name = "pyyaml" },
     { name = "rich" },
     { name = "typer" },
+]
+cli = [
+    { name = "pyyaml" },
+    { name = "rich" },
+    { name = "typer" },
+]
+lmdb = [
+    { name = "lmdb" },
 ]
 
 [package.dev-dependencies]
@@ -280,13 +288,17 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "lmdb", specifier = ">=2.2.0" },
+    { name = "lmdb", marker = "extra == 'all'", specifier = ">=2.2.0" },
+    { name = "lmdb", marker = "extra == 'lmdb'", specifier = ">=2.2.0" },
     { name = "pyyaml", marker = "extra == 'all'", specifier = ">=6.0.3" },
+    { name = "pyyaml", marker = "extra == 'cli'", specifier = ">=6.0.3" },
     { name = "rich", marker = "extra == 'all'", specifier = ">=15.0.0" },
+    { name = "rich", marker = "extra == 'cli'", specifier = ">=15.0.0" },
     { name = "tenacity", specifier = ">=9.1.4" },
     { name = "typer", marker = "extra == 'all'", specifier = ">=0.16.0" },
+    { name = "typer", marker = "extra == 'cli'", specifier = ">=0.16.0" },
 ]
-provides-extras = ["all"]
+provides-extras = ["cli", "lmdb", "sqlite", "all"]
 
 [package.metadata.requires-dev]
 dev = [
