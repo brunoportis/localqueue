@@ -61,7 +61,7 @@ config = PersistentWorkerConfig(
     max_tries=3,
     wait=wait_fixed(1),
     retry=retry_if_exception_type(ConnectionError),
-    dead_letter_on_exhaustion=False,
+    dead_letter_on_failure=False,
     release_delay=30,
 )
 ```
@@ -70,7 +70,8 @@ Constructor options:
 
 | Option | Meaning |
 | --- | --- |
-| `dead_letter_on_exhaustion` | dead-letter failed messages when `True` |
+| `dead_letter_on_failure` | dead-letter final handler failures when `True` |
+| `dead_letter_on_exhaustion` | compatibility alias for `dead_letter_on_failure` |
 | `release_delay` | delay used when releasing failed messages |
 | `**retry_kwargs` | forwarded to `PersistentRetrying` |
 
@@ -133,7 +134,8 @@ Options:
 
 | Option | Meaning |
 | --- | --- |
-| `dead_letter_on_exhaustion` | dead-letter failed messages when `True` |
+| `dead_letter_on_failure` | dead-letter final handler failures when `True` |
+| `dead_letter_on_exhaustion` | compatibility alias for `dead_letter_on_failure` |
 | `release_delay` | delay used when releasing failed messages |
 | `**retry_kwargs` | forwarded to `PersistentRetrying` |
 

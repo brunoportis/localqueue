@@ -729,6 +729,32 @@ class PersistentQueueTests(unittest.TestCase):
 
         self.assertTrue(queue.empty())
 
+    def test_worker_prefers_dead_letter_on_failure_name(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+        _ = queue.put("retry")
+
+        @persistent_worker(
+            queue,
+            store=MemoryAttemptStore(),
+            max_tries=1,
+            wait=lambda _: 0,
+            dead_letter_on_failure=False,
+        )
+        def release(value: str) -> None:
+            raise RuntimeError(value)
+
+        with self.assertRaises(RuntimeError):
+            cast(Any, release)()
+
+        self.assertEqual(queue.qsize(), 1)
+
+    def test_worker_config_rejects_conflicting_failure_policy_names(self) -> None:
+        with self.assertRaises(ValueError):
+            _ = PersistentWorkerConfig(
+                dead_letter_on_failure=True,
+                dead_letter_on_exhaustion=False,
+            )
+
     def test_async_worker_accepts_config(self) -> None:
         async def scenario() -> None:
             queue = PersistentQueue("test", store=MemoryQueueStore())

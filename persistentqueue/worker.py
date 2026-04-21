@@ -12,7 +12,29 @@ WrappedFn = TypeVar("WrappedFn", bound=Callable[..., Any])
 _UNSET = object()
 
 
+def _resolve_dead_letter_on_failure(
+    *,
+    dead_letter_on_failure: bool | object,
+    dead_letter_on_exhaustion: bool | object,
+) -> bool:
+    if (
+        dead_letter_on_failure is not _UNSET
+        and dead_letter_on_exhaustion is not _UNSET
+        and dead_letter_on_failure != dead_letter_on_exhaustion
+    ):
+        raise ValueError(
+            "pass either dead_letter_on_failure= or "
+            "dead_letter_on_exhaustion=, not conflicting values"
+        )
+    if dead_letter_on_failure is not _UNSET:
+        return cast(bool, dead_letter_on_failure)
+    if dead_letter_on_exhaustion is not _UNSET:
+        return cast(bool, dead_letter_on_exhaustion)
+    return True
+
+
 class PersistentWorkerConfig:
+    dead_letter_on_failure: bool
     dead_letter_on_exhaustion: bool
     release_delay: float
     retry_kwargs: dict[str, Any]
@@ -20,27 +42,39 @@ class PersistentWorkerConfig:
     def __init__(
         self,
         *,
-        dead_letter_on_exhaustion: bool = True,
+        dead_letter_on_failure: bool | object = _UNSET,
+        dead_letter_on_exhaustion: bool | object = _UNSET,
         release_delay: float = 0.0,
         **retry_kwargs: Any,
     ) -> None:
-        self.dead_letter_on_exhaustion = dead_letter_on_exhaustion
+        resolved = _resolve_dead_letter_on_failure(
+            dead_letter_on_failure=dead_letter_on_failure,
+            dead_letter_on_exhaustion=dead_letter_on_exhaustion,
+        )
+        self.dead_letter_on_failure = resolved
+        self.dead_letter_on_exhaustion = resolved
         self.release_delay = release_delay
         self.retry_kwargs = dict(retry_kwargs)
 
     def with_overrides(
         self,
         *,
+        dead_letter_on_failure: bool | object = _UNSET,
         dead_letter_on_exhaustion: bool | object = _UNSET,
         release_delay: float | object = _UNSET,
         **retry_kwargs: Any,
     ) -> PersistentWorkerConfig:
         merged_retry_kwargs = {**self.retry_kwargs, **retry_kwargs}
+        resolved = _resolve_dead_letter_on_failure(
+            dead_letter_on_failure=dead_letter_on_failure,
+            dead_letter_on_exhaustion=dead_letter_on_exhaustion,
+        )
         return PersistentWorkerConfig(
-            dead_letter_on_exhaustion=(
-                self.dead_letter_on_exhaustion
-                if dead_letter_on_exhaustion is _UNSET
-                else cast(bool, dead_letter_on_exhaustion)
+            dead_letter_on_failure=(
+                self.dead_letter_on_failure
+                if dead_letter_on_failure is _UNSET
+                and dead_letter_on_exhaustion is _UNSET
+                else resolved
             ),
             release_delay=(
                 self.release_delay
@@ -54,12 +88,14 @@ class PersistentWorkerConfig:
 def _resolve_config(
     config: PersistentWorkerConfig | None,
     *,
+    dead_letter_on_failure: bool | object,
     dead_letter_on_exhaustion: bool | object,
     release_delay: float | object,
     retry_kwargs: dict[str, Any],
 ) -> PersistentWorkerConfig:
     base = config if config is not None else PersistentWorkerConfig()
     return base.with_overrides(
+        dead_letter_on_failure=dead_letter_on_failure,
         dead_letter_on_exhaustion=dead_letter_on_exhaustion,
         release_delay=release_delay,
         **retry_kwargs,
@@ -70,12 +106,14 @@ def persistent_worker(
     queue: PersistentQueue,
     *,
     config: PersistentWorkerConfig | None = None,
+    dead_letter_on_failure: bool | object = _UNSET,
     dead_letter_on_exhaustion: bool | object = _UNSET,
     release_delay: float | object = _UNSET,
     **retry_kwargs: Any,
 ) -> Callable[[WrappedFn], Callable[..., Any]]:
     worker_config = _resolve_config(
         config,
+        dead_letter_on_failure=dead_letter_on_failure,
         dead_letter_on_exhaustion=dead_letter_on_exhaustion,
         release_delay=release_delay,
         retry_kwargs=retry_kwargs,
@@ -88,7 +126,7 @@ def persistent_worker(
             try:
                 result = retryer(fn, message.value, *args, **kwargs)
             except Exception as exc:
-                if worker_config.dead_letter_on_exhaustion:
+                if worker_config.dead_letter_on_failure:
                     queue.dead_letter(message, error=exc)
                 else:
                     queue.release(message, delay=worker_config.release_delay, error=exc)
@@ -105,12 +143,14 @@ def persistent_async_worker(
     queue: PersistentQueue,
     *,
     config: PersistentWorkerConfig | None = None,
+    dead_letter_on_failure: bool | object = _UNSET,
     dead_letter_on_exhaustion: bool | object = _UNSET,
     release_delay: float | object = _UNSET,
     **retry_kwargs: Any,
 ) -> Callable[[WrappedFn], Callable[..., Any]]:
     worker_config = _resolve_config(
         config,
+        dead_letter_on_failure=dead_letter_on_failure,
         dead_letter_on_exhaustion=dead_letter_on_exhaustion,
         release_delay=release_delay,
         retry_kwargs=retry_kwargs,
@@ -125,7 +165,7 @@ def persistent_async_worker(
             try:
                 result = await retryer(fn, message.value, *args, **kwargs)
             except Exception as exc:
-                if worker_config.dead_letter_on_exhaustion:
+                if worker_config.dead_letter_on_failure:
                     await asyncio.to_thread(queue.dead_letter, message, error=exc)
                 else:
                     await asyncio.to_thread(

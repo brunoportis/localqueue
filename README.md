@@ -168,6 +168,9 @@ The worker leases one message, runs the handler with persistent retry state, and
 acknowledges the message on success. If processing keeps failing until the retry
 budget is exhausted, the message is moved to dead-letter storage by default.
 Worker handlers receive `message.value` as their first argument.
+Pass `dead_letter_on_failure=False` to `PersistentWorkerConfig` or
+`persistent_worker()` when final handler failures should release the message
+instead.
 
 Use `persistent_async_worker()` for async handlers.
 
@@ -252,3 +255,7 @@ For tests, use `MemoryQueueStore` and `MemoryAttemptStore`.
 - [Persistent retries](docs/retries.md): decorators, low-level retryers, keys, stores, and exhaustion behavior.
 - [API reference](docs/api.md): exported classes, functions, and protocols.
 - [Release checklist](docs/release.md): manual versioning, build, smoke test, and publish steps.
+
+## License
+
+`persistentretry` is distributed under the MIT license. See [LICENSE](LICENSE).

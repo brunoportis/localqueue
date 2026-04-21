@@ -28,7 +28,8 @@ Before `1.0.0`, use this convention:
 
 1. Update `version` in `pyproject.toml`.
 2. Update `CHANGELOG.md`.
-3. Confirm `requires-python` and PyPI classifiers still match supported Python versions.
+3. Confirm `requires-python`, license metadata, and PyPI classifiers still match
+   supported Python versions and the intended release policy.
 4. Run the test suite:
 
    ```bash
