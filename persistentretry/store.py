@@ -115,11 +115,15 @@ class SQLiteAttemptStore:
     _connection: sqlite3.Connection
     _lock: threading.Lock
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, timeout: float = 15.0) -> None:
         self.path = Path(path)
         if self.path.parent != Path("."):
             self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(self.path, check_same_thread=False)
+        self._connection = sqlite3.connect(
+            self.path, timeout=timeout, check_same_thread=False
+        )
+        self._connection.execute("PRAGMA journal_mode=WAL;")
+        self._connection.execute("PRAGMA synchronous=NORMAL;")
         self._connection.execute(
             "CREATE TABLE IF NOT EXISTS retry_records ("
             "key TEXT PRIMARY KEY, "

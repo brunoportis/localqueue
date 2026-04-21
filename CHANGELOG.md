@@ -14,3 +14,5 @@
 - Add MIT license metadata for package distribution.
 - Add `dead_letter_on_failure` as the preferred worker failure policy option,
   keeping `dead_letter_on_exhaustion` as a compatibility alias.
+- Enable SQLite WAL journal mode and normal synchronous mode for improved
+  concurrency in `SQLiteAttemptStore`.
