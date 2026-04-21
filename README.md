@@ -8,7 +8,7 @@ Durable queues for Python, with persistent retry state powered by Tenacity.
 `persistentretry` provides two small building blocks for reliable local job
 processing:
 
-- `persistentqueue`: an LMDB-backed queue with at-least-once delivery, leases,
+- `persistentqueue`: a SQLite-backed queue with at-least-once delivery, leases,
   delayed delivery, acknowledgements, release, and dead-letter records.
 - `persistentretry`: a retry layer around
   [`tenacity`](https://tenacity.readthedocs.io/en/latest/) that persists retry
@@ -49,8 +49,11 @@ pip install persistentretry
 Install the optional CLI dependencies with:
 
 ```bash
-pip install "persistentretry[all]"
+pip install "persistentretry[cli]"
 ```
+
+Install `persistentretry[lmdb]` when you want the optional LMDB queue or retry
+stores.
 
 ## CLI
 
@@ -58,7 +61,7 @@ The CLI reads YAML configuration from
 `~/.config/persistentretry/config.yaml`. `XDG_CONFIG_HOME` is respected when set.
 
 ```bash
-persistentretry config init --store-path ./persistence_db
+persistentretry config init --store-path ./persistence_queue.sqlite3
 persistentretry config show
 persistentretry config set retry_store_path ./persistence_retries.sqlite3
 ```
@@ -66,11 +69,11 @@ persistentretry config set retry_store_path ./persistence_retries.sqlite3
 Example config:
 
 ```yaml
-store_path: ./persistence_db
+store_path: ./persistence_queue.sqlite3
 retry_store_path: ./persistence_retries.sqlite3
 ```
 
-`store_path` is the LMDB queue directory. `retry_store_path` is the SQLite file
+`store_path` is the SQLite queue file. `retry_store_path` is the SQLite file
 used by `queue process` to persist retry attempts.
 
 The CLI starts with queue management commands. Values are JSON by default.
@@ -93,7 +96,7 @@ Use `--raw` when the queue value should be stored as a string:
 persistentretry queue add emails --value user@example.com --raw
 ```
 
-Queue values are stored as JSON in the LMDB queue store, so values must be
+Queue values are stored as JSON in the queue store, so values must be
 JSON-serializable.
 
 To process queued messages, pass an importable handler in `module:function`
@@ -152,7 +155,7 @@ from persistentqueue import PersistentQueue, PersistentWorkerConfig, persistent_
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_exponential
 
 
-queue = PersistentQueue("emails", store_path="./persistence_db")
+queue = PersistentQueue("emails", store_path="./persistence_queue.sqlite3")
 queue.put({"to": "user@example.com"})
 
 worker_config = PersistentWorkerConfig(
@@ -185,7 +188,7 @@ Use `persistent_async_worker()` for async handlers.
 ```python
 from persistentqueue import PersistentQueue
 
-queue = PersistentQueue("emails", store_path="./persistence_db")
+queue = PersistentQueue("emails", store_path="./persistence_queue.sqlite3")
 
 queue.put({"to": "user@example.com"})
 
@@ -249,13 +252,16 @@ When a retry budget is exhausted, later calls with the same key raise
 
 ## Stores
 
-The default queue store is LMDB at `./persistence_db`.
+The default queue store is SQLite at `./persistence_queue.sqlite3`.
 
 The default retry store is SQLite at `./persistence_db.sqlite3`.
 The CLI `retry_store_path` setting also uses SQLite. In the Python retry API,
-`PersistentRetrying(store_path=...)` selects an LMDB attempt-store directory;
-pass `store=SQLiteAttemptStore("retries.sqlite3")` when you want a SQLite file
-explicitly.
+`PersistentRetrying(store_path=...)` selects an optional LMDB attempt-store
+directory; pass `store=SQLiteAttemptStore("retries.sqlite3")` when you want a
+SQLite file explicitly.
+
+LMDB remains available as an optional backend through `persistentretry[lmdb]`
+and explicit `LMDBQueueStore` or `LMDBAttemptStore` usage.
 
 For tests, use `MemoryQueueStore` and `MemoryAttemptStore`.
 

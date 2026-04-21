@@ -7,7 +7,7 @@ icon: lucide/inbox
 `persistentretry` provides durable local queues for Python workers, with
 persistent retry state powered by [Tenacity](https://tenacity.readthedocs.io/en/latest/).
 
-The main entry point is `persistentqueue`: an LMDB-backed queue for at-least-once
+The main entry point is `persistentqueue`: a SQLite-backed queue for at-least-once
 job delivery. The lower-level `persistentretry` package remains available when
 you only need durable retry budgets around an existing delivery mechanism.
 Both import packages are distributed by the `persistentretry` Python package.
@@ -26,7 +26,7 @@ Install the optional CLI dependencies when you want to operate queues from the
 terminal.
 
 ```bash
-pip install "persistentretry[all]"
+pip install "persistentretry[cli]"
 ```
 
 Run one queued message with an importable handler:
@@ -51,11 +51,11 @@ handler:
 
 ```bash
 persistentretry queue add emails \
-  --store-path /tmp/persistentretry-demo \
+  --store-path /tmp/persistentretry-demo.sqlite3 \
   --value '{"to":"user@example.com"}'
 
 persistentretry queue process emails examples.email_worker:send_email \
-  --store-path /tmp/persistentretry-demo \
+  --store-path /tmp/persistentretry-demo.sqlite3 \
   --retry-store-path /tmp/persistentretry-demo-retries.sqlite3 \
   --worker-id worker-1 \
   --max-tries 3
@@ -67,7 +67,7 @@ from tenacity import retry_if_exception_type
 from tenacity import stop_after_attempt, wait_exponential
 
 
-queue = PersistentQueue("emails", store_path="./persistence_db")
+queue = PersistentQueue("emails", store_path="./persistence_queue.sqlite3")
 queue.put({"to": "user@example.com"})
 
 worker_config = PersistentWorkerConfig(
@@ -95,7 +95,7 @@ acknowledging, releasing, or dead-lettering a message.
 ```python
 from persistentqueue import PersistentQueue
 
-queue = PersistentQueue("emails", store_path="./persistence_db")
+queue = PersistentQueue("emails", store_path="./persistence_queue.sqlite3")
 queue.put({"to": "user@example.com"})
 
 message = queue.get_message()
@@ -144,13 +144,15 @@ it does not infer a key from argument names or positions.
 | Component | Default storage | Persistence model |
 | --- | --- | --- |
 | `persistentretry` | `./persistence_db.sqlite3` | retry attempts per key |
-| `persistentqueue` | `./persistence_db` | ready, inflight, and dead-letter messages |
+| `persistentqueue` | `./persistence_queue.sqlite3` | ready, inflight, and dead-letter messages |
 
-The default retry store is SQLite; the default queue store remains LMDB-based.
+The default retry store and default queue store are SQLite-backed.
 Tests and in-memory workflows can use `MemoryAttemptStore` and `MemoryQueueStore`.
 The CLI `retry_store_path` setting is a SQLite file path. In the Python retry
-API, `store_path=` selects an LMDB attempt-store directory; use
+API, `store_path=` selects an optional LMDB attempt-store directory; use
 `store=SQLiteAttemptStore("retries.sqlite3")` for an explicit SQLite file.
+LMDB queue storage is still available through `persistentretry[lmdb]` and
+explicit `LMDBQueueStore` usage.
 
 ## Which API to use
 

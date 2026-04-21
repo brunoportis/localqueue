@@ -129,8 +129,9 @@ except PersistentRetryExhausted as exc:
 
 The default attempt store is SQLite at `./persistence_db.sqlite3`.
 
-`store_path=` creates an LMDB attempt-store directory. Use it when you want the
-retry API to manage an LMDB backend directly.
+`store_path=` creates an LMDB attempt-store directory. Install
+`persistentretry[lmdb]` and use it when you want the retry API to manage an LMDB
+backend directly.
 
 ```python
 from persistentretry import PersistentRetrying, key_from_argument

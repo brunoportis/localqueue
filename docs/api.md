@@ -20,7 +20,7 @@ Constructor options:
 | --- | --- |
 | `name` | queue name inside the store |
 | `store` | queue store instance |
-| `store_path` | path for an LMDB queue store |
+| `store_path` | path for the default SQLite queue store |
 | `lease_timeout` | seconds before an inflight message is redelivered |
 | `maxsize` | maximum number of ready messages; `0` means unbounded |
 
@@ -144,6 +144,11 @@ Options:
 #### `QueueStore`
 
 Protocol for custom queue stores.
+
+#### `SQLiteQueueStore`
+
+SQLite-backed queue store. This is the default backend. Records are serialized
+as versioned JSON; values must be JSON-serializable.
 
 #### `LMDBQueueStore`
 

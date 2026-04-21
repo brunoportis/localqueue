@@ -5,8 +5,8 @@ icon: lucide/inbox
 # Persistent Queues
 
 `persistentqueue` is the main workflow API in this project. It is a small queue
-abstraction backed by LMDB and designed for durable, at-least-once delivery of
-Python values.
+abstraction backed by SQLite by default and designed for durable, at-least-once
+delivery of Python values.
 
 ## Creating a queue
 
@@ -15,7 +15,7 @@ from persistentqueue import PersistentQueue
 
 queue = PersistentQueue(
     "emails",
-    store_path="./persistence_db",
+    store_path="./persistence_queue.sqlite3",
     lease_timeout=30.0,
 )
 ```
@@ -180,7 +180,20 @@ Negative delays raise `ValueError`.
 
 ## Stores
 
-The default queue store is LMDB at `./persistence_db`.
+The default queue store is SQLite at `./persistence_queue.sqlite3`.
+
+```python
+from persistentqueue import PersistentQueue, SQLiteQueueStore
+
+store = SQLiteQueueStore("/var/lib/my-worker/queue.sqlite3")
+queue = PersistentQueue("jobs", store=store)
+```
+
+Install the optional LMDB extra when you want the LMDB backend explicitly.
+
+```bash
+pip install "persistentretry[lmdb]"
+```
 
 ```python
 from persistentqueue import LMDBQueueStore, PersistentQueue
@@ -197,7 +210,7 @@ from persistentqueue import MemoryQueueStore, PersistentQueue
 queue = PersistentQueue("jobs", store=MemoryQueueStore())
 ```
 
-`LMDBQueueStore` serializes records as versioned JSON. Queue values must be
+Persistent queue stores serialize records as versioned JSON. Queue values must be
 JSON-serializable.
 
 ## Capacity and cleanup
