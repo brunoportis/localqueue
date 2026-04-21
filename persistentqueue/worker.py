@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from queue import Empty
 from typing import Any, TypeVar, cast
 
 from persistentretry import PersistentAsyncRetrying, PersistentRetrying
 
 from .queue import PersistentQueue
+from .store import QueueMessage
 
 WrappedFn = TypeVar("WrappedFn", bound=Callable[..., Any])
 _UNSET = object()
@@ -158,7 +160,7 @@ def persistent_async_worker(
 
     def decorator(fn: WrappedFn) -> Callable[..., Any]:
         async def wrapped(*args: Any, **kwargs: Any) -> Any:
-            message = await asyncio.to_thread(queue.get_message)
+            message = await _get_message_async(queue)
             retryer = PersistentAsyncRetrying(
                 key=message.id, **worker_config.retry_kwargs
             )
@@ -166,18 +168,25 @@ def persistent_async_worker(
                 result = await retryer(fn, message.value, *args, **kwargs)
             except Exception as exc:
                 if worker_config.dead_letter_on_failure:
-                    await asyncio.to_thread(queue.dead_letter, message, error=exc)
+                    queue.dead_letter(message, error=exc)
                 else:
-                    await asyncio.to_thread(
-                        queue.release,
+                    queue.release(
                         message,
                         delay=worker_config.release_delay,
                         error=exc,
                     )
                 raise
-            await asyncio.to_thread(queue.ack, message)
+            queue.ack(message)
             return result
 
         return wrapped
 
     return decorator
+
+
+async def _get_message_async(queue: PersistentQueue) -> QueueMessage:
+    while True:
+        try:
+            return queue.get_message(block=False)
+        except Empty:
+            await asyncio.sleep(0.05)
