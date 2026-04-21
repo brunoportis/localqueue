@@ -1,22 +1,36 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
 import time
 import uuid
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
 from collections.abc import Iterable
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Iterator, Protocol
 
-import lmdb
+if TYPE_CHECKING:
+    import lmdb
 
-_ENVS: dict[tuple[str, int], lmdb.Environment] = {}
+_ENVS: dict[tuple[str, int], Any] = {}
 _ENVS_LOCK = threading.Lock()
 _READY = "ready"
 _INFLIGHT = "inflight"
 _DEAD = "dead"
 _QUEUE_RECORD_VERSION = 1
+
+
+def _import_lmdb() -> Any:
+    try:
+        import lmdb
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "LMDB support requires the optional dependency; "
+            'install with `pip install "persistentretry[lmdb]"`'
+        ) from exc
+    return lmdb
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,11 +379,346 @@ class MemoryQueueStore:
         return _dead_key(queue, message_id)
 
 
+class SQLiteQueueStore:
+    path: Path
+    _connection: sqlite3.Connection
+    _lock: threading.Lock
+
+    def __init__(self, path: str | Path, timeout: float = 15.0) -> None:
+        self.path = Path(path)
+        if self.path.parent != Path("."):
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._connection = sqlite3.connect(
+            self.path, timeout=timeout, check_same_thread=False
+        )
+        self._connection.execute("PRAGMA journal_mode=WAL;")
+        self._connection.execute("PRAGMA synchronous=NORMAL;")
+        self._connection.execute(
+            "CREATE TABLE IF NOT EXISTS queue_messages ("
+            "queue TEXT NOT NULL, "
+            "id TEXT NOT NULL, "
+            "record_json TEXT NOT NULL, "
+            "state TEXT NOT NULL, "
+            "available_at REAL NOT NULL, "
+            "leased_until REAL, "
+            "sequence INTEGER NOT NULL, "
+            "PRIMARY KEY(queue, id)"
+            ")"
+        )
+        self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS queue_messages_ready_idx "
+            "ON queue_messages(queue, state, available_at, sequence)"
+        )
+        self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS queue_messages_inflight_idx "
+            "ON queue_messages(queue, state, leased_until)"
+        )
+        self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS queue_messages_dead_idx "
+            "ON queue_messages(queue, state, id)"
+        )
+        self._connection.execute(
+            "CREATE TABLE IF NOT EXISTS queue_sequences ("
+            "queue TEXT PRIMARY KEY, "
+            "value INTEGER NOT NULL"
+            ")"
+        )
+        self._connection.commit()
+        self._lock = threading.Lock()
+
+    def enqueue(self, queue: str, value: Any, *, available_at: float) -> QueueMessage:
+        _validate_json_serializable(value)
+        with self._transaction() as connection:
+            record = _QueueRecord.new(queue, value, available_at)
+            seq = self._next_seq(connection, queue)
+            record = replace(
+                record, index_key=_ready_key(queue, available_at, seq, record.id)
+            )
+            self._upsert_record(connection, record, sequence=seq)
+            return record.to_message()
+
+    def dequeue(
+        self,
+        queue: str,
+        *,
+        lease_timeout: float,
+        now: float,
+        leased_by: str | None = None,
+    ) -> QueueMessage | None:
+        with self._transaction() as connection:
+            self._reclaim_expired(connection, queue, now)
+            cursor = connection.execute(
+                "SELECT id, record_json FROM queue_messages "
+                "WHERE queue = ? AND state = ? AND available_at <= ? "
+                "ORDER BY available_at, sequence LIMIT 1",
+                (queue, _READY, now),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            record = _decode_record(row[1])
+            leased_until = now + lease_timeout
+            updated = replace(
+                record,
+                attempts=record.attempts + 1,
+                leased_until=leased_until,
+                leased_by=leased_by,
+                state=_INFLIGHT,
+                index_key=_inflight_key(queue, leased_until, record.id),
+            )
+            self._upsert_record(connection, updated, sequence=self._sequence(row[1]))
+            return updated.to_message()
+
+    def get(self, queue: str, message_id: str) -> QueueMessage | None:
+        with self._lock:
+            record = self._get_record(self._connection, queue, message_id)
+            if record is None:
+                return None
+            return record.to_message()
+
+    def ack(self, queue: str, message_id: str) -> bool:
+        with self._transaction() as connection:
+            cursor = connection.execute(
+                "DELETE FROM queue_messages WHERE queue = ? AND id = ?",
+                (queue, message_id),
+            )
+            return cursor.rowcount > 0
+
+    def release(
+        self,
+        queue: str,
+        message_id: str,
+        *,
+        available_at: float,
+        last_error: dict[str, Any] | None = None,
+        failed_at: float | None = None,
+    ) -> bool:
+        with self._transaction() as connection:
+            record = self._get_record(connection, queue, message_id)
+            if record is None:
+                return False
+            seq = self._next_seq(connection, queue)
+            updated = replace(
+                record,
+                available_at=available_at,
+                leased_until=None,
+                leased_by=None,
+                last_error=last_error if last_error is not None else record.last_error,
+                failed_at=failed_at if failed_at is not None else record.failed_at,
+                state=_READY,
+                index_key=_ready_key(queue, available_at, seq, message_id),
+            )
+            self._upsert_record(connection, updated, sequence=seq)
+            return True
+
+    def dead_letter(
+        self,
+        queue: str,
+        message_id: str,
+        *,
+        last_error: dict[str, Any] | None = None,
+        failed_at: float | None = None,
+    ) -> bool:
+        with self._transaction() as connection:
+            record = self._get_record(connection, queue, message_id)
+            if record is None:
+                return False
+            updated = replace(
+                record,
+                leased_until=None,
+                leased_by=None,
+                last_error=last_error if last_error is not None else record.last_error,
+                failed_at=failed_at if failed_at is not None else record.failed_at,
+                state=_DEAD,
+                index_key=_dead_key(queue, message_id),
+            )
+            self._upsert_record(
+                connection,
+                updated,
+                sequence=self._sequence_for_id(connection, queue, message_id),
+            )
+            return True
+
+    def qsize(self, queue: str, *, now: float) -> int:
+        with self._lock:
+            cursor = self._connection.execute(
+                "SELECT COUNT(*) FROM queue_messages "
+                "WHERE queue = ? AND state = ? AND available_at <= ?",
+                (queue, _READY, now),
+            )
+            return int(cursor.fetchone()[0])
+
+    def stats(self, queue: str, *, now: float) -> QueueStats:
+        with self._transaction() as connection:
+            self._reclaim_expired(connection, queue, now)
+            cursor = connection.execute(
+                "SELECT record_json FROM queue_messages WHERE queue = ?",
+                (queue,),
+            )
+            return _stats_from_records(
+                (_decode_record(row[0]) for row in cursor.fetchall()), now=now
+            )
+
+    def dead_letters(
+        self, queue: str, *, limit: int | None = None
+    ) -> list[QueueMessage]:
+        _validate_limit(limit)
+        query = (
+            "SELECT record_json FROM queue_messages "
+            "WHERE queue = ? AND state = ? ORDER BY id"
+        )
+        params: tuple[Any, ...]
+        if limit is None:
+            params = (queue, _DEAD)
+        else:
+            query += " LIMIT ?"
+            params = (queue, _DEAD, limit)
+        with self._lock:
+            cursor = self._connection.execute(query, params)
+            return [_decode_record(row[0]).to_message() for row in cursor.fetchall()]
+
+    def requeue_dead(self, queue: str, message_id: str, *, available_at: float) -> bool:
+        with self._transaction() as connection:
+            record = self._get_record(connection, queue, message_id)
+            if record is None or record.state != _DEAD:
+                return False
+            seq = self._next_seq(connection, queue)
+            updated = replace(
+                record,
+                available_at=available_at,
+                leased_until=None,
+                leased_by=None,
+                state=_READY,
+                index_key=_ready_key(queue, available_at, seq, message_id),
+            )
+            self._upsert_record(connection, updated, sequence=seq)
+            return True
+
+    def empty(self, queue: str, *, now: float) -> bool:
+        return self.qsize(queue, now=now) == 0
+
+    def purge(self, queue: str) -> int:
+        with self._transaction() as connection:
+            cursor = connection.execute(
+                "DELETE FROM queue_messages WHERE queue = ?", (queue,)
+            )
+            return cursor.rowcount
+
+    def close(self) -> None:
+        with self._lock:
+            self._connection.close()
+
+    def __del__(self) -> None:  # pragma: no cover
+        with suppress(Exception):
+            self.close()
+
+    @contextmanager
+    def _transaction(self) -> Iterator[sqlite3.Connection]:
+        with self._lock:
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                yield self._connection
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+
+    def _next_seq(self, connection: sqlite3.Connection, queue: str) -> int:
+        _ = _safe_queue(queue)
+        cursor = connection.execute(
+            "SELECT value FROM queue_sequences WHERE queue = ?", (queue,)
+        )
+        row = cursor.fetchone()
+        value = 1 if row is None else int(row[0]) + 1
+        connection.execute(
+            "INSERT INTO queue_sequences(queue, value) VALUES(?, ?) "
+            "ON CONFLICT(queue) DO UPDATE SET value = excluded.value",
+            (queue, value),
+        )
+        return value
+
+    def _get_record(
+        self, connection: sqlite3.Connection, queue: str, message_id: str
+    ) -> _QueueRecord | None:
+        _ = _safe_queue(queue)
+        cursor = connection.execute(
+            "SELECT record_json FROM queue_messages WHERE queue = ? AND id = ?",
+            (queue, message_id),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return _decode_record(row[0])
+
+    def _upsert_record(
+        self, connection: sqlite3.Connection, record: _QueueRecord, *, sequence: int
+    ) -> None:
+        connection.execute(
+            "INSERT INTO queue_messages("
+            "queue, id, record_json, state, available_at, leased_until, sequence"
+            ") VALUES(?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(queue, id) DO UPDATE SET "
+            "record_json = excluded.record_json, "
+            "state = excluded.state, "
+            "available_at = excluded.available_at, "
+            "leased_until = excluded.leased_until, "
+            "sequence = excluded.sequence",
+            (
+                record.queue,
+                record.id,
+                _encode_record(record).decode("utf-8"),
+                record.state,
+                record.available_at,
+                record.leased_until,
+                sequence,
+            ),
+        )
+
+    def _sequence_for_id(
+        self, connection: sqlite3.Connection, queue: str, message_id: str
+    ) -> int:
+        cursor = connection.execute(
+            "SELECT sequence FROM queue_messages WHERE queue = ? AND id = ?",
+            (queue, message_id),
+        )
+        row = cursor.fetchone()
+        return 0 if row is None else int(row[0])
+
+    def _sequence(self, raw_record: str) -> int:
+        record = _decode_record(raw_record)
+        if record.index_key is None:
+            return 0
+        return _sequence_from_index_key(record.index_key)
+
+    def _reclaim_expired(
+        self, connection: sqlite3.Connection, queue: str, now: float
+    ) -> None:
+        cursor = connection.execute(
+            "SELECT id, record_json FROM queue_messages "
+            "WHERE queue = ? AND state = ? AND leased_until <= ? "
+            "ORDER BY leased_until",
+            (queue, _INFLIGHT, now),
+        )
+        for message_id, raw in cursor.fetchall():
+            record = _decode_record(raw)
+            seq = self._next_seq(connection, queue)
+            updated = replace(
+                record,
+                available_at=now,
+                leased_until=None,
+                leased_by=None,
+                state=_READY,
+                index_key=_ready_key(queue, now, seq, message_id),
+            )
+            self._upsert_record(connection, updated, sequence=seq)
+
+
 class LMDBQueueStore:
     path: Path
     _env: lmdb.Environment
 
     def __init__(self, path: str | Path, *, map_size: int = 10**8) -> None:
+        lmdb = _import_lmdb()
         self.path = Path(path)
         self.path.mkdir(parents=True, exist_ok=True)
         key = (str(self.path.resolve()), map_size)
@@ -763,9 +1112,9 @@ def _validate_json_serializable(value: Any) -> None:
         raise ValueError("queue values must be JSON-serializable") from exc
 
 
-def _decode_record(raw: bytes) -> _QueueRecord:
+def _decode_record(raw: bytes | str) -> _QueueRecord:
     try:
-        payload = json.loads(raw.decode("utf-8"))
+        payload = json.loads(raw if isinstance(raw, str) else raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("queue record is not valid JSON") from exc
 
@@ -834,3 +1183,15 @@ def _timestamp_from_index_key(key: bytes, *, expected_state: str) -> float:
             + f"expected queue:<name>:{expected_state}:<timestamp>:..."
         )
     return _timestamp(parts[3])
+
+
+def _sequence_from_index_key(key: bytes) -> int:
+    try:
+        decoded = key.decode("utf-8")
+    except UnicodeDecodeError:
+        return 0
+
+    parts = decoded.split(":")
+    if len(parts) >= 6 and parts[2] == _READY:
+        return int(parts[4])
+    return 0
