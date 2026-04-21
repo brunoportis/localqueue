@@ -96,7 +96,11 @@ def _get_default_store() -> AttemptStore:
 
 def configure_default_store(store: AttemptStore | None = None) -> None:
     if store is None:
-        if hasattr(_default_store_local, "store"):
+        existing_store = getattr(_default_store_local, "store", None)
+        close = getattr(existing_store, "close", None)
+        if callable(close):
+            close()
+        if existing_store is not None:
             del _default_store_local.store
         return
     _default_store_local.store = store

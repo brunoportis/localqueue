@@ -24,6 +24,7 @@ from persistentretry import (
 )
 
 DEFAULT_STORE_PATH = "persistence_db"
+DEFAULT_RETRY_STORE_PATH = "persistence_db.sqlite3"
 CONFIG_FILENAME = "config.yaml"
 
 
@@ -112,7 +113,7 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
     @queue_app.command("add")
     def queue_add(
         queue: str,
-        value: str | None = None,
+        value: str | None = typer.Option(None, "--value"),
         store_path: str | None = typer.Option(None, "--store-path"),
         delay: float = typer.Option(0.0, "--delay", min=0.0),
         raw: bool = typer.Option(False, "--raw"),
@@ -362,29 +363,19 @@ def _process_message(
         "max_tries": max_tries,
         "wait": wait_none(),
     }
+    owned_retry_store: SQLiteAttemptStore | None = None
     if retry_store is not None:
         retry_kwargs["store"] = retry_store
     elif retry_store_path is not None:
-        retry_kwargs["store"] = SQLiteAttemptStore(retry_store_path)
+        owned_retry_store = SQLiteAttemptStore(retry_store_path)
+        retry_kwargs["store"] = owned_retry_store
 
     retryer = PersistentRetrying(**retry_kwargs)
     try:
-        _ = retryer(handler, message.value)
-    except PersistentRetryExhausted as exc:
-        last_error = _error_payload(exc)
-        _ = _finish_failed_message(
-            queue,
-            message,
-            release_delay=release_delay,
-            dead_letter_on_exhaustion=dead_letter_on_exhaustion,
-            error=exc,
-        )
-        return _ProcessResult(processed=False, last_error=last_error)
-    except Exception as exc:
-        last_error = _error_payload(exc)
-        record = retryer.get_record(message.id)
-        exhausted = record is not None and record.exhausted
-        if exhausted:
+        try:
+            _ = retryer(handler, message.value)
+        except PersistentRetryExhausted as exc:
+            last_error = _error_payload(exc)
             _ = _finish_failed_message(
                 queue,
                 message,
@@ -392,11 +383,27 @@ def _process_message(
                 dead_letter_on_exhaustion=dead_letter_on_exhaustion,
                 error=exc,
             )
-        else:
-            _ = queue.release(message, delay=release_delay, error=exc)
-        return _ProcessResult(processed=False, last_error=last_error)
+            return _ProcessResult(processed=False, last_error=last_error)
+        except Exception as exc:
+            last_error = _error_payload(exc)
+            record = retryer.get_record(message.id)
+            exhausted = record is not None and record.exhausted
+            if exhausted:
+                _ = _finish_failed_message(
+                    queue,
+                    message,
+                    release_delay=release_delay,
+                    dead_letter_on_exhaustion=dead_letter_on_exhaustion,
+                    error=exc,
+                )
+            else:
+                _ = queue.release(message, delay=release_delay, error=exc)
+            return _ProcessResult(processed=False, last_error=last_error)
 
-    return _ProcessResult(processed=queue.ack(message))
+        return _ProcessResult(processed=queue.ack(message))
+    finally:
+        if owned_retry_store is not None:
+            owned_retry_store.close()
 
 
 def _process_queue_messages(
@@ -569,12 +576,10 @@ def _resolve_store_path(explicit: str | None, config: dict[str, Any]) -> str:
     return str(explicit or config.get("store_path") or DEFAULT_STORE_PATH)
 
 
-def _resolve_retry_store_path(
-    explicit: str | None, config: dict[str, Any]
-) -> str | None:
+def _resolve_retry_store_path(explicit: str | None, config: dict[str, Any]) -> str:
     value = explicit if explicit is not None else config.get("retry_store_path")
     if value is None:
-        return None
+        return DEFAULT_RETRY_STORE_PATH
     return str(value)
 
 

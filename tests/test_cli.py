@@ -11,12 +11,16 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 from unittest import mock
+from rich.console import Console
+import typer
+from typer.testing import CliRunner
 import yaml
 
 from persistentqueue import MemoryQueueStore, PersistentQueue
 from persistentretry import MemoryAttemptStore, SQLiteAttemptStore
 from persistentretry.cli import (
     CONFIG_FILENAME,
+    DEFAULT_RETRY_STORE_PATH,
     _ShutdownState,
     _build_app,
     _config_path,
@@ -30,6 +34,7 @@ from persistentretry.cli import (
     _resolve_store_path,
     _write_config,
 )
+from persistentretry.core import configure_default_store
 
 
 def handle_payload(payload: dict[str, str]) -> None:
@@ -49,6 +54,20 @@ class _JsonConsole:
 
 
 class CliTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        configure_default_store(None)
+
+    def _app(self) -> Any:
+        return _build_app(typer, yaml, Console(width=120), Console(stderr=True))
+
+    def _invoke(self, args: list[str], *, input: str | None = None) -> Any:
+        return CliRunner().invoke(self._app(), args, input=input)
+
+    def _retry_store_path(self) -> str:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        return str(Path(directory.name) / "retries.sqlite3")
+
     def test_parse_json_accepts_structured_values(self) -> None:
         self.assertEqual(
             _parse_json('{"to":"user@example.com"}'), {"to": "user@example.com"}
@@ -126,6 +145,355 @@ class CliTests(unittest.TestCase):
             _resolve_retry_store_path("/tmp/explicit-retries", config),
             "/tmp/explicit-retries",
         )
+        self.assertEqual(_resolve_retry_store_path(None, {}), DEFAULT_RETRY_STORE_PATH)
+
+    def test_config_commands_manage_xdg_config_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(
+                "os.environ", {"XDG_CONFIG_HOME": tmpdir}, clear=False
+            ):
+                path_result = self._invoke(["config", "path"])
+                self.assertEqual(path_result.exit_code, 0, path_result.output)
+                config_path = Path(path_result.stdout.strip())
+                self.assertEqual(
+                    config_path,
+                    Path(tmpdir) / "persistentretry" / CONFIG_FILENAME,
+                )
+
+                init_result = self._invoke(
+                    [
+                        "config",
+                        "init",
+                        "--store-path",
+                        "/tmp/queues",
+                        "--retry-store-path",
+                        "/tmp/retries.sqlite3",
+                    ]
+                )
+                self.assertEqual(init_result.exit_code, 0, init_result.output)
+                self.assertIn("wrote config", init_result.output)
+
+                show_result = self._invoke(["config", "show"])
+                self.assertEqual(show_result.exit_code, 0, show_result.output)
+                self.assertEqual(
+                    json.loads(show_result.stdout),
+                    {
+                        "retry_store_path": "/tmp/retries.sqlite3",
+                        "store_path": "/tmp/queues",
+                    },
+                )
+
+                set_result = self._invoke(
+                    ["config", "set", "store_path", "/tmp/new-queues"]
+                )
+                self.assertEqual(set_result.exit_code, 0, set_result.output)
+                self.assertEqual(
+                    json.loads(set_result.stdout)["store_path"], "/tmp/new-queues"
+                )
+
+                duplicate_result = self._invoke(["config", "init"])
+                self.assertEqual(duplicate_result.exit_code, 1)
+                self.assertIn("config already exists", duplicate_result.output)
+
+                invalid_result = self._invoke(["config", "set", "unknown", "value"])
+                self.assertEqual(invalid_result.exit_code, 1)
+                self.assertIn("unsupported config key", invalid_result.output)
+
+    def test_load_config_rejects_non_mapping_yaml(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "config.yaml"
+            path.write_text("- not\n- a\n- mapping\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "YAML mapping"):
+                _ = _load_config(yaml, path=path)
+
+    def test_queue_commands_cover_basic_lifecycle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_path = str(Path(tmpdir) / "queues")
+
+            add_result = self._invoke(
+                [
+                    "queue",
+                    "add",
+                    "emails",
+                    "--value",
+                    '{"to":"user@example.com"}',
+                    "--store-path",
+                    store_path,
+                ]
+            )
+            self.assertEqual(add_result.exit_code, 0, add_result.output)
+            added = json.loads(add_result.stdout)
+            self.assertEqual(added["value"], {"to": "user@example.com"})
+            self.assertEqual(added["state"], "ready")
+
+            size_result = self._invoke(
+                ["queue", "size", "emails", "--store-path", store_path]
+            )
+            self.assertEqual(size_result.exit_code, 0, size_result.output)
+            self.assertEqual(size_result.stdout.strip(), "1")
+
+            pop_result = self._invoke(
+                [
+                    "queue",
+                    "pop",
+                    "emails",
+                    "--worker-id",
+                    "worker-a",
+                    "--store-path",
+                    store_path,
+                ]
+            )
+            self.assertEqual(pop_result.exit_code, 0, pop_result.output)
+            popped = json.loads(pop_result.stdout)
+            self.assertEqual(popped["id"], added["id"])
+            self.assertEqual(popped["state"], "inflight")
+            self.assertEqual(popped["leased_by"], "worker-a")
+
+            release_result = self._invoke(
+                [
+                    "queue",
+                    "release",
+                    "emails",
+                    added["id"],
+                    "--store-path",
+                    store_path,
+                ]
+            )
+            self.assertEqual(release_result.exit_code, 0, release_result.output)
+            self.assertEqual(
+                json.loads(release_result.stdout),
+                {"id": added["id"], "state": "release"},
+            )
+
+            stats_result = self._invoke(
+                ["queue", "stats", "emails", "--store-path", store_path]
+            )
+            self.assertEqual(stats_result.exit_code, 0, stats_result.output)
+            self.assertEqual(json.loads(stats_result.stdout)["ready"], 1)
+
+            second_pop = self._invoke(
+                ["queue", "pop", "emails", "--store-path", store_path]
+            )
+            self.assertEqual(second_pop.exit_code, 0, second_pop.output)
+
+            dead_result = self._invoke(
+                [
+                    "queue",
+                    "dead-letter",
+                    "emails",
+                    added["id"],
+                    "--store-path",
+                    store_path,
+                ]
+            )
+            self.assertEqual(dead_result.exit_code, 0, dead_result.output)
+            self.assertEqual(
+                json.loads(dead_result.stdout),
+                {"id": added["id"], "state": "dead-letter"},
+            )
+
+            dead_list_result = self._invoke(
+                ["queue", "dead", "emails", "--limit", "1", "--store-path", store_path]
+            )
+            self.assertEqual(dead_list_result.exit_code, 0, dead_list_result.output)
+            self.assertEqual(json.loads(dead_list_result.stdout)[0]["id"], added["id"])
+
+            purge_result = self._invoke(
+                ["queue", "purge", "emails", "--store-path", store_path]
+            )
+            self.assertEqual(purge_result.exit_code, 0, purge_result.output)
+            self.assertEqual(purge_result.stdout.strip(), "1")
+
+    def test_queue_add_accepts_stdin_and_raw_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_path = str(Path(tmpdir) / "queues")
+
+            stdin_result = self._invoke(
+                ["queue", "add", "emails", "--store-path", store_path],
+                input='{"to":"stdin@example.com"}',
+            )
+            self.assertEqual(stdin_result.exit_code, 0, stdin_result.output)
+            self.assertEqual(
+                json.loads(stdin_result.stdout)["value"],
+                {"to": "stdin@example.com"},
+            )
+
+            raw_result = self._invoke(
+                [
+                    "queue",
+                    "add",
+                    "emails",
+                    "--value",
+                    "raw-address@example.com",
+                    "--raw",
+                    "--store-path",
+                    store_path,
+                ]
+            )
+            self.assertEqual(raw_result.exit_code, 0, raw_result.output)
+            self.assertEqual(
+                json.loads(raw_result.stdout)["value"], "raw-address@example.com"
+            )
+
+            invalid_result = self._invoke(
+                [
+                    "queue",
+                    "add",
+                    "emails",
+                    "--value",
+                    "not-json",
+                    "--store-path",
+                    store_path,
+                ]
+            )
+            self.assertNotEqual(invalid_result.exit_code, 0)
+            self.assertIn("value must be valid JSON", invalid_result.output)
+
+    def test_queue_commands_report_empty_and_missing_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_path = str(Path(tmpdir) / "queues")
+
+            empty_result = self._invoke(
+                ["queue", "pop", "emails", "--store-path", store_path]
+            )
+            self.assertEqual(empty_result.exit_code, 1)
+            self.assertIn("queue is empty", empty_result.output)
+
+            missing_ack = self._invoke(
+                ["queue", "ack", "emails", "missing", "--store-path", store_path]
+            )
+            self.assertEqual(missing_ack.exit_code, 1)
+            self.assertIn("message not found", missing_ack.output)
+
+            missing_requeue = self._invoke(
+                [
+                    "queue",
+                    "requeue-dead",
+                    "emails",
+                    "missing",
+                    "--store-path",
+                    store_path,
+                ]
+            )
+            self.assertEqual(missing_requeue.exit_code, 1)
+            self.assertIn("dead-letter message not found", missing_requeue.output)
+
+    def test_queue_process_command_acks_successful_handler(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            store_path = str(tmp_path / "queues")
+            retry_store_path = str(tmp_path / "retries.sqlite3")
+            handler_path = tmp_path / "worker.py"
+            handler_path.write_text(
+                "def handle(payload):\n    payload['handled'] = True\n",
+                encoding="utf-8",
+            )
+            add_result = self._invoke(
+                [
+                    "queue",
+                    "add",
+                    "emails",
+                    "--value",
+                    '{"to":"user@example.com"}',
+                    "--store-path",
+                    store_path,
+                ]
+            )
+            self.assertEqual(add_result.exit_code, 0, add_result.output)
+
+            previous = Path.cwd()
+            _ = sys.modules.pop("worker", None)
+            try:
+                os.chdir(tmp_path)
+                process_result = self._invoke(
+                    [
+                        "queue",
+                        "process",
+                        "emails",
+                        "worker:handle",
+                        "--store-path",
+                        store_path,
+                        "--retry-store-path",
+                        retry_store_path,
+                        "--worker-id",
+                        "worker-a",
+                        "--max-tries",
+                        "1",
+                    ]
+                )
+            finally:
+                os.chdir(previous)
+                _ = sys.modules.pop("worker", None)
+
+            self.assertEqual(process_result.exit_code, 0, process_result.output)
+            self.assertEqual(json.loads(process_result.stdout)["state"], "acked")
+            self.assertEqual(
+                PersistentQueue("emails", store_path=store_path).qsize(), 0
+            )
+            self.assertTrue(Path(retry_store_path).is_file())
+
+    def test_queue_process_command_dead_letters_failed_handler(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            store_path = str(tmp_path / "queues")
+            retry_store_path = str(tmp_path / "retries.sqlite3")
+            handler_path = tmp_path / "worker.py"
+            handler_path.write_text(
+                "def handle(payload):\n    raise ConnectionError('mail server down')\n",
+                encoding="utf-8",
+            )
+            queue = PersistentQueue("emails", store_path=store_path)
+            message = queue.put({"to": "user@example.com"})
+
+            previous = Path.cwd()
+            _ = sys.modules.pop("worker", None)
+            try:
+                os.chdir(tmp_path)
+                result = self._invoke(
+                    [
+                        "queue",
+                        "process",
+                        "emails",
+                        "worker:handle",
+                        "--store-path",
+                        store_path,
+                        "--retry-store-path",
+                        retry_store_path,
+                        "--max-tries",
+                        "1",
+                    ]
+                )
+            finally:
+                os.chdir(previous)
+                _ = sys.modules.pop("worker", None)
+
+            self.assertEqual(result.exit_code, 1)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["id"], message.id)
+            self.assertEqual(payload["state"], "failed")
+            self.assertEqual(payload["last_error"]["type"], "ConnectionError")
+            dead_letters = PersistentQueue(
+                "emails", store_path=store_path
+            ).dead_letters()
+            self.assertEqual(len(dead_letters), 1)
+            self.assertEqual(dead_letters[0].id, message.id)
+
+    def test_queue_process_reports_bad_handler_spec(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = self._invoke(
+                [
+                    "queue",
+                    "process",
+                    "emails",
+                    "not-a-handler",
+                    "--store-path",
+                    str(Path(tmpdir) / "queues"),
+                ]
+            )
+
+            self.assertEqual(result.exit_code, 1)
+            self.assertIn("module:function", result.output)
 
     def test_process_message_acks_successful_handler(self) -> None:
         queue = PersistentQueue("emails", store=MemoryQueueStore())
@@ -205,10 +573,13 @@ class CliTests(unittest.TestCase):
             store = SQLiteAttemptStore(retry_store_path)
             self.assertIsNotNone(store.load(message.id))
             store.close()
-            with sqlite3.connect(retry_store_path) as connection:
+            connection = sqlite3.connect(retry_store_path)
+            try:
                 names = connection.execute(
                     "SELECT name FROM sqlite_master WHERE type = 'table'"
                 ).fetchall()
+            finally:
+                connection.close()
             self.assertIn(("retry_records",), names)
 
     def test_process_queue_messages_preserves_batch_empty_exit(self) -> None:
@@ -222,7 +593,7 @@ class CliTests(unittest.TestCase):
             console=console,
             err_console=err_console,
             shutdown=_ShutdownState(),
-            retry_store_path=None,
+            retry_store_path=self._retry_store_path(),
             max_jobs=1,
             forever=False,
             max_tries=1,
@@ -256,7 +627,7 @@ class CliTests(unittest.TestCase):
             console=console,
             err_console=err_console,
             shutdown=shutdown,
-            retry_store_path=None,
+            retry_store_path=self._retry_store_path(),
             max_jobs=1,
             forever=True,
             max_tries=1,
@@ -294,7 +665,7 @@ class CliTests(unittest.TestCase):
             console=console,
             err_console=err_console,
             shutdown=_ShutdownState(),
-            retry_store_path=None,
+            retry_store_path=self._retry_store_path(),
             max_jobs=1,
             forever=False,
             max_tries=2,
@@ -326,7 +697,7 @@ class CliTests(unittest.TestCase):
             console=console,
             err_console=err_console,
             shutdown=_ShutdownState(),
-            retry_store_path=None,
+            retry_store_path=self._retry_store_path(),
             max_jobs=1,
             forever=False,
             max_tries=1,
@@ -361,7 +732,7 @@ class CliTests(unittest.TestCase):
             console=console,
             err_console=err_console,
             shutdown=shutdown,
-            retry_store_path=None,
+            retry_store_path=self._retry_store_path(),
             max_jobs=1,
             forever=True,
             max_tries=1,
