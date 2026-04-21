@@ -11,3 +11,6 @@
 - Add worker identity metadata with `--worker-id` and `leased_by` for inflight
   message inspection.
 - Add focused examples for enqueueing and processing email jobs locally.
+- Add MIT license metadata for package distribution.
+- Add `dead_letter_on_failure` as the preferred worker failure policy option,
+  keeping `dead_letter_on_exhaustion` as a compatibility alias.

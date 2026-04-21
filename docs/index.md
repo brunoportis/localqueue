@@ -10,6 +10,7 @@ persistent retry state powered by [Tenacity](https://tenacity.readthedocs.io/en/
 The main entry point is `persistentqueue`: an LMDB-backed queue for at-least-once
 job delivery. The lower-level `persistentretry` package remains available when
 you only need durable retry budgets around an existing delivery mechanism.
+Both import packages are distributed by the `persistentretry` Python package.
 
 ## Install
 
@@ -163,3 +164,7 @@ Tests and in-memory workflows can use `MemoryAttemptStore` and `MemoryQueueStore
 - [Persistent retries](retries.md): decorators, low-level retryers, keys, stores, and exhaustion behavior.
 - [API reference](api.md): exported classes, functions, and protocols.
 - [Release checklist](release.md): manual versioning, build, smoke test, and publish steps.
+
+## License
+
+`persistentretry` is distributed under the MIT license.

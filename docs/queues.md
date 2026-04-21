@@ -50,17 +50,20 @@ def handle(job: dict[str, str]) -> str:
 result = handle()
 ```
 
-On success, the worker acknowledges the message. On failure, it dead-letters the
-message by default after the retry path raises.
+On success, the worker acknowledges the message. On final failure, it
+dead-letters the message by default after the retry path raises. A final failure
+can be retry-budget exhaustion or a non-retryable exception from the configured
+Tenacity retry policy.
 Worker handlers receive `message.value` as their first argument. Call the handler
 with no arguments to consume the next queued message.
 
-Change that behavior with `dead_letter_on_exhaustion=False`.
+Change that behavior with `dead_letter_on_failure=False`. The older
+`dead_letter_on_exhaustion` name is still accepted as a compatibility alias.
 
 ```python
 release_config = PersistentWorkerConfig(
     max_tries=3,
-    dead_letter_on_exhaustion=False,
+    dead_letter_on_failure=False,
     release_delay=30,
 )
 
