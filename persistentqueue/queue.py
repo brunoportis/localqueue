@@ -6,7 +6,7 @@ from queue import Empty, Full
 from threading import Condition
 from typing import Any
 
-from .store import LMDBQueueStore, QueueMessage, QueueStats, QueueStore
+from .store import QueueMessage, QueueStats, QueueStore, SQLiteQueueStore
 
 
 class PersistentQueue:
@@ -210,8 +210,10 @@ class PersistentQueue:
 
     def _get_store(self) -> QueueStore:
         if self._store is None:
-            self._store = LMDBQueueStore(
-                self._store_path if self._store_path is not None else "persistence_db"
+            self._store = SQLiteQueueStore(
+                self._store_path
+                if self._store_path is not None
+                else "persistence_queue.sqlite3"
             )
         return self._store
 

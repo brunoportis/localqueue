@@ -6,6 +6,7 @@ from .store import (
     QueueStats,
     QueueStore,
     QueueStoreLockedError,
+    SQLiteQueueStore,
 )
 from .worker import PersistentWorkerConfig, persistent_async_worker, persistent_worker
 
@@ -18,6 +19,7 @@ __all__ = [
     "QueueStats",
     "QueueStore",
     "QueueStoreLockedError",
+    "SQLiteQueueStore",
     "persistent_async_worker",
     "persistent_worker",
 ]
