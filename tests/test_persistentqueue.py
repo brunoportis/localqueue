@@ -7,6 +7,7 @@ import threading
 import time
 import unittest
 from queue import Empty, Full
+from pathlib import Path
 from typing import Any, cast
 from unittest import mock
 
@@ -20,14 +21,19 @@ from persistentqueue import (
     PersistentWorkerConfig,
     QueueMessage,
     QueueStoreLockedError,
+    SQLiteQueueStore,
     persistent_async_worker,
     persistent_worker,
 )
 from persistentqueue.store import (
+    _QueueRecord,
     _decode_record,
+    _dead_key,
+    _encode_record,
     _inflight_key,
     _message_key,
     _ready_key,
+    _sequence_from_index_key,
     _timestamp_from_inflight_key,
     _timestamp_from_ready_key,
 )
@@ -132,19 +138,95 @@ class PersistentQueueTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _ = queue.dead_letters(limit=-1)
 
-    def test_lmdb_store_persistence(self) -> None:
+    def test_sqlite_default_store_persistence(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            queue = PersistentQueue("test", store_path=tmpdir)
+            store_path = f"{tmpdir}/queue.sqlite3"
+            queue = PersistentQueue("test", store_path=store_path)
             _ = queue.put("persistent-item")
             self.assertEqual(queue.qsize(), 1)
 
             # Re-open same path
-            queue2 = PersistentQueue("test", store_path=tmpdir)
+            queue2 = PersistentQueue("test", store_path=store_path)
             self.assertEqual(queue2.qsize(), 1)
             msg = queue2.get_message()
             self.assertEqual(msg.value, "persistent-item")
             _ = queue2.ack(msg)
             self.assertTrue(queue2.empty())
+
+    def test_sqlite_store_queue_operations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SQLiteQueueStore(f"{tmpdir}/queue.sqlite3")
+            now = time.time()
+
+            _ = store.enqueue("jobs", "first", available_at=now)
+            second = store.enqueue("jobs", "second", available_at=now + 10)
+            third = store.enqueue("jobs", "third", available_at=now + 20)
+            self.assertTrue(store.ack("jobs", third.id))
+
+            self.assertEqual(store.qsize("jobs", now=now), 1)
+            self.assertFalse(store.empty("jobs", now=now))
+
+            leased = store.dequeue("jobs", lease_timeout=0.1, now=now)
+            assert leased is not None
+            self.assertEqual(leased.value, "first")
+            self.assertEqual(leased.attempts, 1)
+            self.assertEqual(store.qsize("jobs", now=now), 0)
+
+            self.assertTrue(store.release(leased.queue, leased.id, available_at=now))
+            leased_again = store.dequeue("jobs", lease_timeout=0.1, now=now)
+            assert leased_again is not None
+            self.assertEqual(leased_again.attempts, 2)
+            self.assertTrue(store.dead_letter(leased_again.queue, leased_again.id))
+
+            self.assertEqual(store.qsize("jobs", now=now + 10), 1)
+            self.assertEqual(store.purge("jobs"), 2)
+            self.assertEqual(store.purge("missing"), 0)
+            self.assertIsNone(store.dequeue("jobs", lease_timeout=1, now=now + 10))
+
+            self.assertFalse(store.ack("jobs", "missing"))
+            self.assertFalse(store.release("jobs", "missing", available_at=now))
+            self.assertFalse(store.dead_letter("jobs", "missing"))
+            self.assertFalse(store.requeue_dead("jobs", "missing", available_at=now))
+            self.assertEqual(second.value, "second")
+            store.close()
+
+    def test_sqlite_store_reclaims_expired_leases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SQLiteQueueStore(f"{tmpdir}/queue.sqlite3")
+            now = time.time()
+
+            _ = store.enqueue("jobs", "lease", available_at=now)
+            leased = store.dequeue("jobs", lease_timeout=0.1, now=now)
+            assert leased is not None
+
+            self.assertEqual(store.qsize("jobs", now=now), 0)
+            self.assertEqual(store.qsize("jobs", now=now + 1), 0)
+
+            reclaimed = store.dequeue("jobs", lease_timeout=0.1, now=now + 1)
+            assert reclaimed is not None
+            self.assertEqual(reclaimed.value, "lease")
+            self.assertEqual(reclaimed.attempts, 2)
+            store.close()
+
+    def test_sqlite_store_rejects_invalid_queue_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SQLiteQueueStore(f"{tmpdir}/queue.sqlite3")
+
+            with self.assertRaises(ValueError):
+                _ = store.enqueue("", "item", available_at=time.time())
+
+            with self.assertRaises(ValueError):
+                _ = store.enqueue("bad:name", "item", available_at=time.time())
+
+            store.close()
+
+    def test_sqlite_store_creates_parent_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "nested" / "queue.sqlite3"
+            store = SQLiteQueueStore(path)
+
+            self.assertTrue(path.exists())
+            store.close()
 
     def test_lmdb_store_queue_operations(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -153,6 +235,8 @@ class PersistentQueueTests(unittest.TestCase):
 
             _ = store.enqueue("jobs", "first", available_at=now)
             second = store.enqueue("jobs", "second", available_at=now + 10)
+            third = store.enqueue("jobs", "third", available_at=now + 20)
+            self.assertTrue(store.ack("jobs", third.id))
 
             self.assertEqual(store.qsize("jobs", now=now), 1)
             self.assertFalse(store.empty("jobs", now=now))
@@ -180,9 +264,9 @@ class PersistentQueueTests(unittest.TestCase):
             self.assertFalse(store.requeue_dead("jobs", "missing", available_at=now))
             self.assertEqual(second.value, "second")
 
-    def test_lmdb_stats_counts_dead_messages_outside_qsize(self) -> None:
+    def test_sqlite_stats_counts_dead_messages_outside_qsize(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            queue = PersistentQueue("jobs", store_path=tmpdir)
+            queue = PersistentQueue("jobs", store_path=f"{tmpdir}/queue.sqlite3")
             _ = queue.put("bad")
             message = queue.get_message()
             self.assertTrue(queue.dead_letter(message, error=RuntimeError("bad")))
@@ -193,14 +277,15 @@ class PersistentQueueTests(unittest.TestCase):
                 {"ready": 0, "delayed": 0, "inflight": 0, "dead": 1, "total": 1},
             )
 
-    def test_lmdb_dead_letters_persist(self) -> None:
+    def test_sqlite_dead_letters_persist(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            queue = PersistentQueue("jobs", store_path=tmpdir)
+            store_path = f"{tmpdir}/queue.sqlite3"
+            queue = PersistentQueue("jobs", store_path=store_path)
             _ = queue.put({"id": 1})
             message = queue.get_message()
             self.assertTrue(queue.dead_letter(message, error=TypeError("bad handler")))
 
-            reopened = PersistentQueue("jobs", store_path=tmpdir)
+            reopened = PersistentQueue("jobs", store_path=store_path)
             messages = reopened.dead_letters()
 
             self.assertEqual(len(messages), 1)
@@ -285,14 +370,15 @@ class PersistentQueueTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "JSON-serializable"):
                 _ = store.enqueue("jobs", object(), available_at=time.time())
 
-    def test_lmdb_store_persists_last_error(self) -> None:
+    def test_sqlite_store_persists_last_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            queue = PersistentQueue("jobs", store_path=tmpdir)
+            store_path = f"{tmpdir}/queue.sqlite3"
+            queue = PersistentQueue("jobs", store_path=store_path)
             _ = queue.put("bad")
             message = queue.get_message()
             self.assertTrue(queue.release(message, error=TypeError("bad handler")))
 
-            reopened = PersistentQueue("jobs", store_path=tmpdir)
+            reopened = PersistentQueue("jobs", store_path=store_path)
             failed = reopened.get_message()
 
             self.assertEqual(
@@ -321,6 +407,30 @@ class PersistentQueueTests(unittest.TestCase):
             _timestamp_from_inflight_key(_inflight_key("jobs", time.time(), "id")),
             float,
         )
+
+    def test_sequence_from_index_key_handles_non_ready_keys(self) -> None:
+        self.assertEqual(_sequence_from_index_key(b"\xff"), 0)
+        self.assertEqual(_sequence_from_index_key(_dead_key("jobs", "id")), 0)
+
+        store = SQLiteQueueStore(":memory:")
+        raw = _encode_record(
+            _QueueRecord(
+                id="id",
+                value="value",
+                queue="jobs",
+                attempts=0,
+                created_at=time.time(),
+                available_at=time.time(),
+                leased_until=None,
+                leased_by=None,
+                last_error=None,
+                failed_at=None,
+                state="ready",
+                index_key=None,
+            )
+        ).decode("utf-8")
+        self.assertEqual(store._sequence(raw), 0)
+        store.close()
 
     def test_decode_record_rejects_invalid_json_and_versions(self) -> None:
         with self.assertRaises(ValueError):
@@ -356,8 +466,8 @@ class PersistentQueueTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 _ = store.enqueue("bad:name", "item", available_at=time.time())
 
-    def test_default_lmdb_store_is_opened_lazily(self) -> None:
-        with mock.patch("persistentqueue.queue.LMDBQueueStore") as store_cls:
+    def test_default_sqlite_store_is_opened_lazily(self) -> None:
+        with mock.patch("persistentqueue.queue.SQLiteQueueStore") as store_cls:
             queue = PersistentQueue("test")
             store_cls.assert_not_called()
 
@@ -366,17 +476,26 @@ class PersistentQueueTests(unittest.TestCase):
             store_cls.return_value = fake_store
 
             self.assertTrue(queue.empty())
-            store_cls.assert_called_once_with("persistence_db")
+            store_cls.assert_called_once_with("persistence_queue.sqlite3")
 
     def test_lmdb_lock_error_is_reworded(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
+            fake_lmdb = mock.Mock()
+            fake_lmdb.LockError = lmdb.LockError
+            fake_lmdb.open.side_effect = lmdb.LockError("busy")
             with mock.patch(
-                "persistentqueue.store.lmdb.open", side_effect=lmdb.LockError("busy")
+                "persistentqueue.store._import_lmdb", return_value=fake_lmdb
             ):
                 with self.assertRaises(QueueStoreLockedError) as exc_info:
                     _ = LMDBQueueStore(tmpdir)
 
         self.assertIn("locked by another process", str(exc_info.exception))
+
+    def test_lmdb_store_requires_optional_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict("sys.modules", {"lmdb": None}):
+                with self.assertRaisesRegex(RuntimeError, "persistentretry\\[lmdb\\]"):
+                    _ = LMDBQueueStore(tmpdir)
 
     def test_lease_expiration_and_reclaim(self) -> None:
         store = MemoryQueueStore()

@@ -567,13 +567,22 @@ class PersistentRetryTests(unittest.TestCase):
 
     def test_lmdb_lock_error_is_reworded(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
+            fake_lmdb = mock.Mock()
+            fake_lmdb.LockError = lmdb.LockError
+            fake_lmdb.open.side_effect = lmdb.LockError("busy")
             with mock.patch(
-                "persistentretry.store.lmdb.open", side_effect=lmdb.LockError("busy")
+                "persistentretry.store._import_lmdb", return_value=fake_lmdb
             ):
                 with self.assertRaises(AttemptStoreLockedError) as exc_info:
                     _ = LMDBAttemptStore(tmpdir)
 
         self.assertIn("locked by another process", str(exc_info.exception))
+
+    def test_lmdb_store_requires_optional_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict("sys.modules", {"lmdb": None}):
+                with self.assertRaisesRegex(RuntimeError, "persistentretry\\[lmdb\\]"):
+                    _ = LMDBAttemptStore(tmpdir)
 
 
 if __name__ == "__main__":
