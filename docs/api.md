@@ -193,7 +193,7 @@ Both decorators require `key=` or `key_fn=` and accept the persistent options be
 | Option | Meaning |
 | --- | --- |
 | `store` | attempt store instance |
-| `store_path` | path for an LMDB attempt store |
+| `store_path` | path for an LMDB attempt-store directory |
 | `key` | fixed retry key |
 | `key_fn` | function that derives a retry key from the call |
 | `clear_on_success` | delete the attempt record after success |

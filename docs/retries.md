@@ -129,7 +129,8 @@ except PersistentRetryExhausted as exc:
 
 The default attempt store is SQLite at `./persistence_db.sqlite3`.
 
-Choose a path explicitly with `store_path=`.
+`store_path=` creates an LMDB attempt-store directory. Use it when you want the
+retry API to manage an LMDB backend directly.
 
 ```python
 from persistentretry import PersistentRetrying, key_from_argument
@@ -141,7 +142,26 @@ retryer = PersistentRetrying(
 )
 ```
 
-Provide a store instance with `store=` when you need full control or want in-memory tests.
+Provide a store instance with `store=` when you need SQLite, full control, or
+in-memory tests.
+
+```python
+from persistentretry import SQLiteAttemptStore, key_from_argument, persistent_retry
+
+store = SQLiteAttemptStore("/var/lib/my-worker/retries.sqlite3")
+
+
+@persistent_retry(
+    store=store,
+    key_fn=key_from_argument("job_id"),
+    max_tries=2,
+)
+def flaky(job_id: str) -> str:
+    ...
+```
+
+The CLI `retry_store_path` setting and `queue process --retry-store-path` use a
+SQLite file path.
 
 ```python
 from persistentretry import MemoryAttemptStore, key_from_argument, persistent_retry

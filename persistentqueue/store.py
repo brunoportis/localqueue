@@ -389,6 +389,7 @@ class LMDBQueueStore:
             self._env = env
 
     def enqueue(self, queue: str, value: Any, *, available_at: float) -> QueueMessage:
+        _validate_json_serializable(value)
         with self._env.begin(write=True) as txn:
             record = _QueueRecord.new(queue, value, available_at)
             seq = self._next_seq(txn, queue)
@@ -753,6 +754,13 @@ def _encode_record(record: _QueueRecord) -> bytes:
         else None,
     }
     return json.dumps(payload, separators=(",", ":")).encode("utf-8")
+
+
+def _validate_json_serializable(value: Any) -> None:
+    try:
+        _ = json.dumps(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("queue values must be JSON-serializable") from exc
 
 
 def _decode_record(raw: bytes) -> _QueueRecord:

@@ -60,15 +60,18 @@ The CLI reads YAML configuration from
 ```bash
 persistentretry config init --store-path ./persistence_db
 persistentretry config show
-persistentretry config set retry_store_path ./persistence_retries
+persistentretry config set retry_store_path ./persistence_retries.sqlite3
 ```
 
 Example config:
 
 ```yaml
 store_path: ./persistence_db
-retry_store_path: ./persistence_retries
+retry_store_path: ./persistence_retries.sqlite3
 ```
+
+`store_path` is the LMDB queue directory. `retry_store_path` is the SQLite file
+used by `queue process` to persist retry attempts.
 
 The CLI starts with queue management commands. Values are JSON by default.
 
@@ -89,6 +92,9 @@ Use `--raw` when the queue value should be stored as a string:
 ```bash
 persistentretry queue add emails --value user@example.com --raw
 ```
+
+Queue values are stored as JSON in the LMDB queue store, so values must be
+JSON-serializable.
 
 To process queued messages, pass an importable handler in `module:function`
 format. The handler receives the message value as its first argument. Successful
@@ -246,6 +252,10 @@ When a retry budget is exhausted, later calls with the same key raise
 The default queue store is LMDB at `./persistence_db`.
 
 The default retry store is SQLite at `./persistence_db.sqlite3`.
+The CLI `retry_store_path` setting also uses SQLite. In the Python retry API,
+`PersistentRetrying(store_path=...)` selects an LMDB attempt-store directory;
+pass `store=SQLiteAttemptStore("retries.sqlite3")` when you want a SQLite file
+explicitly.
 
 For tests, use `MemoryQueueStore` and `MemoryAttemptStore`.
 

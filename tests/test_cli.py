@@ -2,18 +2,19 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import sys
+import tempfile
 import types
 import unittest
 from io import StringIO
 from pathlib import Path
 from typing import Any
 from unittest import mock
-import tempfile
 import yaml
 
 from persistentqueue import MemoryQueueStore, PersistentQueue
-from persistentretry import MemoryAttemptStore
+from persistentretry import MemoryAttemptStore, SQLiteAttemptStore
 from persistentretry.cli import (
     CONFIG_FILENAME,
     _ShutdownState,
@@ -178,6 +179,37 @@ class CliTests(unittest.TestCase):
         failed = queue.get_message()
         self.assertEqual(failed.last_error, result.last_error)
         self.assertIsNotNone(failed.failed_at)
+
+    def test_process_message_uses_retry_store_path_as_sqlite_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            retry_store_path = str(Path(tmpdir) / "retries.sqlite3")
+            queue = PersistentQueue("emails", store=MemoryQueueStore())
+            _ = queue.put({"to": "user@example.com"})
+            message = queue.get_message()
+
+            def handler(_: dict[str, Any]) -> None:
+                raise ConnectionError("mail server down")
+
+            result = _process_message(
+                queue,
+                message,
+                handler,
+                retry_store_path=retry_store_path,
+                max_tries=1,
+                release_delay=0.0,
+                dead_letter_on_exhaustion=True,
+            )
+
+            self.assertFalse(result.processed)
+            self.assertTrue(Path(retry_store_path).is_file())
+            store = SQLiteAttemptStore(retry_store_path)
+            self.assertIsNotNone(store.load(message.id))
+            store.close()
+            with sqlite3.connect(retry_store_path) as connection:
+                names = connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            self.assertIn(("retry_records",), names)
 
     def test_process_queue_messages_preserves_batch_empty_exit(self) -> None:
         queue = PersistentQueue("emails", store=MemoryQueueStore())

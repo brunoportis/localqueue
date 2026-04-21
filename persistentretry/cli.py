@@ -17,7 +17,11 @@ from typing import Any, Iterator
 from tenacity import wait_none
 
 from persistentqueue import PersistentQueue, QueueMessage
-from persistentretry import PersistentRetryExhausted, PersistentRetrying
+from persistentretry import (
+    PersistentRetryExhausted,
+    PersistentRetrying,
+    SQLiteAttemptStore,
+)
 
 DEFAULT_STORE_PATH = "persistence_db"
 CONFIG_FILENAME = "config.yaml"
@@ -360,8 +364,8 @@ def _process_message(
     }
     if retry_store is not None:
         retry_kwargs["store"] = retry_store
-    if retry_store_path is not None:
-        retry_kwargs["store_path"] = retry_store_path
+    elif retry_store_path is not None:
+        retry_kwargs["store"] = SQLiteAttemptStore(retry_store_path)
 
     retryer = PersistentRetrying(**retry_kwargs)
     try:

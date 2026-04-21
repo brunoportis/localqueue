@@ -148,6 +148,9 @@ it does not infer a key from argument names or positions.
 
 The default retry store is SQLite; the default queue store remains LMDB-based.
 Tests and in-memory workflows can use `MemoryAttemptStore` and `MemoryQueueStore`.
+The CLI `retry_store_path` setting is a SQLite file path. In the Python retry
+API, `store_path=` selects an LMDB attempt-store directory; use
+`store=SQLiteAttemptStore("retries.sqlite3")` for an explicit SQLite file.
 
 ## Which API to use
 

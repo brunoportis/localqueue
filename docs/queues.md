@@ -90,7 +90,12 @@ send_email(item["to"])
 queue.task_done()
 ```
 
-`put_nowait()` and `get_nowait()` are available too. Blocking behavior and timeouts follow Python's `queue.Queue` conventions.
+`put_nowait()` and `get_nowait()` are available too. Blocking behavior and
+timeouts follow Python's `queue.Queue` conventions.
+
+Blocking consumers wait on an in-process condition and poll the LMDB store with
+a short sleep. This keeps multiple processes compatible with the same store, but
+there is no cross-process wake-up notification.
 
 ## Message lifecycle
 
@@ -192,7 +197,8 @@ from persistentqueue import MemoryQueueStore, PersistentQueue
 queue = PersistentQueue("jobs", store=MemoryQueueStore())
 ```
 
-`LMDBQueueStore` serializes records as versioned JSON. Queue values must be JSON-serializable.
+`LMDBQueueStore` serializes records as versioned JSON. Queue values must be
+JSON-serializable.
 
 ## Capacity and cleanup
 

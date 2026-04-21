@@ -278,6 +278,13 @@ class PersistentQueueTests(unittest.TestCase):
             self.assertEqual(payload["value"], {"kind": "email"})
             self.assertIsNone(payload["leased_by"])
 
+    def test_lmdb_store_rejects_non_json_serializable_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LMDBQueueStore(tmpdir)
+
+            with self.assertRaisesRegex(ValueError, "JSON-serializable"):
+                _ = store.enqueue("jobs", object(), available_at=time.time())
+
     def test_lmdb_store_persists_last_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             queue = PersistentQueue("jobs", store_path=tmpdir)
