@@ -27,7 +27,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --locked --dev
+        run: uv sync --locked --dev --extra all
 
       - name: Build docs
         run: uv run zensical build --clean
@@ -47,6 +47,8 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/configure-pages@v6
+        with:
+          enablement: true
 
       - name: Deploy docs
         id: deployment
