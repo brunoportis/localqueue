@@ -4,14 +4,27 @@ import json
 import sqlite3
 import threading
 import time
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
-import lmdb
+if TYPE_CHECKING:
+    import lmdb
 
-_ENVS: dict[tuple[str, int], lmdb.Environment] = {}
+_ENVS: dict[tuple[str, int], Any] = {}
 _ENVS_LOCK = threading.Lock()
+
+
+def _import_lmdb() -> Any:
+    try:
+        import lmdb
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "LMDB support requires the optional dependency; "
+            'install with `pip install "persistentretry[lmdb]"`'
+        ) from exc
+    return lmdb
 
 
 @dataclass(slots=True)
@@ -74,6 +87,7 @@ class LMDBAttemptStore:
     _env: lmdb.Environment
 
     def __init__(self, path: str | Path, *, map_size: int = 10**7) -> None:
+        lmdb = _import_lmdb()
         self.path = Path(path)
         self.path.mkdir(parents=True, exist_ok=True)
         key = (str(self.path.resolve()), map_size)
@@ -162,3 +176,7 @@ class SQLiteAttemptStore:
     def close(self) -> None:
         with self._lock:
             self._connection.close()
+
+    def __del__(self) -> None:  # pragma: no cover
+        with suppress(Exception):
+            self.close()

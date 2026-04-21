@@ -23,7 +23,7 @@ from persistentretry import (
     SQLiteAttemptStore,
 )
 
-DEFAULT_STORE_PATH = "persistence_db"
+DEFAULT_STORE_PATH = "persistence_queue.sqlite3"
 DEFAULT_RETRY_STORE_PATH = "persistence_db.sqlite3"
 CONFIG_FILENAME = "config.yaml"
 
@@ -47,7 +47,7 @@ def main(args: list[str] | None = None) -> None:
     except ImportError as exc:
         raise SystemExit(
             "The persistentretry CLI requires optional dependencies. "
-            "Install with: pip install 'persistentretry[all]'"
+            "Install with: pip install 'persistentretry[cli]'"
         ) from exc
 
     app = _build_app(typer, yaml, Console(), Console(stderr=True))
