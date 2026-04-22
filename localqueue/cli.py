@@ -290,9 +290,7 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         min_attempts: int | None = typer.Option(None, "--min-attempts", min=0),
         max_attempts: int | None = typer.Option(None, "--max-attempts", min=0),
         error_contains: str | None = typer.Option(None, "--error-contains"),
-        failed_within: float | None = typer.Option(
-            None, "--failed-within", min=0.0
-        ),
+        failed_within: float | None = typer.Option(None, "--failed-within", min=0.0),
     ) -> None:
         persistent_queue = _queue(queue, _resolve_store_path(store_path, config))
         with _shutdown_state() as shutdown:

@@ -346,7 +346,9 @@ class CliTests(unittest.TestCase):
             queue = PersistentQueue("emails", store_path=store_path)
             _ = queue.put({"to": "user@example.com"})
             message = queue.get_message()
-            self.assertTrue(queue.dead_letter(message, error=RuntimeError("mail timeout")))
+            self.assertTrue(
+                queue.dead_letter(message, error=RuntimeError("mail timeout"))
+            )
 
             result = self._invoke(
                 [

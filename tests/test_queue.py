@@ -270,7 +270,9 @@ class QueueTests(unittest.TestCase):
                     for sequence in range(total_messages // producer_count):
                         retry_sqlite_locked(
                             "put",
-                            lambda: queue.put({"producer": index, "sequence": sequence}),
+                            lambda: queue.put(
+                                {"producer": index, "sequence": sequence}
+                            ),
                         )
                 except BaseException as exc:  # pragma: no cover - defensive
                     record_error(exc)

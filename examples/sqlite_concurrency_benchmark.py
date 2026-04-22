@@ -136,12 +136,8 @@ def _run_benchmark(
             record_error(exc)
 
     threads = [
-        threading.Thread(target=producer, args=(index,))
-        for index in range(producers)
-    ] + [
-        threading.Thread(target=consumer, args=(index,))
-        for index in range(consumers)
-    ]
+        threading.Thread(target=producer, args=(index,)) for index in range(producers)
+    ] + [threading.Thread(target=consumer, args=(index,)) for index in range(consumers)]
 
     started_at = time.perf_counter()
     for thread in threads:
@@ -158,7 +154,9 @@ def _run_benchmark(
             record_error(TimeoutError("consumer thread did not finish"))
 
     elapsed = time.perf_counter() - started_at
-    queue = PersistentQueue(queue_name, store_path=store_path, lease_timeout=lease_timeout)
+    queue = PersistentQueue(
+        queue_name, store_path=store_path, lease_timeout=lease_timeout
+    )
     stats = queue.stats().as_dict()
     consumed_total = sum(consumed.values())
     throughput = consumed_total / elapsed if elapsed > 0 else 0.0
