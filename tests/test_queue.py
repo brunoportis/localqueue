@@ -261,7 +261,7 @@ class QueueTests(unittest.TestCase):
             now = time.time()
 
             _ = store.enqueue("jobs", "first", available_at=now)
-            second = store.enqueue("jobs", "second", available_at=now + 10)
+            _ = store.enqueue("jobs", "second", available_at=now + 10)
             third = store.enqueue("jobs", "third", available_at=now + 20)
             self.assertTrue(store.ack("jobs", third.id))
 
