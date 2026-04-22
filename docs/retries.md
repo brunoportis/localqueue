@@ -129,6 +129,11 @@ If you want a default retention policy, set `retry_record_ttl_seconds` with
 `localqueue config set`. Then `localqueue retry prune --dry-run` can preview the
 configured age and `localqueue retry prune` can use it directly.
 
+Rate limiting and breaker behavior live on the worker side, not inside the
+retry wrapper. Use `min_interval` to slow down a worker between messages and
+`circuit_breaker_failures` plus `circuit_breaker_cooldown` to pause a noisy
+worker after repeated recoverable failures.
+
 ## Retry keys
 
 Each persistent retry needs a stable key. Pass `key=` when the retryer is bound

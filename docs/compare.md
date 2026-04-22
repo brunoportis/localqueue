@@ -13,6 +13,8 @@ icon: lucide/inbox
 - you care more about operational simplicity than distributed scheduling
 - at-least-once delivery is acceptable
 - you want to inspect and requeue failed work from the terminal
+- you want worker-side controls like `min_interval`, queue-level retry defaults,
+  and a simple circuit breaker without introducing a broker
 
 ## Reach for something else when
 
@@ -21,6 +23,7 @@ icon: lucide/inbox
 - write contention is high
 - retention, metrics, sharding, or fanout are first-class requirements
 - you want a queue that is already part of a larger distributed platform
+- you need broker-level rate limiting or cross-host worker coordination
 
 ## Quick comparison
 

@@ -99,6 +99,33 @@ When a worker talks to a slow or fragile external service, add a small
 failing, use `circuit_breaker_failures` with `circuit_breaker_cooldown` so the
 worker pauses before it fetches the next message.
 
+```python
+from localqueue import PersistentQueue, PersistentWorkerConfig, persistent_worker
+from tenacity import retry_if_exception_type, wait_fixed
+
+queue = PersistentQueue("webhooks")
+queue.put({"url": "https://example.com/hook"})
+
+config = PersistentWorkerConfig(
+    max_tries=3,
+    wait=wait_fixed(2),
+    retry=retry_if_exception_type((ConnectionError, TimeoutError)),
+    min_interval=0.5,
+    circuit_breaker_failures=5,
+    circuit_breaker_cooldown=30,
+)
+
+
+@persistent_worker(queue, config=config)
+def deliver_webhook(payload: dict[str, str]) -> None:
+    post_json(payload["url"], payload)
+```
+
+Use a small `min_interval` when the downstream API should not be hit in quick
+bursts. Use the breaker when repeated recoverable failures should pause the
+worker long enough for the dependency to recover or for an operator to inspect
+the failure mode.
+
 Use `persistent_async_worker()` for async handlers. Queue operations are performed
 off the event loop with `asyncio.to_thread()`.
 
