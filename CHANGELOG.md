@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.0
+
 - Add `queue stats --watch` for monitoring queue counts while workers run.
 - Add `queue dead --watch` for repeatedly listing dead letters.
 - Add `queue requeue-dead --all` for bulk recovery after a fix.

@@ -1,6 +1,6 @@
 [project]
 name = "localqueue"
-version = "0.1.1"
+version = "0.2.0"
 description = "Durable local queues for Python, with persistent retry state powered by Tenacity."
 readme = "README.md"
 requires-python = ">=3.11"
