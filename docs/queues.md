@@ -120,6 +120,33 @@ want pipes, redirects, shell expansion, or multiple commands.
 See `examples/process_webhook.sh` for a shell worker that reads JSON, extracts
 fields with `jq`, and posts them with `curl`.
 
+## Operational flow
+
+A small end-to-end queue flow usually looks like this:
+
+```bash
+localqueue queue add webhooks --value '{"url":"https://example.com/hook"}'
+localqueue queue exec webhooks -- sh examples/process_webhook.sh
+localqueue queue health webhooks
+localqueue queue dead webhooks --summary
+localqueue retry prune --dry-run --older-than 604800
+```
+
+The same flow also works as a shell script when you want a repeatable terminal
+recipe:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+localqueue queue add webhooks --value '{"url":"https://example.com/hook"}'
+localqueue queue exec webhooks -- sh examples/process_webhook.sh
+localqueue queue stats webhooks --watch --interval 1
+```
+
+Pass `--log-events` on the CLI when you want structured JSON transition events
+on stderr for enqueue, lease, ack, release, dead-letter, requeue, and purge.
+
 ## Queue-style usage
 
 For simple workflows, use the familiar `put()`, `get()`, and `task_done()` methods.

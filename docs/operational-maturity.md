@@ -84,7 +84,7 @@ That means measuring the current ceiling before promising more:
 - [x] Track queue latency, handler duration, and time spent inflight.
 - [x] Track throughput by queue and worker id.
 - [x] Add aggregate failure summaries for dead-letter inspection.
-- [ ] Evaluate structured event logging for enqueue, lease, ack, release, and
+- [x] Evaluate structured event logging for enqueue, lease, ack, release, and
   dead-letter transitions.
 
 ## Storage operations

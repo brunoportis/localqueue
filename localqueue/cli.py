@@ -36,6 +36,7 @@ CONFIG_FILENAME = "config.yaml"
 class _ProcessResult:
     processed: bool
     last_error: dict[str, Any] | None = None
+    final_state: str | None = None
 
 
 @dataclass(slots=True)
@@ -178,6 +179,7 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         store_path: str | None = typer.Option(None, "--store-path"),
         delay: float = typer.Option(0.0, "--delay", min=0.0),
         raw: bool = typer.Option(False, "--raw"),
+        log_events: bool = typer.Option(False, "--log-events"),
     ) -> None:
         try:
             payload_value = _read_value(value)
@@ -187,6 +189,15 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         message = _queue(queue, _resolve_store_path(store_path, config)).put(
             payload, delay=delay
         )
+        if log_events:
+            _emit_event(
+                err_console,
+                "queue.enqueue",
+                queue=queue,
+                message_id=message.id,
+                state=message.state,
+                available_at=message.available_at,
+            )
         _print_json(console, _message_payload(message))
 
     @queue_app.command("pop")
@@ -197,6 +208,7 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         worker_id: str | None = typer.Option(None, "--worker-id"),
         block: bool = typer.Option(False, "--block"),
         timeout: float | None = typer.Option(None, "--timeout", min=0.0),
+        log_events: bool = typer.Option(False, "--log-events"),
     ) -> None:
         try:
             message = _queue(
@@ -207,6 +219,16 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         except Empty as exc:
             err_console.print("[yellow]queue is empty[/yellow]")
             raise typer.Exit(1) from exc
+        if log_events:
+            _emit_event(
+                err_console,
+                "queue.lease",
+                queue=message.queue,
+                message_id=message.id,
+                leased_by=message.leased_by,
+                attempts=message.attempts,
+                leased_until=message.leased_until,
+            )
         _print_json(console, _message_payload(message))
 
     @queue_app.command("inspect")
@@ -229,6 +251,7 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         queue: str,
         message_id: str,
         store_path: str | None = typer.Option(None, "--store-path"),
+        log_events: bool = typer.Option(False, "--log-events"),
     ) -> None:
         _complete_message(
             typer,
@@ -238,6 +261,7 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
             _resolve_store_path(store_path, config),
             message_id,
             "ack",
+            log_events=log_events,
         )
 
     @queue_app.command("release")
@@ -246,6 +270,7 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         message_id: str,
         store_path: str | None = typer.Option(None, "--store-path"),
         delay: float = typer.Option(0.0, "--delay", min=0.0),
+        log_events: bool = typer.Option(False, "--log-events"),
     ) -> None:
         _complete_message(
             typer,
@@ -256,6 +281,7 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
             message_id,
             "release",
             delay=delay,
+            log_events=log_events,
         )
 
     @queue_app.command("dead-letter")
@@ -263,6 +289,7 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         queue: str,
         message_id: str,
         store_path: str | None = typer.Option(None, "--store-path"),
+        log_events: bool = typer.Option(False, "--log-events"),
     ) -> None:
         _complete_message(
             typer,
@@ -272,6 +299,7 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
             _resolve_store_path(store_path, config),
             message_id,
             "dead-letter",
+            log_events=log_events,
         )
 
     @queue_app.command("size")
@@ -428,6 +456,7 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         store_path: str | None = typer.Option(None, "--store-path"),
         delay: float = typer.Option(0.0, "--delay", min=0.0),
         all_: bool = typer.Option(False, "--all"),
+        log_events: bool = typer.Option(False, "--log-events"),
     ) -> None:
         persistent_queue = _queue(queue, _resolve_store_path(store_path, config))
         if all_:
@@ -441,6 +470,15 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
             for message in messages:
                 if persistent_queue.requeue_dead(message, delay=delay):
                     requeued += 1
+            if log_events:
+                _emit_event(
+                    err_console,
+                    "queue.requeue",
+                    queue=queue,
+                    all=True,
+                    requeued=requeued,
+                    delay=delay,
+                )
             _print_json(console, {"requeued": requeued})
             return
         if message_id is None:
@@ -452,14 +490,26 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         if not persistent_queue.requeue_dead(message, delay=delay):
             err_console.print(f"[red]dead-letter message not found:[/red] {message_id}")
             raise typer.Exit(1)
+        if log_events:
+            _emit_event(
+                err_console,
+                "queue.requeue",
+                queue=queue,
+                message_id=message_id,
+                delay=delay,
+            )
         _print_json(console, {"id": message_id, "state": "requeued"})
 
     @queue_app.command("purge")
     def queue_purge(
         queue: str,
         store_path: str | None = typer.Option(None, "--store-path"),
+        log_events: bool = typer.Option(False, "--log-events"),
     ) -> None:
-        console.print(_queue(queue, _resolve_store_path(store_path, config)).purge())
+        deleted = _queue(queue, _resolve_store_path(store_path, config)).purge()
+        if log_events:
+            _emit_event(err_console, "queue.purge", queue=queue, deleted=deleted)
+        console.print(deleted)
 
     @queue_app.command("process")
     def queue_process(
@@ -480,6 +530,7 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
             True,
             "--dead-letter-on-exhaustion/--release-on-exhaustion",
         ),
+        log_events: bool = typer.Option(False, "--log-events"),
     ) -> None:
         try:
             _validate_worker_loop_options(
@@ -516,6 +567,8 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
                 idle_sleep=idle_sleep,
                 release_delay=release_delay,
                 dead_letter_on_exhaustion=dead_letter_on_exhaustion,
+                log_events=log_events,
+                mode="process",
             )
         if exit_code:
             raise typer.Exit(exit_code)
@@ -542,6 +595,7 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
             True,
             "--dead-letter-on-exhaustion/--release-on-exhaustion",
         ),
+        log_events: bool = typer.Option(False, "--log-events"),
     ) -> None:
         try:
             _validate_worker_loop_options(
@@ -573,6 +627,8 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
                 idle_sleep=idle_sleep,
                 release_delay=release_delay,
                 dead_letter_on_exhaustion=dead_letter_on_exhaustion,
+                log_events=log_events,
+                mode="exec",
             )
         if exit_code:
             raise typer.Exit(exit_code)
@@ -596,6 +652,7 @@ def _complete_message(
     action: str,
     *,
     delay: float = 0.0,
+    log_events: bool = False,
 ) -> None:
     persistent_queue = _queue(queue, store_path)
     message = QueueMessage(id=message_id, value=None, queue=queue)
@@ -611,6 +668,14 @@ def _complete_message(
     if not completed:
         err_console.print(f"[red]message not found:[/red] {message_id}")
         raise typer.Exit(1)
+    if log_events:
+        _emit_event(
+            err_console,
+            f"queue.{action.replace('-', '_')}",
+            queue=queue,
+            message_id=message_id,
+            delay=delay if action == "release" else None,
+        )
     _print_json(console, {"id": message_id, "state": action})
 
 
@@ -624,6 +689,9 @@ def _process_message(
     max_tries: int,
     release_delay: float,
     dead_letter_on_exhaustion: bool,
+    log_events: bool = False,
+    mode: str = "process",
+    err_console: Any | None = None,
 ) -> _ProcessResult:
     retry_kwargs: dict[str, Any] = {
         "key": message.id,
@@ -650,7 +718,19 @@ def _process_message(
                 dead_letter_on_exhaustion=dead_letter_on_exhaustion,
                 error=exc,
             )
-            return _ProcessResult(processed=False, last_error=last_error)
+            if log_events and err_console is not None:
+                _emit_event(
+                    err_console,
+                    f"{mode}.dead_letter",
+                    queue=message.queue,
+                    message_id=message.id,
+                    attempts=message.attempts,
+                    leased_by=message.leased_by,
+                    last_error=last_error,
+                )
+            return _ProcessResult(
+                processed=False, last_error=last_error, final_state="dead-letter"
+            )
         except Exception as exc:
             last_error = _error_payload(exc)
             record = retryer.get_record(message.id)
@@ -665,11 +745,35 @@ def _process_message(
                     else dead_letter_on_exhaustion,
                     error=exc,
                 )
+                final_state = "dead-letter"
             else:
                 _ = queue.release(message, delay=release_delay, error=exc)
-            return _ProcessResult(processed=False, last_error=last_error)
+                final_state = "release"
+            if log_events and err_console is not None:
+                _emit_event(
+                    err_console,
+                    f"{mode}.{final_state.replace('-', '_')}",
+                    queue=message.queue,
+                    message_id=message.id,
+                    attempts=message.attempts,
+                    leased_by=message.leased_by,
+                    last_error=last_error,
+                )
+            return _ProcessResult(
+                processed=False, last_error=last_error, final_state=final_state
+            )
 
-        return _ProcessResult(processed=queue.ack(message))
+        acked = queue.ack(message)
+        if log_events and err_console is not None:
+            _emit_event(
+                err_console,
+                f"{mode}.ack",
+                queue=message.queue,
+                message_id=message.id,
+                attempts=message.attempts,
+                leased_by=message.leased_by,
+            )
+        return _ProcessResult(processed=acked, final_state="acked")
     finally:
         if owned_retry_store is not None:
             owned_retry_store.close()
@@ -692,6 +796,8 @@ def _process_queue_messages(
     idle_sleep: float,
     release_delay: float,
     dead_letter_on_exhaustion: bool,
+    log_events: bool = False,
+    mode: str = "process",
 ) -> int:
     processed = 0
 
@@ -713,9 +819,21 @@ def _process_queue_messages(
                     time.sleep(idle_sleep)
                 continue
             if processed == 0:
-                err_console.print("[yellow]queue is empty[/yellow]")
+                if err_console is not None:
+                    err_console.print("[yellow]queue is empty[/yellow]")
                 return 1
             break
+
+        if log_events and err_console is not None:
+            _emit_event(
+                err_console,
+                f"{mode}.lease",
+                queue=message.queue,
+                message_id=message.id,
+                leased_by=message.leased_by,
+                attempts=message.attempts,
+                leased_until=message.leased_until,
+            )
 
         result = _process_message(
             queue,
@@ -725,6 +843,9 @@ def _process_queue_messages(
             max_tries=max_tries,
             release_delay=release_delay,
             dead_letter_on_exhaustion=dead_letter_on_exhaustion,
+            log_events=log_events,
+            mode=mode,
+            err_console=err_console,
         )
         if result.processed:
             processed += 1
@@ -1114,3 +1235,11 @@ def _truncate_output(value: str, *, limit: int = 500) -> str:
 
 def _print_json(console: Any, value: Any) -> None:
     console.print_json(_json_dumps(value))
+
+
+def _emit_event(console: Any, event: str, **fields: Any) -> None:
+    payload = {
+        "event": event,
+        **{key: value for key, value in fields.items() if value is not None},
+    }
+    _print_json(console, payload)

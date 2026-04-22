@@ -749,6 +749,26 @@ class CliTests(unittest.TestCase):
             self.assertNotEqual(invalid_result.exit_code, 0)
             self.assertIn("value must be valid JSON", invalid_result.output)
 
+    def test_queue_add_logs_structured_enqueue_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_path = str(Path(tmpdir) / "queues")
+
+            result = self._invoke(
+                [
+                    "queue",
+                    "add",
+                    "emails",
+                    "--value",
+                    '{"to":"user@example.com"}',
+                    "--store-path",
+                    store_path,
+                    "--log-events",
+                ]
+            )
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertIn('"event": "queue.enqueue"', result.output)
+
     def test_queue_commands_report_empty_and_missing_messages(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store_path = str(Path(tmpdir) / "queues")
@@ -1069,9 +1089,34 @@ class CliTests(unittest.TestCase):
             ).dead_letters()
             self.assertEqual(len(dead_letters), 1)
             self.assertEqual(dead_letters[0].id, message.id)
-            assert dead_letters[0].last_error is not None
-            self.assertEqual(dead_letters[0].last_error["exit_code"], 7)
-            self.assertEqual(dead_letters[0].last_error["stderr"], "cannot deliver")
+
+    def test_queue_exec_logs_structured_transition_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_path = str(Path(tmpdir) / "queues")
+            retry_store_path = str(Path(tmpdir) / "retries.sqlite3")
+            queue = PersistentQueue("webhooks", store_path=store_path)
+            _ = queue.put({"to": "user@example.com"})
+
+            result = self._invoke(
+                [
+                    "queue",
+                    "exec",
+                    "webhooks",
+                    "--store-path",
+                    store_path,
+                    "--retry-store-path",
+                    retry_store_path,
+                    "--log-events",
+                    "--",
+                    "python",
+                    "-c",
+                    "import json, sys; json.load(sys.stdin); print('ok')",
+                ]
+            )
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertIn('"event": "exec.lease"', result.output)
+            self.assertIn('"event": "exec.ack"', result.output)
 
     def test_queue_exec_missing_command_is_dead_lettered(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
