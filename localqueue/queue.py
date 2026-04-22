@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from collections.abc import Mapping
 from queue import Empty, Full
 from threading import Condition
 from typing import Any
@@ -15,6 +16,7 @@ class PersistentQueue:
     maxsize: int
     _store: QueueStore | None
     _store_path: Path | None
+    retry_defaults: dict[str, Any]
     _condition: Condition
     _unfinished: list[QueueMessage]
 
@@ -26,6 +28,7 @@ class PersistentQueue:
         store_path: str | Path | None = None,
         lease_timeout: float = 30.0,
         maxsize: int = 0,
+        retry_defaults: Mapping[str, Any] | None = None,
     ) -> None:
         if store is not None and store_path is not None:
             raise ValueError("pass either store= or store_path=, not both")
@@ -33,12 +36,15 @@ class PersistentQueue:
             raise ValueError("lease_timeout must be greater than zero")
         if maxsize < 0:
             raise ValueError("maxsize cannot be negative")
+        if retry_defaults is not None and not isinstance(retry_defaults, Mapping):
+            raise TypeError("retry_defaults must be a mapping")
 
         self.name = name
         self.lease_timeout = lease_timeout
         self.maxsize = maxsize
         self._store = store
         self._store_path = Path(store_path) if store_path is not None else None
+        self.retry_defaults = dict(retry_defaults or {})
         self._condition = Condition()
         self._unfinished = []
 

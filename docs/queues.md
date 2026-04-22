@@ -21,10 +21,16 @@ queue = PersistentQueue(
     "emails",
     store_path="./localqueue_queue.sqlite3",
     lease_timeout=30.0,
+    retry_defaults={
+        "max_tries": 3,
+    },
 )
 ```
 
 The queue name identifies an independent stream inside the store. Queue names cannot be empty and cannot contain `:`.
+Queue-level retry defaults are merged into worker retry kwargs before explicit
+worker overrides, so the same policy can be reused across several workers that
+consume the same queue.
 
 ## Retry-aware workers
 
@@ -60,6 +66,10 @@ can be retry-budget exhaustion or a non-retryable exception from the configured
 Tenacity retry policy.
 Worker handlers receive `message.value` as their first argument. Call the handler
 with no arguments to consume the next queued message.
+
+For shared queue-wide retry defaults, attach `retry_defaults` to the
+`PersistentQueue` and let workers inherit those Tenacity arguments unless the
+worker passes explicit overrides.
 
 `localqueue` treats validation-style failures such as `ValueError`, `TypeError`,
 `KeyError`, `IndexError`, and missing command execution as permanent failures.

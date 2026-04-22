@@ -113,6 +113,14 @@ def _resolve_config(
     )
 
 
+def _resolve_retry_kwargs(
+    queue: PersistentQueue, retry_kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    if not queue.retry_defaults:
+        return dict(retry_kwargs)
+    return {**queue.retry_defaults, **retry_kwargs}
+
+
 def persistent_worker(
     queue: PersistentQueue,
     *,
@@ -129,11 +137,12 @@ def persistent_worker(
         release_delay=release_delay,
         retry_kwargs=retry_kwargs,
     )
+    retry_kwargs = _resolve_retry_kwargs(queue, worker_config.retry_kwargs)
 
     def decorator(fn: WrappedFn) -> Callable[..., Any]:
         def wrapped(*args: Any, **kwargs: Any) -> Any:
             message = queue.get_message()
-            retryer = PersistentRetrying(key=message.id, **worker_config.retry_kwargs)
+            retryer = PersistentRetrying(key=message.id, **retry_kwargs)
             try:
                 result = retryer(fn, message.value, *args, **kwargs)
             except Exception as exc:
@@ -166,13 +175,12 @@ def persistent_async_worker(
         release_delay=release_delay,
         retry_kwargs=retry_kwargs,
     )
+    retry_kwargs = _resolve_retry_kwargs(queue, worker_config.retry_kwargs)
 
     def decorator(fn: WrappedFn) -> Callable[..., Any]:
         async def wrapped(*args: Any, **kwargs: Any) -> Any:
             message = await _get_message_async(queue)
-            retryer = PersistentAsyncRetrying(
-                key=message.id, **worker_config.retry_kwargs
-            )
+            retryer = PersistentAsyncRetrying(key=message.id, **retry_kwargs)
             try:
                 result = await retryer(fn, message.value, *args, **kwargs)
             except Exception as exc:

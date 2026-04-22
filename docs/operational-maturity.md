@@ -69,7 +69,7 @@ That means measuring the current ceiling before promising more:
 
 - [x] Add examples for different policies by exception type.
 - [x] Evaluate built-in permanent-failure classification.
-- [ ] Evaluate queue-level retry defaults that can be reused by many workers.
+- [x] Evaluate queue-level retry defaults that can be reused by many workers.
 - [ ] Evaluate rate limiting for handlers that call external services.
 - [ ] Evaluate circuit-breaker integration or documentation.
 - [ ] Add clearer guidance for `release_delay`, Tenacity `wait`, and

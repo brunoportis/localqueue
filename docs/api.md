@@ -24,6 +24,7 @@ Constructor options:
 | `store_path` | path for the default SQLite queue store |
 | `lease_timeout` | seconds before an inflight message is redelivered |
 | `maxsize` | maximum number of ready messages; `0` means unbounded |
+| `retry_defaults` | Tenacity retry keyword defaults inherited by workers |
 
 Core methods:
 
@@ -77,6 +78,11 @@ Constructor options:
 | `dead_letter_on_exhaustion` | compatibility alias for `dead_letter_on_failure` |
 | `release_delay` | delay used when releasing failed messages |
 | `**retry_kwargs` | forwarded to `PersistentRetrying` |
+
+Queue-level retry defaults can also be attached to `PersistentQueue` and are
+merged into worker retry kwargs before explicit worker overrides. That keeps
+shared queue policies close to the queue definition while still letting a
+worker override a specific retry parameter when needed.
 
 #### `QueueMessage`
 

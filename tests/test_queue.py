@@ -58,6 +58,9 @@ class QueueTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _ = PersistentQueue("test", store=store, maxsize=-1)
 
+        with self.assertRaises(TypeError):
+            _ = PersistentQueue("test", store=store, retry_defaults=cast(Any, []))
+
     def test_memory_store_basic_ops(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())
         self.assertTrue(queue.empty())
@@ -1411,6 +1414,47 @@ class QueueTests(unittest.TestCase):
 
         self.assertTrue(queue.empty())
 
+    def test_worker_uses_queue_retry_defaults(self) -> None:
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            retry_defaults={"max_tries": 1, "wait": lambda _: 0},
+        )
+        _ = queue.put("retry")
+
+        @persistent_worker(queue, store=MemoryAttemptStore())
+        def release(value: str) -> None:
+            raise RuntimeError(value)
+
+        with self.assertRaises(RuntimeError):
+            cast(Any, release)()
+
+        self.assertTrue(queue.empty())
+        dead_letters = queue.dead_letters()
+        self.assertEqual(len(dead_letters), 1)
+        self.assertEqual(dead_letters[0].value, "retry")
+
+    def test_worker_retry_defaults_can_be_overridden(self) -> None:
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            retry_defaults={"max_tries": 1, "wait": lambda _: 0},
+        )
+        _ = queue.put("retry")
+        attempts = {"count": 0}
+
+        @persistent_worker(
+            queue, store=MemoryAttemptStore(), max_tries=2, wait=lambda _: 0
+        )
+        def release(value: str) -> str:
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise RuntimeError(value)
+            return value.upper()
+
+        self.assertEqual(cast(Any, release)(), "RETRY")
+        self.assertEqual(attempts["count"], 2)
+
     def test_worker_prefers_dead_letter_on_failure_name(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())
         _ = queue.put("retry")
@@ -1510,6 +1554,28 @@ class QueueTests(unittest.TestCase):
             attempts = {"count": 0}
 
             @persistent_async_worker(queue, config=config)
+            async def handle(value: str) -> str:
+                attempts["count"] += 1
+                if attempts["count"] == 1:
+                    raise RuntimeError("try again")
+                return value.upper()
+
+            self.assertEqual(await cast(Any, handle)(), "A")
+            self.assertEqual(attempts["count"], 2)
+
+        asyncio.run(scenario())
+
+    def test_async_worker_uses_queue_retry_defaults(self) -> None:
+        async def scenario() -> None:
+            queue = PersistentQueue(
+                "test",
+                store=MemoryQueueStore(),
+                retry_defaults={"max_tries": 2, "wait": lambda _: 0},
+            )
+            _ = queue.put("a")
+            attempts = {"count": 0}
+
+            @persistent_async_worker(queue, store=MemoryAttemptStore())
             async def handle(value: str) -> str:
                 attempts["count"] += 1
                 if attempts["count"] == 1:
