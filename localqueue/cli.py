@@ -369,6 +369,14 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         ),
     ) -> None:
         try:
+            _validate_worker_loop_options(
+                max_jobs=max_jobs,
+                forever=forever,
+            )
+        except ValueError as exc:
+            err_console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from exc
+        try:
             worker = _load_callable(handler)
         except (AttributeError, ImportError, TypeError, ValueError) as exc:
             err_console.print(f"[red]{exc}[/red]")
@@ -422,6 +430,14 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
             "--dead-letter-on-exhaustion/--release-on-exhaustion",
         ),
     ) -> None:
+        try:
+            _validate_worker_loop_options(
+                max_jobs=max_jobs,
+                forever=forever,
+            )
+        except ValueError as exc:
+            err_console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from exc
         persistent_queue = _queue(
             queue,
             _resolve_store_path(store_path, config),
@@ -669,6 +685,11 @@ def _poll_timeout(forever: bool, block: bool, timeout: float | None) -> float | 
     if forever and block and timeout is None:
         return 0.5
     return timeout
+
+
+def _validate_worker_loop_options(*, max_jobs: int, forever: bool) -> None:
+    if forever and max_jobs != 1:
+        raise ValueError("pass either --forever or --max-jobs, not both")
 
 
 @contextmanager

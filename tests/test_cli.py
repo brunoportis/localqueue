@@ -340,6 +340,41 @@ class CliTests(unittest.TestCase):
             self.assertEqual(summary["count"], 1)
             self.assertEqual(summary["by_error_type"]["None"], 1)
 
+    def test_queue_process_rejects_forever_with_max_jobs(self) -> None:
+        result = self._invoke(
+            [
+                "queue",
+                "process",
+                "emails",
+                "main:handle",
+                "--forever",
+                "--max-jobs",
+                "2",
+            ]
+        )
+
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn("pass either --forever or --max-jobs, not both", result.output)
+
+    def test_queue_exec_rejects_forever_with_max_jobs(self) -> None:
+        result = self._invoke(
+            [
+                "queue",
+                "exec",
+                "emails",
+                "--forever",
+                "--max-jobs",
+                "2",
+                "--",
+                "python",
+                "-c",
+                "print('ok')",
+            ]
+        )
+
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn("pass either --forever or --max-jobs, not both", result.output)
+
     def test_queue_dead_filters_by_error_text_and_failed_age(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store_path = str(Path(tmpdir) / "queues")

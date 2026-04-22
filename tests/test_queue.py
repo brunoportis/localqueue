@@ -994,6 +994,14 @@ class QueueTests(unittest.TestCase):
                 dead_letter_on_exhaustion=False,
             )
 
+    def test_worker_config_rejects_negative_release_delay(self) -> None:
+        with self.assertRaises(ValueError):
+            _ = PersistentWorkerConfig(release_delay=-1)
+
+        config = PersistentWorkerConfig(release_delay=0.0)
+        with self.assertRaises(ValueError):
+            _ = config.with_overrides(release_delay=-1)
+
     def test_async_worker_accepts_config(self) -> None:
         async def scenario() -> None:
             queue = PersistentQueue("test", store=MemoryQueueStore())

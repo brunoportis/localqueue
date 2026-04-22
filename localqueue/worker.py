@@ -35,6 +35,11 @@ def _resolve_dead_letter_on_failure(
     return True
 
 
+def _validate_release_delay(release_delay: float) -> None:
+    if release_delay < 0:
+        raise ValueError("release_delay must be greater than or equal to zero")
+
+
 class PersistentWorkerConfig:
     dead_letter_on_failure: bool
     dead_letter_on_exhaustion: bool
@@ -53,6 +58,7 @@ class PersistentWorkerConfig:
             dead_letter_on_failure=dead_letter_on_failure,
             dead_letter_on_exhaustion=dead_letter_on_exhaustion,
         )
+        _validate_release_delay(release_delay)
         self.dead_letter_on_failure = resolved
         self.dead_letter_on_exhaustion = resolved
         self.release_delay = release_delay
@@ -71,6 +77,8 @@ class PersistentWorkerConfig:
             dead_letter_on_failure=dead_letter_on_failure,
             dead_letter_on_exhaustion=dead_letter_on_exhaustion,
         )
+        if release_delay is not _UNSET:
+            _validate_release_delay(cast(float, release_delay))
         return PersistentWorkerConfig(
             dead_letter_on_failure=(
                 self.dead_letter_on_failure

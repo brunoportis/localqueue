@@ -356,6 +356,9 @@ localqueue queue process emails myapp.workers:send_email \
 Use `Ctrl-C` for interactive workers. Use `SIGTERM` for supervised workers
 started by systemd, Docker, or another process manager.
 
+The CLI rejects `--forever` together with `--max-jobs`; use batch mode or
+continuous mode, not both.
+
 When you need a controlled stop in your own wrapper, forward the signal and let
 the worker exit on its own instead of killing the process immediately.
 

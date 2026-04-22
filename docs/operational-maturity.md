@@ -74,6 +74,8 @@ That means measuring the current ceiling before promising more:
 - [ ] Evaluate circuit-breaker integration or documentation.
 - [ ] Add clearer guidance for `release_delay`, Tenacity `wait`, and
   `lease_timeout` interactions.
+- [x] Reject ambiguous worker-loop combinations such as `--forever` with
+  `--max-jobs`.
 
 ## Observability
 
