@@ -1384,6 +1384,7 @@ class CliTests(unittest.TestCase):
                 console=console,
                 watch=True,
                 interval=0.001,
+                stale_after=None,
                 shutdown=shutdown,
             )
 
@@ -1727,6 +1728,7 @@ class CliTests(unittest.TestCase):
         second = queue.put("second")
         leased = queue.get_message(leased_by="worker-a")
         assert leased is not None
+        queue.record_worker_heartbeat("worker-a")
         self.assertTrue(queue.dead_letter(leased, error=RuntimeError("boom")))
         queue.release(second, error=RuntimeError("retry"))
 
@@ -1783,10 +1785,56 @@ class CliTests(unittest.TestCase):
             console=stats_console,
             watch=True,
             interval=0.0,
+            stale_after=10.0,
             shutdown=_ShutdownState(requested=True),
         )
         self.assertGreaterEqual(len(dead_console.values), 1)
         self.assertGreaterEqual(len(stats_console.values), 1)
+        self.assertIn("worker_health", stats_console.values[0])
+
+    def test_queue_health_reports_worker_liveness(self) -> None:
+        from rich.console import Console
+        import typer
+        from typer.testing import CliRunner
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_path = str(Path(tmpdir) / "queues.sqlite3")
+            queue = PersistentQueue("emails", store_path=store_path)
+            queue.record_worker_heartbeat("worker-a")
+
+            app = _build_app(typer, yaml, Console(), Console(stderr=True))
+            result = CliRunner().invoke(
+                app,
+                [
+                    "queue",
+                    "health",
+                    "emails",
+                    "--store-path",
+                    store_path,
+                    "--stale-after",
+                    "10",
+                    "--json",
+                ],
+            )
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["queue"], "emails")
+            self.assertEqual(
+                payload["worker_health"]["active"]["count"],
+                1,
+            )
+            self.assertEqual(
+                payload["worker_health"]["stale"]["count"],
+                0,
+            )
+            self.assertIn(
+                "worker-a", payload["worker_health"]["active"]["by_worker_id"]
+            )
+            self.assertGreaterEqual(
+                payload["worker_health"]["active"]["by_worker_id"]["worker-a"],
+                0.0,
+            )
 
     def test_finish_failed_message_switches_between_release_and_dead_letter(
         self,

@@ -270,6 +270,7 @@ def persistent_worker(
     queue: PersistentQueue,
     *,
     config: PersistentWorkerConfig | None = None,
+    worker_id: str | None = None,
     dead_letter_on_failure: bool | object = _UNSET,
     dead_letter_on_exhaustion: bool | object = _UNSET,
     release_delay: float | object = _UNSET,
@@ -290,6 +291,8 @@ def persistent_worker(
 
     def decorator(fn: WrappedFn) -> Callable[..., Any]:
         def wrapped(*args: Any, **kwargs: Any) -> Any:
+            if worker_id is not None:
+                queue.record_worker_heartbeat(worker_id)
             _sleep_for_policy(policy_state, worker_config)
             message = queue.get_message()
             retryer = PersistentRetrying(key=message.id, **retry_kwargs)
@@ -306,6 +309,9 @@ def persistent_worker(
                     permanent=is_permanent_failure(exc),
                 )
                 raise
+            finally:
+                if worker_id is not None:
+                    queue.record_worker_heartbeat(worker_id)
             _record_success(policy_state)
             queue.ack(message)
             return result
@@ -319,6 +325,7 @@ def persistent_async_worker(
     queue: PersistentQueue,
     *,
     config: PersistentWorkerConfig | None = None,
+    worker_id: str | None = None,
     dead_letter_on_failure: bool | object = _UNSET,
     dead_letter_on_exhaustion: bool | object = _UNSET,
     release_delay: float | object = _UNSET,
@@ -339,6 +346,8 @@ def persistent_async_worker(
 
     def decorator(fn: WrappedFn) -> Callable[..., Any]:
         async def wrapped(*args: Any, **kwargs: Any) -> Any:
+            if worker_id is not None:
+                queue.record_worker_heartbeat(worker_id)
             await _sleep_for_policy_async(policy_state, worker_config)
             message = await _get_message_async(queue)
             retryer = PersistentAsyncRetrying(key=message.id, **retry_kwargs)
@@ -359,6 +368,9 @@ def persistent_async_worker(
                     permanent=is_permanent_failure(exc),
                 )
                 raise
+            finally:
+                if worker_id is not None:
+                    queue.record_worker_heartbeat(worker_id)
             _record_success(policy_state)
             queue.ack(message)
             return result

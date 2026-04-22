@@ -190,6 +190,11 @@ class PersistentQueue:
     def stats(self) -> QueueStats:
         return self._get_store().stats(self.name, now=time.time())
 
+    def record_worker_heartbeat(self, worker_id: str) -> None:
+        if not worker_id:
+            raise ValueError("worker_id cannot be empty")
+        self._get_store().record_worker_heartbeat(self.name, worker_id, now=time.time())
+
     def dead_letters(self, *, limit: int | None = None) -> list[QueueMessage]:
         return self._get_store().dead_letters(self.name, limit=limit)
 

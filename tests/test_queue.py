@@ -87,6 +87,12 @@ class QueueTests(unittest.TestCase):
         self.assertNotEqual(first.id, third.id)
         self.assertEqual(third.value, "item3")
 
+    def test_put_rejects_empty_dedupe_key(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+
+        with self.assertRaises(ValueError):
+            _ = queue.put("item", dedupe_key="")
+
     def test_stats_counts_messages_by_state(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())
         _ = queue.put("inflight")
@@ -110,6 +116,7 @@ class QueueTests(unittest.TestCase):
             stats.leases_by_worker_id,
             {"worker-a": 1, "worker-b": 1},
         )
+        self.assertEqual(stats.last_seen_by_worker_id, {})
         self.assertIsNone(stats.oldest_ready_age_seconds)
         self.assertIsNotNone(stats.oldest_inflight_age_seconds)
         self.assertIsNotNone(stats.average_inflight_age_seconds)
@@ -126,6 +133,7 @@ class QueueTests(unittest.TestCase):
             after_ack.leases_by_worker_id,
             {"worker-a": 1, "worker-b": 1},
         )
+        self.assertEqual(after_ack.last_seen_by_worker_id, {})
 
     def test_stats_reports_queue_and_inflight_age(self) -> None:
         call_times = [100.0, 101.0, 105.0, 110.0]
@@ -152,6 +160,18 @@ class QueueTests(unittest.TestCase):
         self.assertGreaterEqual(oldest_ready_age, 0.0)
         self.assertGreaterEqual(oldest_inflight_age, 0.0)
         self.assertGreaterEqual(average_inflight_age, 0.0)
+
+    def test_record_worker_heartbeat_updates_memory_stats(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+
+        queue.record_worker_heartbeat("worker-a")
+
+        stats = queue.stats()
+        self.assertEqual(set(stats.last_seen_by_worker_id), {"worker-a"})
+        self.assertGreaterEqual(stats.last_seen_by_worker_id["worker-a"], 0.0)
+
+        with self.assertRaises(ValueError):
+            queue.record_worker_heartbeat("")
 
     def test_inspect_returns_message_without_changing_state(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())
@@ -668,9 +688,20 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(stats.total, 1)
             self.assertEqual(stats.by_worker_id, {})
             self.assertEqual(stats.leases_by_worker_id, {})
+            self.assertEqual(stats.last_seen_by_worker_id, {})
             self.assertIsNone(stats.oldest_ready_age_seconds)
             self.assertIsNone(stats.oldest_inflight_age_seconds)
             self.assertIsNone(stats.average_inflight_age_seconds)
+
+    def test_sqlite_store_tracks_worker_heartbeat(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            queue = PersistentQueue("jobs", store_path=f"{tmpdir}/queue.sqlite3")
+
+            queue.record_worker_heartbeat("worker-a")
+
+            stats = queue.stats()
+            self.assertEqual(set(stats.last_seen_by_worker_id), {"worker-a"})
+            self.assertGreaterEqual(stats.last_seen_by_worker_id["worker-a"], 0.0)
 
     def test_sqlite_store_tracks_worker_throughput_after_ack(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -699,9 +730,19 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(stats.total, 0)
             self.assertEqual(stats.by_worker_id, {})
             self.assertEqual(stats.leases_by_worker_id, {"worker-a": 1})
+            self.assertEqual(stats.last_seen_by_worker_id, {})
             self.assertIsNone(stats.oldest_ready_age_seconds)
             self.assertIsNone(stats.oldest_inflight_age_seconds)
             self.assertIsNone(stats.average_inflight_age_seconds)
+
+    def test_dead_letter_retention_rejects_negative_values(self) -> None:
+        queue = PersistentQueue("jobs", store=MemoryQueueStore())
+
+        with self.assertRaises(ValueError):
+            _ = queue.prune_dead_letters(older_than=-1)
+
+        with self.assertRaises(ValueError):
+            _ = queue.count_dead_letters_older_than(older_than=-1)
 
     def test_sqlite_dead_letters_persist(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -785,6 +826,7 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(stats.total, 0)
             self.assertEqual(stats.by_worker_id, {})
             self.assertEqual(stats.leases_by_worker_id, {"worker-a": 1})
+            self.assertEqual(stats.last_seen_by_worker_id, {})
             self.assertIsNone(stats.oldest_ready_age_seconds)
             self.assertIsNone(stats.oldest_inflight_age_seconds)
             self.assertIsNone(stats.average_inflight_age_seconds)

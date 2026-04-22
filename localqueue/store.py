@@ -80,6 +80,7 @@ class QueueStats:
     total: int = 0
     by_worker_id: dict[str, int] = field(default_factory=dict)
     leases_by_worker_id: dict[str, int] = field(default_factory=dict)
+    last_seen_by_worker_id: dict[str, float] = field(default_factory=dict)
     oldest_ready_age_seconds: float | None = None
     oldest_inflight_age_seconds: float | None = None
     average_inflight_age_seconds: float | None = None
@@ -93,6 +94,7 @@ class QueueStats:
             "total": self.total,
             "by_worker_id": self.by_worker_id,
             "leases_by_worker_id": self.leases_by_worker_id,
+            "last_seen_by_worker_id": self.last_seen_by_worker_id,
             "oldest_ready_age_seconds": self.oldest_ready_age_seconds,
             "oldest_inflight_age_seconds": self.oldest_inflight_age_seconds,
             "average_inflight_age_seconds": self.average_inflight_age_seconds,
@@ -205,6 +207,10 @@ class QueueStore(Protocol):
 
     def stats(self, queue: str, *, now: float) -> QueueStats: ...
 
+    def record_worker_heartbeat(
+        self, queue: str, worker_id: str, *, now: float
+    ) -> None: ...
+
     def dead_letters(
         self, queue: str, *, limit: int | None = None
     ) -> list[QueueMessage]: ...
@@ -242,6 +248,7 @@ class MemoryQueueStore:
     _records: dict[str, dict[str, _QueueRecord]]
     _seq: dict[str, int]
     _worker_stats: dict[str, Counter[str]]
+    _worker_heartbeats: dict[str, dict[str, float]]
     _dedupe_keys: dict[str, dict[str, str]]
     _lock: threading.Lock
 
@@ -249,6 +256,7 @@ class MemoryQueueStore:
         self._records = {}
         self._seq = {}
         self._worker_stats = {}
+        self._worker_heartbeats = {}
         self._dedupe_keys = {}
         self._lock = threading.Lock()
 
@@ -424,7 +432,16 @@ class MemoryQueueStore:
                 leases_by_worker_id=dict(
                     sorted(self._worker_stats.get(queue, {}).items())
                 ),
+                last_seen_by_worker_id=dict(
+                    sorted(self._worker_heartbeats.get(queue, {}).items())
+                ),
             )
+
+    def record_worker_heartbeat(
+        self, queue: str, worker_id: str, *, now: float
+    ) -> None:
+        with self._lock:
+            self._worker_heartbeats.setdefault(queue, {})[worker_id] = now
 
     def dead_letters(
         self, queue: str, *, limit: int | None = None
@@ -491,6 +508,7 @@ class MemoryQueueStore:
             count = len(self._records.get(queue, {}))
             self._records[queue] = {}
             self._worker_stats.pop(queue, None)
+            self._worker_heartbeats.pop(queue, None)
             self._dedupe_keys.pop(queue, None)
             return count
 
@@ -587,6 +605,14 @@ class SQLiteQueueStore:
             "queue TEXT NOT NULL, "
             "worker_id TEXT NOT NULL, "
             "leased_count INTEGER NOT NULL, "
+            "PRIMARY KEY(queue, worker_id)"
+            ")"
+        )
+        self._connection.execute(
+            "CREATE TABLE IF NOT EXISTS queue_worker_heartbeats ("
+            "queue TEXT NOT NULL, "
+            "worker_id TEXT NOT NULL, "
+            "last_seen REAL NOT NULL, "
             "PRIMARY KEY(queue, worker_id)"
             ")"
         )
@@ -788,12 +814,32 @@ class SQLiteQueueStore:
                 "WHERE queue = ? ORDER BY worker_id",
                 (queue,),
             )
+            heartbeat_stats = connection.execute(
+                "SELECT worker_id, last_seen FROM queue_worker_heartbeats "
+                "WHERE queue = ? ORDER BY worker_id",
+                (queue,),
+            )
             return _stats_from_records(
                 (_decode_record(row[0]) for row in cursor.fetchall()),
                 now=now,
                 leases_by_worker_id={
                     row[0]: int(row[1]) for row in worker_stats.fetchall()
                 },
+                last_seen_by_worker_id={
+                    row[0]: float(row[1]) for row in heartbeat_stats.fetchall()
+                },
+            )
+
+    def record_worker_heartbeat(
+        self, queue: str, worker_id: str, *, now: float
+    ) -> None:
+        with self._transaction() as connection:
+            _ = connection.execute(
+                "INSERT INTO queue_worker_heartbeats(queue, worker_id, last_seen) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(queue, worker_id) DO UPDATE SET "
+                "last_seen = excluded.last_seen",
+                (queue, worker_id, now),
             )
 
     def dead_letters(
@@ -880,6 +926,9 @@ class SQLiteQueueStore:
             )
             _ = connection.execute(
                 "DELETE FROM queue_worker_stats WHERE queue = ?", (queue,)
+            )
+            _ = connection.execute(
+                "DELETE FROM queue_worker_heartbeats WHERE queue = ?", (queue,)
             )
             return cursor.rowcount
 
@@ -1292,11 +1341,15 @@ class LMDBQueueStore:
                         break
                     records.append(_decode_record(bytes(raw)))
             raw = txn.get(_worker_stats_key(queue))
+            heartbeats_raw = txn.get(_worker_heartbeats_key(queue))
             return _stats_from_records(
                 records,
                 now=now,
                 leases_by_worker_id=self._decode_worker_stats(
                     bytes(raw) if raw is not None else None
+                ),
+                last_seen_by_worker_id=self._decode_worker_heartbeats(
+                    bytes(heartbeats_raw) if heartbeats_raw is not None else None
                 ),
             )
 
@@ -1419,6 +1472,8 @@ class LMDBQueueStore:
                 _ = txn.delete(key)
             for key in list(self._iter_dedupe_keys(txn, queue)):
                 _ = txn.delete(key)
+            _ = txn.delete(_worker_stats_key(queue))
+            _ = txn.delete(_worker_heartbeats_key(queue))
             return count
 
     def _reclaim_expired(self, txn: lmdb.Transaction, queue: str, now: float) -> None:
@@ -1531,6 +1586,20 @@ class LMDBQueueStore:
         stats[worker_id] = stats.get(worker_id, 0) + 1
         _ = txn.put(_worker_stats_key(queue), _encode_worker_stats(stats))
 
+    def record_worker_heartbeat(
+        self, queue: str, worker_id: str, *, now: float
+    ) -> None:
+        with self._env.begin(write=True) as txn:
+            raw = txn.get(_worker_heartbeats_key(queue))
+            heartbeats = self._decode_worker_heartbeats(
+                bytes(raw) if raw is not None else None
+            )
+            heartbeats[worker_id] = now
+            _ = txn.put(
+                _worker_heartbeats_key(queue),
+                _encode_worker_heartbeats(heartbeats),
+            )
+
     @staticmethod
     def _decode_worker_stats(raw: bytes | None) -> dict[str, int]:
         if raw is None:
@@ -1542,6 +1611,20 @@ class LMDBQueueStore:
         if not isinstance(payload, dict):
             raise ValueError("queue worker stats payload must be a JSON object")
         return {str(key): int(value) for key, value in payload.items()}
+
+    @staticmethod
+    def _decode_worker_heartbeats(raw: bytes | None) -> dict[str, float]:
+        if raw is None:
+            return {}
+        try:
+            payload = json.loads(bytes(raw).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                "queue worker heartbeat payload is not valid JSON"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ValueError("queue worker heartbeat payload must be a JSON object")
+        return {str(key): float(value) for key, value in payload.items()}
 
 
 def _safe_queue(queue: str) -> str:
@@ -1615,6 +1698,10 @@ def _dead_prefix(queue: str) -> bytes:
 
 def _worker_stats_key(queue: str) -> bytes:
     return f"queue:{_safe_queue(queue)}:worker-stats".encode("utf-8")
+
+
+def _worker_heartbeats_key(queue: str) -> bytes:
+    return f"queue:{_safe_queue(queue)}:worker-heartbeats".encode("utf-8")
 
 
 def _dedupe_token(dedupe_key: str) -> str:
@@ -1696,11 +1783,18 @@ def _encode_worker_stats(stats: dict[str, int]) -> bytes:
     )
 
 
+def _encode_worker_heartbeats(stats: dict[str, float]) -> bytes:
+    return json.dumps(dict(sorted(stats.items())), separators=(",", ":")).encode(
+        "utf-8"
+    )
+
+
 def _stats_from_records(
     records: Iterable[_QueueRecord],
     *,
     now: float,
     leases_by_worker_id: dict[str, int] | None = None,
+    last_seen_by_worker_id: dict[str, float] | None = None,
 ) -> QueueStats:
     ready = 0
     delayed = 0
@@ -1735,6 +1829,7 @@ def _stats_from_records(
         total=total,
         by_worker_id=dict(sorted(by_worker_id.items())),
         leases_by_worker_id=dict(sorted((leases_by_worker_id or {}).items())),
+        last_seen_by_worker_id=dict(sorted((last_seen_by_worker_id or {}).items())),
         oldest_ready_age_seconds=max(ready_ages) if ready_ages else None,
         oldest_inflight_age_seconds=max(inflight_ages) if inflight_ages else None,
         average_inflight_age_seconds=(

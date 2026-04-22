@@ -50,8 +50,8 @@ That means measuring the current ceiling before promising more:
 - [ ] Decide whether multi-host operation is in scope.
 - [x] Add explicit documentation that the default model is local-file storage,
   not distributed coordination.
-- [ ] Evaluate worker heartbeats beyond lease expiration.
-- [ ] Evaluate worker identity, liveness inspection, and stale-worker reporting.
+- [x] Evaluate worker heartbeats beyond lease expiration.
+- [x] Evaluate worker identity, liveness inspection, and stale-worker reporting.
 - [ ] Evaluate sharding or namespacing guidance for independent queues.
 
 ## Delivery semantics

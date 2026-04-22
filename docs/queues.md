@@ -531,8 +531,11 @@ localqueue queue requeue-dead jobs --all
 For a compact one-shot summary, use `queue health`:
 
 ```bash
-localqueue queue health emails
+localqueue queue health emails --stale-after 120
 ```
 
-It combines queue stats, dead-letter summary, and the configured retention
-values so you can see the state and the cleanup policy in one pass.
+It combines queue stats, worker liveness, dead-letter summary, and the
+configured retention values so you can see the state and the cleanup policy in
+one pass. `queue stats --stale-after 120` exposes the same worker liveness view
+inline with the queue counters when you want a watch loop instead of a one-shot
+summary.

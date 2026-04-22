@@ -324,6 +324,7 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         store_path: str | None = typer.Option(None, "--store-path"),
         watch: bool = typer.Option(False, "--watch"),
         interval: float = typer.Option(1.0, "--interval", min=0.001),
+        stale_after: float | None = typer.Option(None, "--stale-after", min=0.0),
         json_output: bool = typer.Option(False, "--json"),
     ) -> None:
         persistent_queue = _queue(queue, _resolve_store_path(store_path, config))
@@ -333,6 +334,7 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
                 console=console,
                 watch=watch,
                 interval=interval,
+                stale_after=stale_after,
                 shutdown=shutdown,
             )
 
@@ -340,14 +342,20 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
     def queue_health(
         queue: str,
         store_path: str | None = typer.Option(None, "--store-path"),
+        stale_after: float = typer.Option(120.0, "--stale-after", min=0.0),
         json_output: bool = typer.Option(False, "--json"),
     ) -> None:
         persistent_queue = _queue(queue, _resolve_store_path(store_path, config))
+        stats = persistent_queue.stats()
+        worker_health = _worker_health_summary(
+            stats.last_seen_by_worker_id, stale_after=stale_after
+        )
         _print_json(
             console,
             {
                 "queue": queue,
-                "stats": persistent_queue.stats().as_dict(),
+                "stats": stats.as_dict(),
+                "worker_health": worker_health,
                 "dead_letters": _dead_letter_summary(persistent_queue.dead_letters()),
                 "retention": _retention_settings(config),
             },
@@ -566,6 +574,8 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
             _resolve_store_path(store_path, config),
             lease_timeout=lease_timeout,
         )
+        if worker_id is not None:
+            persistent_queue.record_worker_heartbeat(worker_id)
         worker_policy = PersistentWorkerConfig(
             min_interval=min_interval,
             circuit_breaker_failures=circuit_breaker_failures,
@@ -639,6 +649,8 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
             _resolve_store_path(store_path, config),
             lease_timeout=lease_timeout,
         )
+        if worker_id is not None:
+            persistent_queue.record_worker_heartbeat(worker_id)
         worker_policy = PersistentWorkerConfig(
             min_interval=min_interval,
             circuit_breaker_failures=circuit_breaker_failures,
@@ -854,6 +866,8 @@ def _process_queue_messages(
                 _print_json(console, {"state": "stopped", "processed": processed})
             return 0
 
+        if worker_id is not None:
+            queue.record_worker_heartbeat(worker_id)
         _sleep_for_policy(policy_state, resolved_policy)
 
         try:
@@ -899,6 +913,8 @@ def _process_queue_messages(
         if result.processed:
             processed += 1
             _record_success(policy_state)
+            if worker_id is not None:
+                queue.record_worker_heartbeat(worker_id)
             _print_json(console, {"id": message.id, "state": "acked"})
             continue
 
@@ -921,6 +937,8 @@ def _process_queue_messages(
                 "last_error": result.last_error,
             },
         )
+        if worker_id is not None:
+            queue.record_worker_heartbeat(worker_id)
         if forever:
             continue
         return 1
@@ -969,10 +987,17 @@ def _print_queue_stats(
     console: Any,
     watch: bool,
     interval: float,
+    stale_after: float | None,
     shutdown: _ShutdownState,
 ) -> None:
     while True:
-        _print_json(console, queue.stats().as_dict())
+        stats = queue.stats()
+        payload = stats.as_dict()
+        if stale_after is not None:
+            payload["worker_health"] = _worker_health_summary(
+                stats.last_seen_by_worker_id, stale_after=stale_after
+            )
+        _print_json(console, payload)
         if not watch:
             return
         if shutdown.requested:
@@ -1270,6 +1295,31 @@ def _dead_letter_summary(messages: list[QueueMessage]) -> dict[str, Any]:
             "newest": max(failed_ats),
         }
     return summary
+
+
+def _worker_health_summary(
+    last_seen_by_worker_id: dict[str, float], *, stale_after: float
+) -> dict[str, Any]:
+    now = time.time()
+    workers_active: dict[str, float] = {}
+    workers_stale: dict[str, float] = {}
+    for worker_id, last_seen in sorted(last_seen_by_worker_id.items()):
+        age = max(now - last_seen, 0.0)
+        if age > stale_after:
+            workers_stale[worker_id] = age
+        else:
+            workers_active[worker_id] = age
+    return {
+        "stale_after_seconds": stale_after,
+        "active": {
+            "count": len(workers_active),
+            "by_worker_id": workers_active,
+        },
+        "stale": {
+            "count": len(workers_stale),
+            "by_worker_id": workers_stale,
+        },
+    }
 
 
 def _last_attempt_worker_id(message: QueueMessage) -> str | None:
