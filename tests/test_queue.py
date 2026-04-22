@@ -772,6 +772,53 @@ class QueueTests(unittest.TestCase):
         )
         self.assertEqual(decoded.attempt_history, [])
 
+    def test_sqlite_store_reads_legacy_version_1_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_path = f"{tmpdir}/queue.sqlite3"
+            store = SQLiteQueueStore(store_path)
+            store.close()
+
+            legacy_record = {
+                "version": 1,
+                "id": "legacy-job",
+                "value": {"kind": "email"},
+                "queue": "jobs",
+                "attempts": 2,
+                "created_at": 100.0,
+                "available_at": 100.0,
+                "leased_until": None,
+                "leased_by": "worker-a",
+                "last_error": {"type": "RuntimeError", "message": "boom"},
+                "failed_at": 120.0,
+                "state": "dead",
+                "index_key": _dead_key("jobs", "legacy-job").decode("utf-8"),
+            }
+
+            connection = sqlite3.connect(store_path)
+            connection.execute(
+                "INSERT INTO queue_messages("
+                "queue, id, record_json, state, available_at, leased_until, sequence"
+                ") VALUES(?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "jobs",
+                    "legacy-job",
+                    json.dumps(legacy_record, separators=(",", ":")),
+                    "dead",
+                    100.0,
+                    None,
+                    1,
+                ),
+            )
+            connection.commit()
+            connection.close()
+
+            queue = PersistentQueue("jobs", store_path=store_path)
+            messages = queue.dead_letters()
+            self.assertEqual(len(messages), 1)
+            self.assertEqual(messages[0].id, "legacy-job")
+            self.assertEqual(messages[0].attempt_history, [])
+            self.assertEqual(messages[0].last_error, legacy_record["last_error"])
+
     def test_lmdb_store_reclaims_expired_leases(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store = LMDBQueueStore(tmpdir)

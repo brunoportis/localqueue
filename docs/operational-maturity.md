@@ -98,7 +98,8 @@ That means measuring the current ceiling before promising more:
 - [x] Add configurable retention defaults for dead letters and retry records.
 - [x] Add a one-shot queue health summary for day-to-day checks.
 - [x] Document recovery behavior for corrupted or partially written store files.
-- [ ] Add compatibility tests for store files created by older package versions.
+- [x] Add compatibility tests for SQLite store files created by older package
+  versions.
 
 ## API stability
 
