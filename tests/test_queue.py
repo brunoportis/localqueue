@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+from dataclasses import replace
 from queue import Empty, Full
 from pathlib import Path
 from typing import Any, cast
@@ -31,10 +32,13 @@ from localqueue.store import (
     _QueueRecord,
     _decode_record,
     _dead_key,
+    _dedupe_key_key,
+    _dedupe_token,
     _encode_record,
     _inflight_key,
     _message_key,
     _ready_key,
+    _last_leased_at,
     _sequence_from_index_key,
     _timestamp_from_inflight_key,
     _timestamp_from_ready_key,
@@ -325,6 +329,128 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(fourth.value, {"job": 4})
 
             self.assertEqual(store.qsize("jobs", now=now), 1)
+
+    def test_store_helpers_cover_encoding_and_empty_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sqlite_store = SQLiteQueueStore(f"{tmpdir}/queue.sqlite3")
+            now = time.time()
+
+            self.assertEqual(sqlite_store.qsize("jobs", now=now), 0)
+            self.assertEqual(sqlite_store.stats("jobs", now=now).as_dict()["total"], 0)
+            self.assertEqual(sqlite_store.dead_letters("jobs"), [])
+            self.assertEqual(
+                sqlite_store.count_dead_letters_older_than(
+                    "jobs", older_than=1, now=now
+                ),
+                0,
+            )
+            self.assertFalse(sqlite_store.release("jobs", "missing", available_at=now))
+            self.assertFalse(sqlite_store.dead_letter("jobs", "missing"))
+            self.assertFalse(
+                sqlite_store.requeue_dead("jobs", "missing", available_at=now)
+            )
+            self.assertEqual(
+                sqlite_store.prune_dead_letters("jobs", older_than=1, now=now), 0
+            )
+            self.assertEqual(sqlite_store.purge("jobs"), 0)
+            sqlite_store.close()
+
+            lmdb_store = LMDBQueueStore(Path(tmpdir) / "lmdb")
+            self.assertEqual(lmdb_store.qsize("jobs", now=now), 0)
+            self.assertEqual(lmdb_store.stats("jobs", now=now).as_dict()["total"], 0)
+            self.assertEqual(lmdb_store.dead_letters("jobs"), [])
+            self.assertEqual(
+                lmdb_store.count_dead_letters_older_than("jobs", older_than=1, now=now),
+                0,
+            )
+            self.assertFalse(lmdb_store.release("jobs", "missing", available_at=now))
+            self.assertFalse(lmdb_store.dead_letter("jobs", "missing"))
+            self.assertFalse(
+                lmdb_store.requeue_dead("jobs", "missing", available_at=now)
+            )
+            self.assertEqual(
+                lmdb_store.prune_dead_letters("jobs", older_than=1, now=now), 0
+            )
+            self.assertEqual(lmdb_store.purge("jobs"), 0)
+
+    def test_store_helpers_cover_dedupe_encoding_and_last_leased_at(self) -> None:
+        record = _QueueRecord.new(
+            "jobs",
+            {"job": 1},
+            123.0,
+            dedupe_key="dedupe-1",
+        )
+        leased_record = replace(
+            record,
+            attempt_history=[
+                {
+                    "type": "leased",
+                    "at": 42.0,
+                    "attempt": 1,
+                    "leased_by": "worker-a",
+                }
+            ],
+        )
+
+        encoded = _encode_record(leased_record)
+        decoded = _decode_record(encoded)
+        self.assertEqual(decoded.dedupe_key, "dedupe-1")
+        self.assertEqual(_last_leased_at(decoded), 42.0)
+        self.assertEqual(_dedupe_token("abc"), "616263")
+        self.assertEqual(
+            _dedupe_key_key("jobs", "abc"),
+            b"queue:jobs:dedupe:616263",
+        )
+
+    def test_lmdb_store_covers_empty_and_dedupe_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LMDBQueueStore(Path(tmpdir) / "lmdb")
+            now = time.time()
+
+            self.assertEqual(store.qsize("jobs", now=now), 0)
+            self.assertEqual(store.stats("jobs", now=now).as_dict()["total"], 0)
+            self.assertEqual(store.dead_letters("jobs"), [])
+            self.assertEqual(store.dead_letters("jobs", limit=1), [])
+            self.assertEqual(
+                store.count_dead_letters_older_than("jobs", older_than=1, now=now), 0
+            )
+            self.assertFalse(store.release("jobs", "missing", available_at=now))
+            self.assertFalse(store.dead_letter("jobs", "missing"))
+            self.assertFalse(store.requeue_dead("jobs", "missing", available_at=now))
+            self.assertEqual(store.prune_dead_letters("jobs", older_than=1, now=now), 0)
+            self.assertEqual(store.purge("jobs"), 0)
+
+            first = store.enqueue(
+                "jobs", {"job": 1}, available_at=now, dedupe_key="job-1"
+            )
+            second = store.enqueue(
+                "jobs", {"job": 2}, available_at=now, dedupe_key="job-1"
+            )
+            self.assertEqual(first.id, second.id)
+            self.assertEqual(second.value, {"job": 1})
+
+            with store._env.begin(write=True) as txn:  # type: ignore[attr-defined]
+                _ = txn.delete(_message_key("jobs", first.id))
+
+            third = store.enqueue(
+                "jobs", {"job": 3}, available_at=now, dedupe_key="job-1"
+            )
+            self.assertNotEqual(first.id, third.id)
+
+            dead_one = store.enqueue("jobs", {"dead": 1}, available_at=now)
+            dead_two = store.enqueue("jobs", {"dead": 2}, available_at=now)
+            self.assertTrue(store.dead_letter("jobs", dead_one.id))
+            self.assertTrue(store.dead_letter("jobs", dead_two.id))
+            self.assertEqual(len(store.dead_letters("jobs", limit=1)), 1)
+            self.assertEqual(
+                store.count_dead_letters_older_than("jobs", older_than=0, now=now + 1),
+                2,
+            )
+            self.assertEqual(
+                store.prune_dead_letters("jobs", older_than=0, now=now + 1), 2
+            )
+            self.assertEqual(store.dead_letters("jobs"), [])
+            self.assertGreaterEqual(store.purge("jobs"), 1)
 
     def test_sqlite_store_reclaims_expired_leases(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -521,6 +521,71 @@ class RetryTests(unittest.TestCase):
         assert loaded_again is not None
         self.assertEqual(loaded_again.attempts, 1)
 
+    def test_memory_store_prunes_and_counts_exhausted_records(self) -> None:
+        store = MemoryAttemptStore()
+        store.save(
+            "old", RetryRecord(attempts=3, first_attempt_at=100.0, exhausted=True)
+        )
+        store.save(
+            "new", RetryRecord(attempts=1, first_attempt_at=190.0, exhausted=True)
+        )
+        store.save(
+            "active",
+            RetryRecord(attempts=1, first_attempt_at=100.0, exhausted=False),
+        )
+
+        self.assertEqual(store.count_exhausted_older_than(older_than=50, now=200.0), 1)
+        self.assertEqual(store.prune_exhausted(older_than=50, now=200.0), 1)
+        self.assertIsNone(store.load("old"))
+        self.assertIsNotNone(store.load("new"))
+        self.assertIsNotNone(store.load("active"))
+        store.delete("new")
+        self.assertIsNone(store.load("new"))
+
+    def test_sqlite_store_prunes_and_counts_exhausted_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SQLiteAttemptStore(f"{tmpdir}/retries.sqlite3")
+            store.save(
+                "old", RetryRecord(attempts=3, first_attempt_at=100.0, exhausted=True)
+            )
+            store.save(
+                "new", RetryRecord(attempts=1, first_attempt_at=190.0, exhausted=True)
+            )
+            store.save(
+                "active",
+                RetryRecord(attempts=1, first_attempt_at=100.0, exhausted=False),
+            )
+
+            self.assertEqual(
+                store.count_exhausted_older_than(older_than=50, now=200.0), 1
+            )
+            self.assertEqual(store.prune_exhausted(older_than=50, now=200.0), 1)
+            self.assertIsNone(store.load("old"))
+            self.assertIsNotNone(store.load("new"))
+            self.assertIsNotNone(store.load("active"))
+            store.delete("new")
+            self.assertIsNone(store.load("new"))
+            store.close()
+
+    def test_lmdb_store_prunes_and_counts_exhausted_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LMDBAttemptStore(tmpdir)
+            store.save(
+                "old", RetryRecord(attempts=3, first_attempt_at=100.0, exhausted=True)
+            )
+            store.save(
+                "new", RetryRecord(attempts=1, first_attempt_at=190.0, exhausted=True)
+            )
+
+            self.assertEqual(
+                store.count_exhausted_older_than(older_than=50, now=200.0), 1
+            )
+            self.assertEqual(store.prune_exhausted(older_than=50, now=200.0), 1)
+            self.assertIsNone(store.load("old"))
+            self.assertIsNotNone(store.load("new"))
+            store.delete("new")
+            self.assertIsNone(store.load("new"))
+
     def test_store_path_is_opened_lazily(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch("localqueue.retry.tenacity.LMDBAttemptStore") as store_cls:

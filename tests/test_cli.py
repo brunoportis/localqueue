@@ -19,11 +19,18 @@ import yaml
 from localqueue import MemoryQueueStore, PersistentQueue
 from localqueue.retry import MemoryAttemptStore, RetryRecord, SQLiteAttemptStore
 from localqueue.cli import (
+    _CommandExecutionError,
+    _CommandNotFoundError,
     CONFIG_FILENAME,
     DEFAULT_RETRY_STORE_PATH,
     _ShutdownState,
     _build_app,
     _command_handler,
+    _dead_letter_summary,
+    _error_payload,
+    _filter_dead_letters,
+    _finish_failed_message,
+    _format_command,
     _config_path,
     _load_callable,
     _load_config,
@@ -32,9 +39,15 @@ from localqueue.cli import (
     _print_queue_stats,
     _process_message,
     _process_queue_messages,
+    _poll_timeout,
+    _last_attempt_worker_id,
     _read_value,
     _resolve_retry_store_path,
+    _resolve_dead_letter_ttl,
+    _resolve_retry_record_ttl,
     _resolve_store_path,
+    _truncate_output,
+    _validate_worker_loop_options,
     _write_config,
 )
 from localqueue.retry import configure_default_store
@@ -1645,6 +1658,267 @@ class CliTests(unittest.TestCase):
 
             self.assertEqual(result.exit_code, 1)
             self.assertIn("message not found", result.output)
+
+    def test_cli_helpers_cover_small_utility_branches(self) -> None:
+        self.assertEqual(
+            _format_command(["localqueue", "queue", "add"]), "localqueue queue add"
+        )
+        self.assertEqual(_truncate_output("abcdef", limit=5), "ab...")
+        self.assertEqual(_poll_timeout(True, True, None), 0.5)
+        self.assertEqual(_poll_timeout(False, False, 12.0), 12.0)
+        self.assertEqual(_error_payload(None), None)
+        self.assertEqual(
+            _error_payload("oops"),
+            {"type": None, "module": None, "message": "oops"},
+        )
+        self.assertEqual(
+            _last_attempt_worker_id(
+                PersistentQueue("jobs", store=MemoryQueueStore()).put("value") or None
+            ),
+            None,
+        )
+
+    def test_cli_helpers_cover_command_handler_paths(self) -> None:
+        command = _command_handler(["sh", "-c", "printf ok"])
+        self.assertIsNone(command({"value": 1}))
+
+        with self.assertRaises(ValueError):
+            _ = _command_handler([])
+
+        with self.assertRaises(_CommandExecutionError) as exc_info:
+            _command_handler(["sh", "-c", "printf boom >&2; exit 3"])({"value": 1})
+
+        self.assertEqual(exc_info.exception.exit_code, 3)
+        self.assertIn("boom", exc_info.exception.stderr)
+        self.assertEqual(
+            exc_info.exception.command, ["sh", "-c", "printf boom >&2; exit 3"]
+        )
+
+        with self.assertRaises(_CommandNotFoundError):
+            _command_handler(["this-command-should-not-exist-12345"])({"value": 1})
+
+    def test_cli_helpers_cover_config_and_retry_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "config.yaml"
+            _write_config(yaml, {"store_path": "queues.sqlite3"}, path)
+            self.assertEqual(_load_config(yaml, path), {"store_path": "queues.sqlite3"})
+
+            path.write_text("- bad\n", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                _ = _load_config(yaml, path)
+
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.assertTrue(str(_config_path()).endswith("localqueue/config.yaml"))
+
+        self.assertEqual(_resolve_store_path(None, {"store_path": "a"}), "a")
+        self.assertEqual(_resolve_store_path("b", {}), "b")
+        self.assertEqual(_resolve_retry_store_path(None, {}), DEFAULT_RETRY_STORE_PATH)
+        self.assertIsNone(_resolve_dead_letter_ttl(None, {}))
+        self.assertEqual(_resolve_dead_letter_ttl(12.5, {}), 12.5)
+        self.assertIsNone(_resolve_retry_record_ttl(None, {}))
+        self.assertEqual(_resolve_retry_record_ttl(18.0, {}), 18.0)
+
+        with self.assertRaises(ValueError):
+            _ = _validate_worker_loop_options(max_jobs=2, forever=True)
+
+    def test_cli_helpers_cover_queue_summary_and_shutdown_paths(self) -> None:
+        queue = PersistentQueue("jobs", store=MemoryQueueStore())
+        _ = queue.put("first")
+        second = queue.put("second")
+        leased = queue.get_message(leased_by="worker-a")
+        assert leased is not None
+        self.assertTrue(queue.dead_letter(leased, error=RuntimeError("boom")))
+        queue.release(second, error=RuntimeError("retry"))
+
+        messages = queue.dead_letters()
+        self.assertEqual(_dead_letter_summary(messages)["count"], 1)
+        self.assertEqual(
+            _filter_dead_letters(
+                messages,
+                min_attempts=1,
+                max_attempts=None,
+                error_contains=None,
+                failed_within=None,
+            ),
+            messages,
+        )
+        self.assertEqual(
+            _filter_dead_letters(
+                messages,
+                min_attempts=None,
+                max_attempts=None,
+                error_contains="boom",
+                failed_within=None,
+            )[0].id,
+            messages[0].id,
+        )
+        self.assertEqual(
+            _filter_dead_letters(
+                messages,
+                min_attempts=None,
+                max_attempts=None,
+                error_contains=None,
+                failed_within=10_000,
+            )[0].id,
+            messages[0].id,
+        )
+
+        dead_console = _JsonConsole()
+        _print_dead_letters(
+            queue,
+            console=dead_console,
+            watch=True,
+            interval=0.0,
+            shutdown=_ShutdownState(requested=True),
+            limit=None,
+            summary=False,
+            min_attempts=None,
+            max_attempts=None,
+            error_contains=None,
+            failed_within=None,
+        )
+        stats_console = _JsonConsole()
+        _print_queue_stats(
+            queue,
+            console=stats_console,
+            watch=True,
+            interval=0.0,
+            shutdown=_ShutdownState(requested=True),
+        )
+        self.assertGreaterEqual(len(dead_console.values), 1)
+        self.assertGreaterEqual(len(stats_console.values), 1)
+
+    def test_finish_failed_message_switches_between_release_and_dead_letter(
+        self,
+    ) -> None:
+        queue = PersistentQueue("jobs", store=MemoryQueueStore())
+        message = queue.put("payload")
+
+        self.assertTrue(
+            _finish_failed_message(
+                queue,
+                message,
+                release_delay=0.0,
+                dead_letter_on_exhaustion=False,
+                error=RuntimeError("retry"),
+            )
+        )
+        leased = queue.get_message()
+        assert leased is not None
+        self.assertTrue(
+            _finish_failed_message(
+                queue,
+                leased,
+                release_delay=0.0,
+                dead_letter_on_exhaustion=True,
+                error=RuntimeError("dead"),
+            )
+        )
+
+    def test_cli_rejects_invalid_retention_and_requeue_combinations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_path = str(Path(tmpdir) / "queues.sqlite3")
+
+            dead_missing_ttl = self._invoke(
+                [
+                    "queue",
+                    "dead",
+                    "emails",
+                    "--store-path",
+                    store_path,
+                    "--dry-run",
+                ]
+            )
+            self.assertEqual(dead_missing_ttl.exit_code, 1)
+            self.assertIn("dead_letter_ttl_seconds", dead_missing_ttl.output)
+
+            dead_conflict = self._invoke(
+                [
+                    "queue",
+                    "dead",
+                    "emails",
+                    "--store-path",
+                    store_path,
+                    "--prune-older-than",
+                    "10",
+                    "--summary",
+                ]
+            )
+            self.assertEqual(dead_conflict.exit_code, 1)
+            self.assertIn("cannot be combined", dead_conflict.output)
+
+            retry_missing_ttl = self._invoke(["retry", "prune"])
+            self.assertEqual(retry_missing_ttl.exit_code, 1)
+            self.assertIn("retry_record_ttl_seconds", retry_missing_ttl.output)
+
+            requeue_missing_id = self._invoke(["queue", "requeue-dead", "emails"])
+            self.assertEqual(requeue_missing_id.exit_code, 1)
+            self.assertIn("pass a message id", requeue_missing_id.output)
+
+            requeue_conflict = self._invoke(
+                ["queue", "requeue-dead", "emails", "abc", "--all"]
+            )
+            self.assertEqual(requeue_conflict.exit_code, 1)
+            self.assertIn("either a message id or --all", requeue_conflict.output)
+
+    def test_cli_logs_requeue_and_purge_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_path = str(Path(tmpdir) / "queues.sqlite3")
+
+            seeded = self._invoke(
+                [
+                    "queue",
+                    "add",
+                    "emails",
+                    "--store-path",
+                    store_path,
+                    "--value",
+                    '{"to":"user@example.com"}',
+                ]
+            )
+            self.assertEqual(seeded.exit_code, 0, seeded.output)
+            message_id = json.loads(seeded.stdout)["id"]
+
+            dead = self._invoke(
+                [
+                    "queue",
+                    "dead-letter",
+                    "emails",
+                    message_id,
+                    "--store-path",
+                    store_path,
+                    "--log-events",
+                ]
+            )
+            self.assertEqual(dead.exit_code, 0, dead.output)
+            self.assertIn('"event": "queue.dead_letter"', dead.output)
+
+            requeue = self._invoke(
+                [
+                    "queue",
+                    "requeue-dead",
+                    "emails",
+                    message_id,
+                    "--store-path",
+                    store_path,
+                    "--log-events",
+                ]
+            )
+            self.assertEqual(requeue.exit_code, 0, requeue.output)
+            self.assertIn('"event": "queue.requeue"', requeue.output)
+
+            purge = self._invoke(
+                [
+                    "queue",
+                    "purge",
+                    "emails",
+                    "--store-path",
+                    store_path,
+                    "--log-events",
+                ]
+            )
+            self.assertEqual(purge.exit_code, 0, purge.output)
+            self.assertIn('"event": "queue.purge"', purge.output)
 
 
 if __name__ == "__main__":
