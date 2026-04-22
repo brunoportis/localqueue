@@ -5,6 +5,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from collections import Counter
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -76,14 +77,16 @@ class QueueStats:
     inflight: int = 0
     dead: int = 0
     total: int = 0
+    by_worker_id: dict[str, int] = field(default_factory=dict)
 
-    def as_dict(self) -> dict[str, int]:
+    def as_dict(self) -> dict[str, Any]:
         return {
             "ready": self.ready,
             "delayed": self.delayed,
             "inflight": self.inflight,
             "dead": self.dead,
             "total": self.total,
+            "by_worker_id": self.by_worker_id,
         }
 
 
@@ -1298,6 +1301,7 @@ def _stats_from_records(records: Iterable[_QueueRecord], *, now: float) -> Queue
     inflight = 0
     dead = 0
     total = 0
+    by_worker_id: Counter[str] = Counter()
     for record in records:
         total += 1
         if record.state == _READY:
@@ -1307,6 +1311,8 @@ def _stats_from_records(records: Iterable[_QueueRecord], *, now: float) -> Queue
                 delayed += 1
         elif record.state == _INFLIGHT:
             inflight += 1
+            if record.leased_by:
+                by_worker_id[record.leased_by] += 1
         elif record.state == _DEAD:
             dead += 1
     return QueueStats(
@@ -1315,6 +1321,7 @@ def _stats_from_records(records: Iterable[_QueueRecord], *, now: float) -> Queue
         inflight=inflight,
         dead=dead,
         total=total,
+        by_worker_id=dict(sorted(by_worker_id.items())),
     )
 
 

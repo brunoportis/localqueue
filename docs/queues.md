@@ -345,7 +345,8 @@ localqueue queue stats jobs --watch --interval 1
 ```
 
 Each sample is printed as JSON with `ready`, `delayed`, `inflight`, `dead`, and
-`total` counts. Stop the watch with `Ctrl-C`.
+`total` counts, plus `by_worker_id` when messages are leased. Stop the watch
+with `Ctrl-C`.
 
 Use `queue dead --watch` to keep an eye on recent failures:
 

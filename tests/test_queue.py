@@ -69,9 +69,9 @@ class QueueTests(unittest.TestCase):
         _ = queue.put("inflight")
         _ = queue.put("dead")
         _ = queue.put("delayed", delay=10)
-        inflight = queue.get_message()
+        inflight = queue.get_message(leased_by="worker-a")
         self.assertEqual(inflight.value, "inflight")
-        dead = queue.get_message()
+        dead = queue.get_message(leased_by="worker-b")
         self.assertEqual(dead.value, "dead")
         self.assertTrue(queue.dead_letter(dead, error=RuntimeError("bad")))
 
@@ -82,9 +82,17 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(stats.inflight, 1)
         self.assertEqual(stats.dead, 1)
         self.assertEqual(stats.total, 3)
+        self.assertEqual(stats.by_worker_id, {"worker-a": 1})
         self.assertEqual(
             stats.as_dict(),
-            {"ready": 0, "delayed": 1, "inflight": 1, "dead": 1, "total": 3},
+            {
+                "ready": 0,
+                "delayed": 1,
+                "inflight": 1,
+                "dead": 1,
+                "total": 3,
+                "by_worker_id": {"worker-a": 1},
+            },
         )
 
     def test_inspect_returns_message_without_changing_state(self) -> None:
@@ -348,7 +356,14 @@ class QueueTests(unittest.TestCase):
             queue = PersistentQueue(queue_name, store_path=store_path)
             self.assertEqual(
                 queue.stats().as_dict(),
-                {"ready": 0, "delayed": 0, "inflight": 0, "dead": 0, "total": 0},
+                {
+                    "ready": 0,
+                    "delayed": 0,
+                    "inflight": 0,
+                    "dead": 0,
+                    "total": 0,
+                    "by_worker_id": {},
+                },
             )
 
     def test_lmdb_store_queue_operations(self) -> None:
@@ -397,7 +412,14 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(queue.qsize(), 0)
             self.assertEqual(
                 queue.stats().as_dict(),
-                {"ready": 0, "delayed": 0, "inflight": 0, "dead": 1, "total": 1},
+                {
+                    "ready": 0,
+                    "delayed": 0,
+                    "inflight": 0,
+                    "dead": 1,
+                    "total": 1,
+                    "by_worker_id": {},
+                },
             )
 
     def test_sqlite_dead_letters_persist(self) -> None:

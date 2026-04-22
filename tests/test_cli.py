@@ -964,6 +964,7 @@ class CliTests(unittest.TestCase):
     def test_print_queue_stats_watch_stops_on_shutdown(self) -> None:
         queue = PersistentQueue("emails", store=MemoryQueueStore())
         _ = queue.put({"to": "user@example.com"})
+        _ = queue.get_message(leased_by="worker-a")
         console = _JsonConsole()
         shutdown = _ShutdownState()
 
@@ -981,7 +982,16 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(
             console.values,
-            [{"ready": 1, "delayed": 0, "inflight": 0, "dead": 0, "total": 1}],
+            [
+                {
+                    "ready": 0,
+                    "delayed": 0,
+                    "inflight": 1,
+                    "dead": 0,
+                    "total": 1,
+                    "by_worker_id": {"worker-a": 1},
+                }
+            ],
         )
 
     def test_process_queue_messages_forever_stops_after_current_message(self) -> None:
