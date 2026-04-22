@@ -61,6 +61,20 @@ class QueueTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             _ = PersistentQueue("test", store=store, retry_defaults=cast(Any, []))
 
+        with self.assertRaises(ValueError):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                retry_defaults={"max_tries": 1, "stop": object()},
+            )
+
+        with self.assertRaises(ValueError):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                retry_defaults={"max_tries": 0},
+            )
+
     def test_memory_store_basic_ops(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())
         self.assertTrue(queue.empty())

@@ -46,6 +46,7 @@ from localqueue.cli import (
     _resolve_dead_letter_ttl,
     _resolve_retry_record_ttl,
     _resolve_store_path,
+    _coerce_config_value,
     _truncate_output,
     _validate_worker_loop_options,
     _write_config,
@@ -1718,6 +1719,11 @@ class CliTests(unittest.TestCase):
         self.assertEqual(_resolve_dead_letter_ttl(12.5, {}), 12.5)
         self.assertIsNone(_resolve_retry_record_ttl(None, {}))
         self.assertEqual(_resolve_retry_record_ttl(18.0, {}), 18.0)
+        self.assertEqual(
+            _coerce_config_value("dead_letter_ttl_seconds", "12.5"), 12.5
+        )
+        with self.assertRaises(ValueError):
+            _ = _coerce_config_value("retry_record_ttl_seconds", "-1")
 
         with self.assertRaises(ValueError):
             _ = _validate_worker_loop_options(max_jobs=2, forever=True)

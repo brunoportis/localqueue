@@ -1159,7 +1159,10 @@ def _retention_settings(config: dict[str, Any]) -> dict[str, Any]:
 
 def _coerce_config_value(key: str, value: str) -> str | float:
     if key in {"dead_letter_ttl_seconds", "retry_record_ttl_seconds"}:
-        return float(value)
+        ttl = float(value)
+        if ttl < 0:
+            raise ValueError(f"{key} must be greater than or equal to zero")
+        return ttl
     return value
 
 

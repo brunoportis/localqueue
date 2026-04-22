@@ -38,6 +38,7 @@ class PersistentQueue:
             raise ValueError("maxsize cannot be negative")
         if retry_defaults is not None and not isinstance(retry_defaults, Mapping):
             raise TypeError("retry_defaults must be a mapping")
+        _validate_retry_defaults(retry_defaults)
 
         self.name = name
         self.lease_timeout = lease_timeout
@@ -277,6 +278,17 @@ def _wait_time(remaining: float | None) -> float:
     if remaining is None:
         return 0.05
     return min(max(remaining, 0.0), 0.05)
+
+
+def _validate_retry_defaults(retry_defaults: Mapping[str, Any] | None) -> None:
+    if retry_defaults is None:
+        return
+    if "max_tries" in retry_defaults and "stop" in retry_defaults:
+        raise ValueError("retry_defaults cannot set both max_tries and stop")
+    if "max_tries" in retry_defaults:
+        max_tries = retry_defaults["max_tries"]
+        if not isinstance(max_tries, int) or max_tries <= 0:
+            raise ValueError("retry_defaults max_tries must be a positive integer")
 
 
 def _error_payload(error: BaseException | str | None) -> dict[str, Any] | None:

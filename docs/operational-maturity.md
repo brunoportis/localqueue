@@ -120,7 +120,7 @@ inspection tools for that local model, not a distributed liveness protocol.
 - [x] Add clearer lease-timeout guidance for slow jobs.
 - [x] Add examples for safe shutdown and long-running workers.
 - [x] Add health-check examples for worker processes.
-- [ ] Add configuration validation for risky combinations where possible.
+- [x] Add configuration validation for risky combinations where possible.
 - [x] Add warnings or docs for unbounded queue growth.
 
 ## Positioning

@@ -488,6 +488,7 @@ localqueue retry prune --dry-run --older-than 604800
 If you want cleanup defaults to live in config instead of on the command line,
 set `dead_letter_ttl_seconds` and `retry_record_ttl_seconds` with
 `localqueue config set`.
+Negative TTL values are rejected at config update time.
 
 ## Safe shutdown
 
