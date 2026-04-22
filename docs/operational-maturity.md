@@ -21,6 +21,8 @@ The next release should improve two things that matter for real local workers:
 That means measuring the current ceiling before promising more:
 
 - benchmark WAL contention and queue throughput with concurrent processes
+- use `examples/sqlite_concurrency_benchmark.py` to get a repeatable local
+  throughput snapshot
 - document the practical limits for a single host and a single SQLite file
 - keep ordering language explicit: best effort under concurrency, not strict
   global ordering

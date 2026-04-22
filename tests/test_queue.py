@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 import json
 import tempfile
 import threading
@@ -227,6 +228,97 @@ class QueueTests(unittest.TestCase):
 
             self.assertTrue(path.exists())
             store.close()
+
+    def test_sqlite_store_handles_concurrent_producers_and_consumers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_path = str(Path(tmpdir) / "queue.sqlite3")
+            queue_name = "jobs"
+            total_messages = 120
+            producer_count = 4
+            consumer_count = 4
+            start = threading.Event()
+            producers_done = threading.Event()
+            consumed = Counter[str]()
+            consumed_lock = threading.Lock()
+            errors: list[BaseException] = []
+            errors_lock = threading.Lock()
+
+            def record_error(exc: BaseException) -> None:
+                with errors_lock:
+                    errors.append(exc)
+
+            def producer(index: int) -> None:
+                try:
+                    queue = PersistentQueue(
+                        queue_name, store_path=store_path, lease_timeout=0.2
+                    )
+                    start.wait()
+                    for sequence in range(total_messages // producer_count):
+                        queue.put({"producer": index, "sequence": sequence})
+                except BaseException as exc:  # pragma: no cover - defensive
+                    record_error(exc)
+
+            def consumer(index: int) -> None:
+                try:
+                    queue = PersistentQueue(
+                        queue_name, store_path=store_path, lease_timeout=0.2
+                    )
+                    start.wait()
+                    while True:
+                        with consumed_lock:
+                            if (
+                                producers_done.is_set()
+                                and sum(consumed.values()) >= total_messages
+                            ):
+                                return
+                        try:
+                            message = queue.get_message(
+                                block=False, leased_by=f"consumer-{index}"
+                            )
+                        except Empty:
+                            if producers_done.is_set():
+                                with consumed_lock:
+                                    if sum(consumed.values()) >= total_messages:
+                                        return
+                            time.sleep(0.001)
+                            continue
+                        if not queue.ack(message):
+                            record_error(RuntimeError(f"ack failed for {message.id}"))
+                            return
+                        with consumed_lock:
+                            consumed[message.id] += 1
+                except BaseException as exc:  # pragma: no cover - defensive
+                    record_error(exc)
+
+            threads = [
+                threading.Thread(target=producer, args=(index,))
+                for index in range(producer_count)
+            ] + [
+                threading.Thread(target=consumer, args=(index,))
+                for index in range(consumer_count)
+            ]
+
+            for thread in threads:
+                thread.start()
+            start.set()
+
+            for thread in threads[:producer_count]:
+                thread.join()
+            producers_done.set()
+            for thread in threads[producer_count:]:
+                thread.join(timeout=5.0)
+                self.assertFalse(thread.is_alive())
+
+            self.assertEqual(errors, [])
+            self.assertEqual(sum(consumed.values()), total_messages)
+            self.assertEqual(len(consumed), total_messages)
+            self.assertTrue(all(count == 1 for count in consumed.values()))
+
+            queue = PersistentQueue(queue_name, store_path=store_path)
+            self.assertEqual(
+                queue.stats().as_dict(),
+                {"ready": 0, "delayed": 0, "inflight": 0, "dead": 0, "total": 0},
+            )
 
     def test_lmdb_store_queue_operations(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

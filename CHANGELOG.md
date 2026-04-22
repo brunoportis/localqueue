@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add a concurrent SQLite stress test for multiple producers and consumers.
+- Add `examples/sqlite_concurrency_benchmark.py` for measuring local queue throughput.
+- Add a short-term maturity note focused on performance and guarantees.
+
 ## 0.2.0
 
 - Add `queue stats --watch` for monitoring queue counts while workers run.
