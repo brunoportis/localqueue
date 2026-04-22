@@ -128,7 +128,5 @@ inspection tools for that local model, not a distributed liveness protocol.
 - [x] Keep public wording focused on durable local queues for scripts and small
   workers.
 - [x] Avoid presenting the project as a replacement for distributed brokers.
-- [ ] Add comparison docs explaining when to use this library versus Celery, RQ,
-  Dramatiq, SQS, RabbitMQ, Redis Streams, or Kafka.
 - [x] Add production-readiness notes that distinguish supported use cases from
   future work.
