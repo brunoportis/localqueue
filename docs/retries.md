@@ -115,6 +115,15 @@ def process_invoice(job_id: str, amount: int) -> None:
 `ValueError` in this example is not retried. Only the transient connection
 failure is.
 
+Exhausted retry records can be cleaned up later with the CLI:
+
+```bash
+localqueue retry prune --older-than 604800
+```
+
+This removes only exhausted retry records older than the requested age. It does
+not touch active records that may still be in use.
+
 ## Retry keys
 
 Each persistent retry needs a stable key. Pass `key=` when the retryer is bound

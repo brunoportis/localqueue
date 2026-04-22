@@ -57,6 +57,8 @@ class AttemptStore(Protocol):
 
     def delete(self, key: str) -> None: ...
 
+    def prune_exhausted(self, *, older_than: float, now: float) -> int: ...
+
 
 class MemoryAttemptStore:
     _records: dict[str, RetryRecord]
@@ -80,6 +82,18 @@ class MemoryAttemptStore:
     def delete(self, key: str) -> None:
         with self._lock:
             _ = self._records.pop(key, None)
+
+    def prune_exhausted(self, *, older_than: float, now: float) -> int:
+        cutoff = now - older_than
+        with self._lock:
+            doomed = [
+                key
+                for key, record in self._records.items()
+                if record.exhausted and record.first_attempt_at <= cutoff
+            ]
+            for key in doomed:
+                _ = self._records.pop(key, None)
+            return len(doomed)
 
 
 class LMDBAttemptStore:
@@ -122,6 +136,20 @@ class LMDBAttemptStore:
     def delete(self, key: str) -> None:
         with self._env.begin(write=True) as txn:
             _ = txn.delete(key.encode("utf-8"))
+
+    def prune_exhausted(self, *, older_than: float, now: float) -> int:
+        cutoff = now - older_than
+        with self._env.begin(write=True) as txn:
+            cursor = txn.cursor()
+            doomed: list[bytes] = []
+            if cursor.first():
+                for key, raw in cursor:
+                    record = RetryRecord(**json.loads(bytes(raw).decode("utf-8")))
+                    if record.exhausted and record.first_attempt_at <= cutoff:
+                        doomed.append(bytes(key))
+            for key in doomed:
+                _ = txn.delete(key)
+            return len(doomed)
 
 
 class SQLiteAttemptStore:
@@ -172,6 +200,24 @@ class SQLiteAttemptStore:
         with self._lock:
             self._connection.execute("DELETE FROM retry_records WHERE key = ?", (key,))
             self._connection.commit()
+
+    def prune_exhausted(self, *, older_than: float, now: float) -> int:
+        cutoff = now - older_than
+        with self._lock:
+            cursor = self._connection.execute(
+                "SELECT key, record_json FROM retry_records"
+            )
+            doomed = []
+            for key, raw in cursor.fetchall():
+                record = RetryRecord(**json.loads(raw))
+                if record.exhausted and record.first_attempt_at <= cutoff:
+                    doomed.append(key)
+            for key in doomed:
+                self._connection.execute(
+                    "DELETE FROM retry_records WHERE key = ?", (key,)
+                )
+            self._connection.commit()
+            return len(doomed)
 
     def close(self) -> None:
         with self._lock:

@@ -195,6 +195,18 @@ class PersistentQueue:
             _ = self._condition.notify_all()
             return requeued
 
+    def prune_dead_letters(self, *, older_than: float) -> int:
+        if older_than < 0:
+            raise ValueError("older_than cannot be negative")
+        with self._condition:
+            removed = self._get_store().prune_dead_letters(
+                self.name,
+                older_than=older_than,
+                now=time.time(),
+            )
+            _ = self._condition.notify_all()
+            return removed
+
     def empty(self) -> bool:
         return self._get_store().empty(self.name, now=time.time())
 

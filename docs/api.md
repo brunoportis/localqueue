@@ -44,6 +44,7 @@ Core methods:
 | `stats()` | count ready, delayed, inflight, dead, and total messages |
 | `dead_letters(limit=None)` | list dead-letter messages |
 | `requeue_dead(message, delay=0.0)` | return a dead-letter message to ready delivery |
+| `prune_dead_letters(older_than)` | remove dead letters older than the given age |
 | `empty()` | whether there are no ready messages |
 | `full()` | whether ready capacity is reached |
 | `purge()` | remove all queue records |
@@ -323,6 +324,7 @@ class AttemptStore:
     def load(self, key: str) -> RetryRecord | None: ...
     def save(self, key: str, record: RetryRecord) -> None: ...
     def delete(self, key: str) -> None: ...
+    def prune_exhausted(self, *, older_than: float, now: float) -> int: ...
 ```
 
 #### `LMDBAttemptStore`

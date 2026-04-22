@@ -370,6 +370,13 @@ with `--min-attempts`, `--max-attempts`, `--error-contains`, or
 `--failed-within` when the dead-letter list is noisy. The summary groups by
 error type, attempt count, and worker id that last leased the message.
 
+Use `queue dead --prune-older-than` to remove old dead letters after you have
+inspected them:
+
+```bash
+localqueue queue dead emails --prune-older-than 86400
+```
+
 ## Safe shutdown
 
 `queue process` and `queue exec` handle `SIGINT` and `SIGTERM` by finishing the

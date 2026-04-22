@@ -197,6 +197,10 @@ class QueueStore(Protocol):
         self, queue: str, message_id: str, *, available_at: float
     ) -> bool: ...
 
+    def prune_dead_letters(
+        self, queue: str, *, older_than: float, now: float
+    ) -> int: ...
+
     def empty(self, queue: str, *, now: float) -> bool: ...
 
     def purge(self, queue: str) -> int: ...
@@ -409,6 +413,19 @@ class MemoryQueueStore:
                 index_key=self._ready_key(queue, available_at, seq, message_id),
             )
             return True
+
+    def prune_dead_letters(self, queue: str, *, older_than: float, now: float) -> int:
+        with self._lock:
+            records = self._records.get(queue, {})
+            doomed = [
+                message_id
+                for message_id, record in records.items()
+                if record.state == _DEAD
+                and _dead_record_age(record, now=now) >= older_than
+            ]
+            for message_id in doomed:
+                _ = records.pop(message_id, None)
+            return len(doomed)
 
     def empty(self, queue: str, *, now: float) -> bool:
         return self.qsize(queue, now=now) == 0
@@ -728,6 +745,25 @@ class SQLiteQueueStore:
             )
             self._upsert_record(connection, updated, sequence=seq)
             return True
+
+    def prune_dead_letters(self, queue: str, *, older_than: float, now: float) -> int:
+        with self._transaction() as connection:
+            cursor = connection.execute(
+                "SELECT id, record_json FROM queue_messages "
+                "WHERE queue = ? AND state = ?",
+                (queue, _DEAD),
+            )
+            doomed = [
+                message_id
+                for message_id, raw in cursor.fetchall()
+                if _dead_record_age(_decode_record(raw), now=now) >= older_than
+            ]
+            for message_id in doomed:
+                _ = connection.execute(
+                    "DELETE FROM queue_messages WHERE queue = ? AND id = ?",
+                    (queue, message_id),
+                )
+            return len(doomed)
 
     def empty(self, queue: str, *, now: float) -> bool:
         return self.qsize(queue, now=now) == 0
@@ -1150,6 +1186,32 @@ class LMDBQueueStore:
             _ = txn.put(updated.index_key, updated.id.encode("utf-8"))
             return True
 
+    def prune_dead_letters(self, queue: str, *, older_than: float, now: float) -> int:
+        with self._env.begin(write=True) as txn:
+            doomed: list[bytes] = []
+            cursor = txn.cursor()
+            prefix = _dead_prefix(queue)
+            if not cursor.set_range(prefix):
+                return 0
+            for key, raw_id in cursor:
+                key = bytes(key)
+                if not key.startswith(prefix):
+                    break
+                record = self._get_record(txn, queue, bytes(raw_id).decode("utf-8"))
+                if (
+                    record is not None
+                    and _dead_record_age(record, now=now) >= older_than
+                ):
+                    doomed.append(bytes(raw_id))
+            for raw_id in doomed:
+                message_id = raw_id.decode("utf-8")
+                record = self._get_record(txn, queue, message_id)
+                if record is None:
+                    continue
+                _ = txn.delete(_dead_key(queue, message_id))
+                _ = txn.delete(_message_key(queue, message_id))
+            return len(doomed)
+
     def empty(self, queue: str, *, now: float) -> bool:
         return self.qsize(queue, now=now) == 0
 
@@ -1443,6 +1505,11 @@ def _stats_from_records(
 def _validate_limit(limit: int | None) -> None:
     if limit is not None and limit < 0:
         raise ValueError("limit cannot be negative")
+
+
+def _dead_record_age(record: _QueueRecord, *, now: float) -> float:
+    anchor = record.failed_at if record.failed_at is not None else record.created_at
+    return max(now - anchor, 0.0)
 
 
 def _last_leased_at(record: _QueueRecord) -> float | None:

@@ -99,8 +99,10 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
     config = _load_config(yaml)
     app = typer.Typer(no_args_is_help=True)
     queue_app = typer.Typer(no_args_is_help=True)
+    retry_app = typer.Typer(no_args_is_help=True)
     config_app = typer.Typer(no_args_is_help=True)
     app.add_typer(queue_app, name="queue")
+    app.add_typer(retry_app, name="retry")
     app.add_typer(config_app, name="config")
 
     @config_app.command("path")
@@ -292,8 +294,31 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         max_attempts: int | None = typer.Option(None, "--max-attempts", min=0),
         error_contains: str | None = typer.Option(None, "--error-contains"),
         failed_within: float | None = typer.Option(None, "--failed-within", min=0.0),
+        prune_older_than: float | None = typer.Option(
+            None, "--prune-older-than", min=0.0
+        ),
     ) -> None:
         persistent_queue = _queue(queue, _resolve_store_path(store_path, config))
+        if prune_older_than is not None:
+            if any(
+                (
+                    watch,
+                    summary,
+                    limit is not None,
+                    min_attempts is not None,
+                    max_attempts is not None,
+                    error_contains is not None,
+                    failed_within is not None,
+                )
+            ):
+                err_console.print(
+                    "[red]pass --prune-older-than on its own; "
+                    + "it cannot be combined with list or watch options[/red]"
+                )
+                raise typer.Exit(1)
+            deleted = persistent_queue.prune_dead_letters(older_than=prune_older_than)
+            _print_json(console, {"deleted": deleted})
+            return
         with _shutdown_state() as shutdown:
             _print_dead_letters(
                 persistent_queue,
@@ -308,6 +333,18 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
                 error_contains=error_contains,
                 failed_within=failed_within,
             )
+
+    @retry_app.command("prune")
+    def retry_prune(
+        older_than: float = typer.Option(..., "--older-than", min=0.0),
+        retry_store_path: str | None = typer.Option(None, "--retry-store-path"),
+    ) -> None:
+        store = SQLiteAttemptStore(_resolve_retry_store_path(retry_store_path, config))
+        try:
+            deleted = store.prune_exhausted(older_than=older_than, now=time.time())
+        finally:
+            store.close()
+        _print_json(console, {"deleted": deleted})
 
     @queue_app.command("requeue-dead")
     def queue_requeue_dead(

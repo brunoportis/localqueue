@@ -17,7 +17,7 @@ from typer.testing import CliRunner
 import yaml
 
 from localqueue import MemoryQueueStore, PersistentQueue
-from localqueue.retry import MemoryAttemptStore, SQLiteAttemptStore
+from localqueue.retry import MemoryAttemptStore, RetryRecord, SQLiteAttemptStore
 from localqueue.cli import (
     CONFIG_FILENAME,
     DEFAULT_RETRY_STORE_PATH,
@@ -461,6 +461,73 @@ class CliTests(unittest.TestCase):
             self.assertEqual(summary["count"], 1)
             self.assertEqual(summary["by_error_type"]["RuntimeError"], 1)
             self.assertEqual(summary["by_worker_id"], {"worker-a": 1})
+
+    def test_queue_dead_prune_older_than_removes_old_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_path = str(Path(tmpdir) / "queues")
+            queue = PersistentQueue("emails", store_path=store_path)
+
+            with mock.patch(
+                "time.time",
+                side_effect=[100.0, 100.0, 100.0, 100.0, 100.0],
+            ):
+                _ = queue.put({"to": "user@example.com"})
+                message = queue.get_message()
+                self.assertTrue(
+                    queue.dead_letter(message, error=RuntimeError("mail timeout"))
+                )
+
+            with mock.patch("localqueue.cli.time.time", return_value=200.0):
+                prune_result = self._invoke(
+                    [
+                        "queue",
+                        "dead",
+                        "emails",
+                        "--store-path",
+                        store_path,
+                        "--prune-older-than",
+                        "50",
+                    ]
+                )
+
+            self.assertEqual(prune_result.exit_code, 0, prune_result.output)
+            self.assertEqual(json.loads(prune_result.stdout), {"deleted": 1})
+            self.assertEqual(
+                PersistentQueue("emails", store_path=store_path).dead_letters(), []
+            )
+
+    def test_retry_prune_removes_old_exhausted_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_path = str(Path(tmpdir) / "retries.sqlite3")
+            store = SQLiteAttemptStore(store_path)
+            store.save(
+                "old",
+                RetryRecord(attempts=3, first_attempt_at=100.0, exhausted=True),
+            )
+            store.save(
+                "active",
+                RetryRecord(attempts=1, first_attempt_at=100.0, exhausted=False),
+            )
+            store.close()
+
+            with mock.patch("localqueue.cli.time.time", return_value=200.0):
+                prune_result = self._invoke(
+                    [
+                        "retry",
+                        "prune",
+                        "--retry-store-path",
+                        store_path,
+                        "--older-than",
+                        "50",
+                    ]
+                )
+
+            self.assertEqual(prune_result.exit_code, 0, prune_result.output)
+            self.assertEqual(json.loads(prune_result.stdout), {"deleted": 1})
+            reopened = SQLiteAttemptStore(store_path)
+            self.assertIsNone(reopened.load("old"))
+            self.assertIsNotNone(reopened.load("active"))
+            reopened.close()
 
     def test_queue_add_accepts_stdin_and_raw_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

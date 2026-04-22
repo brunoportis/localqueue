@@ -15,7 +15,7 @@ from unittest import mock
 
 import lmdb
 
-from localqueue.retry import MemoryAttemptStore
+from localqueue.retry import MemoryAttemptStore, RetryRecord, SQLiteAttemptStore
 from localqueue import (
     LMDBQueueStore,
     MemoryQueueStore,
@@ -190,6 +190,39 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(len(queue.dead_letters(limit=1)), 1)
         with self.assertRaises(ValueError):
             _ = queue.dead_letters(limit=-1)
+
+    def test_dead_letter_prune_removes_old_messages(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+
+        with mock.patch(
+            "time.time",
+            side_effect=[100.0, 100.0, 100.0, 100.0, 100.0],
+        ):
+            _ = queue.put("old")
+            message = queue.get_message()
+            self.assertTrue(queue.dead_letter(message, error=RuntimeError("bad")))
+
+        with mock.patch("time.time", return_value=200.0):
+            self.assertEqual(queue.prune_dead_letters(older_than=50), 1)
+
+        self.assertEqual(queue.dead_letters(), [])
+
+    def test_sqlite_dead_letter_prune_removes_old_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            queue = PersistentQueue("test", store_path=f"{tmpdir}/queue.sqlite3")
+
+            with mock.patch(
+                "time.time",
+                side_effect=[100.0, 100.0, 100.0, 100.0, 100.0],
+            ):
+                _ = queue.put("old")
+                message = queue.get_message()
+                self.assertTrue(queue.dead_letter(message, error=RuntimeError("bad")))
+
+            with mock.patch("time.time", return_value=200.0):
+                self.assertEqual(queue.prune_dead_letters(older_than=50), 1)
+
+            self.assertEqual(queue.dead_letters(), [])
 
     def test_sqlite_default_store_persistence(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -619,6 +652,35 @@ class QueueTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "JSON-serializable"):
                 _ = store.enqueue("jobs", object(), available_at=time.time())
+
+    def test_retry_store_prunes_exhausted_records(self) -> None:
+        store = MemoryAttemptStore()
+        store.save(
+            "old", RetryRecord(attempts=3, first_attempt_at=100.0, exhausted=True)
+        )
+        store.save(
+            "active", RetryRecord(attempts=1, first_attempt_at=100.0, exhausted=False)
+        )
+
+        self.assertEqual(store.prune_exhausted(older_than=50, now=200.0), 1)
+        self.assertIsNone(store.load("old"))
+        self.assertIsNotNone(store.load("active"))
+
+    def test_sqlite_retry_store_prunes_exhausted_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SQLiteAttemptStore(f"{tmpdir}/retries.sqlite3")
+            store.save(
+                "old", RetryRecord(attempts=3, first_attempt_at=100.0, exhausted=True)
+            )
+            store.save(
+                "active",
+                RetryRecord(attempts=1, first_attempt_at=100.0, exhausted=False),
+            )
+
+            self.assertEqual(store.prune_exhausted(older_than=50, now=200.0), 1)
+            self.assertIsNone(store.load("old"))
+            self.assertIsNotNone(store.load("active"))
+            store.close()
 
     def test_sqlite_store_persists_last_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
