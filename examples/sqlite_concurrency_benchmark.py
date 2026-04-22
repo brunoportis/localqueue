@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import threading
 import time
 from collections import Counter
@@ -56,17 +57,36 @@ def _run_benchmark(
     if producers <= 0 or consumers <= 0 or messages <= 0:
         raise ValueError("producers, consumers, and messages must be greater than zero")
 
+    store_file = Path(store_path)
+    for suffix in ("", "-wal", "-shm"):
+        candidate = Path(f"{store_file}{suffix}")
+        if candidate.exists():
+            candidate.unlink()
+
     start = threading.Event()
     producers_done = threading.Event()
     consumed = Counter[str]()
     consumed_lock = threading.Lock()
     errors: list[BaseException] = []
     errors_lock = threading.Lock()
+    lock_retries = Counter[str]()
     per_producer, remainder = divmod(messages, producers)
 
     def record_error(exc: BaseException) -> None:
         with errors_lock:
             errors.append(exc)
+
+    def retry_sqlite_locked(action: str, fn: Any) -> Any:
+        attempts = 0
+        while True:
+            try:
+                return fn()
+            except sqlite3.OperationalError as exc:
+                if "database is locked" not in str(exc).lower():
+                    raise
+                attempts += 1
+                lock_retries[action] += 1
+                time.sleep(min(0.001 * attempts, 0.05))
 
     def producer(index: int) -> None:
         try:
@@ -76,7 +96,10 @@ def _run_benchmark(
             start.wait()
             count = per_producer + (1 if index < remainder else 0)
             for sequence in range(count):
-                queue.put({"producer": index, "sequence": sequence})
+                retry_sqlite_locked(
+                    "put",
+                    lambda: queue.put({"producer": index, "sequence": sequence}),
+                )
         except BaseException as exc:  # pragma: no cover - defensive
             record_error(exc)
 
@@ -91,8 +114,11 @@ def _run_benchmark(
                     if producers_done.is_set() and sum(consumed.values()) >= messages:
                         return
                 try:
-                    message = queue.get_message(
-                        block=False, leased_by=f"consumer-{index}"
+                    message = retry_sqlite_locked(
+                        "get",
+                        lambda: queue.get_message(
+                            block=False, leased_by=f"consumer-{index}"
+                        ),
                     )
                 except Empty:
                     if producers_done.is_set():
@@ -101,7 +127,7 @@ def _run_benchmark(
                                 return
                     time.sleep(0.001)
                     continue
-                if not queue.ack(message):
+                if not retry_sqlite_locked("ack", lambda: queue.ack(message)):
                     record_error(RuntimeError(f"ack failed for {message.id}"))
                     return
                 with consumed_lock:
@@ -146,6 +172,7 @@ def _run_benchmark(
         "unique_messages": len(consumed),
         "errors": len(errors),
         "error_messages": [f"{type(error).__name__}: {error}" for error in errors],
+        "lock_retries": dict(lock_retries),
         "elapsed_seconds": round(elapsed, 6),
         "throughput_messages_per_second": round(throughput, 2),
         "stats": stats,

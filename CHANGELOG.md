@@ -4,6 +4,7 @@
 
 - Add a concurrent SQLite stress test for multiple producers and consumers.
 - Add `examples/sqlite_concurrency_benchmark.py` for measuring local queue throughput.
+- Make the SQLite benchmark reset its store and retry transient lock contention.
 - Add a short-term maturity note focused on performance and guarantees.
 
 ## 0.2.0
