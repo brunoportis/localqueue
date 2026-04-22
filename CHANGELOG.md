@@ -5,6 +5,8 @@
 - Add a concurrent SQLite stress test for multiple producers and consumers.
 - Add `examples/sqlite_concurrency_benchmark.py` for measuring local queue throughput.
 - Make the SQLite benchmark reset its store and retry transient lock contention.
+- Add `examples/sqlite_process_harness.py` for process-level throughput and crash-recovery checks.
+- Add process-based stress tests for SQLite producer and consumer coordination.
 - Add dead-letter filters and summaries for `queue dead`.
 - Add a short-term maturity note focused on performance and guarantees.
 

@@ -286,6 +286,16 @@ In a small local benchmark here, the queue stayed in the low thousands of
 messages per second and remained stable under a few producers and consumers,
 but that is a local measurement, not a guarantee.
 
+For a process-level smoke test, use the harness script:
+
+```bash
+uv run python examples/sqlite_process_harness.py --mode throughput
+uv run python examples/sqlite_process_harness.py --mode crash-recovery
+```
+
+Those runs exercise separate producer/consumer processes, lease expiry, and
+recovery after an abrupt consumer exit.
+
 ## Persistent retry layer
 
 Use `localqueue.retry` directly when the job source is not `localqueue`.

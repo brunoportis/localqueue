@@ -27,6 +27,8 @@ That means measuring the current ceiling before promising more:
   messages per second and handled a few producers and consumers without failing
   the queue, which is useful as a local ceiling check but not a production
   guarantee
+- exercise abrupt consumer exit and lease recovery with
+  `examples/sqlite_process_harness.py --mode crash-recovery`
 - document the practical limits for a single host and a single SQLite file
 - keep ordering language explicit: best effort under concurrency, not strict
   global ordering
@@ -37,9 +39,9 @@ That means measuring the current ceiling before promising more:
 ## Concurrency and locking
 
 - [x] Document practical SQLite concurrency limits for producers and workers.
-- [ ] Add stress tests for multiple producer and consumer processes sharing one
+- [x] Add stress tests for multiple producer and consumer processes sharing one
   SQLite queue file.
-- [ ] Measure throughput and lock contention under WAL mode.
+- [x] Measure throughput and lock contention under WAL mode.
 - [ ] Define guidance for when users should move to Postgres, Redis, SQS,
   RabbitMQ, or another external broker.
 
