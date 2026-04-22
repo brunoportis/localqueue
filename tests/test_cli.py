@@ -436,6 +436,32 @@ class CliTests(unittest.TestCase):
             self.assertEqual(purge_result.exit_code, 0, purge_result.output)
             self.assertEqual(purge_result.stdout.strip(), "1")
 
+    def test_queue_dead_summary_groups_by_worker_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_path = str(Path(tmpdir) / "queues")
+            queue = PersistentQueue("emails", store_path=store_path)
+            _ = queue.put({"to": "user@example.com"})
+            message = queue.get_message(leased_by="worker-a")
+            self.assertTrue(
+                queue.dead_letter(message, error=RuntimeError("mail timeout"))
+            )
+
+            summary_result = self._invoke(
+                [
+                    "queue",
+                    "dead",
+                    "emails",
+                    "--store-path",
+                    store_path,
+                    "--summary",
+                ]
+            )
+            self.assertEqual(summary_result.exit_code, 0, summary_result.output)
+            summary = json.loads(summary_result.stdout)
+            self.assertEqual(summary["count"], 1)
+            self.assertEqual(summary["by_error_type"]["RuntimeError"], 1)
+            self.assertEqual(summary["by_worker_id"], {"worker-a": 1})
+
     def test_queue_add_accepts_stdin_and_raw_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store_path = str(Path(tmpdir) / "queues")
@@ -981,19 +1007,16 @@ class CliTests(unittest.TestCase):
             )
 
         self.assertEqual(
-            console.values,
-            [
-                {
-                    "ready": 0,
-                    "delayed": 0,
-                    "inflight": 1,
-                    "dead": 0,
-                    "total": 1,
-                    "by_worker_id": {"worker-a": 1},
-                    "leases_by_worker_id": {"worker-a": 1},
-                }
-            ],
+            len(console.values),
+            1,
         )
+        self.assertEqual(console.values[0]["ready"], 0)
+        self.assertEqual(console.values[0]["delayed"], 0)
+        self.assertEqual(console.values[0]["inflight"], 1)
+        self.assertEqual(console.values[0]["dead"], 0)
+        self.assertEqual(console.values[0]["total"], 1)
+        self.assertEqual(console.values[0]["by_worker_id"], {"worker-a": 1})
+        self.assertEqual(console.values[0]["leases_by_worker_id"], {"worker-a": 1})
 
     def test_process_queue_messages_forever_stops_after_current_message(self) -> None:
         queue = PersistentQueue("emails", store=MemoryQueueStore())

@@ -87,32 +87,48 @@ class QueueTests(unittest.TestCase):
             stats.leases_by_worker_id,
             {"worker-a": 1, "worker-b": 1},
         )
-        self.assertEqual(
-            stats.as_dict(),
-            {
-                "ready": 0,
-                "delayed": 1,
-                "inflight": 1,
-                "dead": 1,
-                "total": 3,
-                "by_worker_id": {"worker-a": 1},
-                "leases_by_worker_id": {"worker-a": 1, "worker-b": 1},
-            },
-        )
+        self.assertIsNone(stats.oldest_ready_age_seconds)
+        self.assertIsNotNone(stats.oldest_inflight_age_seconds)
+        self.assertIsNotNone(stats.average_inflight_age_seconds)
 
         self.assertTrue(queue.ack(inflight))
+        after_ack = queue.stats()
+        self.assertEqual(after_ack.ready, 0)
+        self.assertEqual(after_ack.delayed, 1)
+        self.assertEqual(after_ack.inflight, 0)
+        self.assertEqual(after_ack.dead, 1)
+        self.assertEqual(after_ack.total, 2)
+        self.assertEqual(after_ack.by_worker_id, {})
         self.assertEqual(
-            queue.stats().as_dict(),
-            {
-                "ready": 0,
-                "delayed": 1,
-                "inflight": 0,
-                "dead": 1,
-                "total": 2,
-                "by_worker_id": {},
-                "leases_by_worker_id": {"worker-a": 1, "worker-b": 1},
-            },
+            after_ack.leases_by_worker_id,
+            {"worker-a": 1, "worker-b": 1},
         )
+
+    def test_stats_reports_queue_and_inflight_age(self) -> None:
+        call_times = [100.0, 101.0, 105.0, 110.0]
+
+        def fake_time() -> float:
+            return call_times.pop(0) if call_times else 110.0
+
+        with mock.patch("time.time", side_effect=fake_time):
+            queue = PersistentQueue("test", store=MemoryQueueStore())
+            _ = queue.put("ready")
+            _ = queue.put("inflight")
+            _ = queue.get_message(leased_by="worker-a")
+
+            stats = queue.stats()
+
+        self.assertEqual(stats.ready, 1)
+        self.assertEqual(stats.inflight, 1)
+        oldest_ready_age = stats.oldest_ready_age_seconds
+        oldest_inflight_age = stats.oldest_inflight_age_seconds
+        average_inflight_age = stats.average_inflight_age_seconds
+        assert oldest_ready_age is not None
+        assert oldest_inflight_age is not None
+        assert average_inflight_age is not None
+        self.assertGreaterEqual(oldest_ready_age, 0.0)
+        self.assertGreaterEqual(oldest_inflight_age, 0.0)
+        self.assertGreaterEqual(average_inflight_age, 0.0)
 
     def test_inspect_returns_message_without_changing_state(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())
@@ -432,18 +448,17 @@ class QueueTests(unittest.TestCase):
             self.assertTrue(queue.dead_letter(message, error=RuntimeError("bad")))
 
             self.assertEqual(queue.qsize(), 0)
-            self.assertEqual(
-                queue.stats().as_dict(),
-                {
-                    "ready": 0,
-                    "delayed": 0,
-                    "inflight": 0,
-                    "dead": 1,
-                    "total": 1,
-                    "by_worker_id": {},
-                    "leases_by_worker_id": {},
-                },
-            )
+            stats = queue.stats()
+            self.assertEqual(stats.ready, 0)
+            self.assertEqual(stats.delayed, 0)
+            self.assertEqual(stats.inflight, 0)
+            self.assertEqual(stats.dead, 1)
+            self.assertEqual(stats.total, 1)
+            self.assertEqual(stats.by_worker_id, {})
+            self.assertEqual(stats.leases_by_worker_id, {})
+            self.assertIsNone(stats.oldest_ready_age_seconds)
+            self.assertIsNone(stats.oldest_inflight_age_seconds)
+            self.assertIsNone(stats.average_inflight_age_seconds)
 
     def test_sqlite_store_tracks_worker_throughput_after_ack(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -451,33 +466,30 @@ class QueueTests(unittest.TestCase):
             _ = queue.put("item")
             message = queue.get_message(leased_by="worker-a")
 
-            self.assertEqual(
-                queue.stats().as_dict(),
-                {
-                    "ready": 0,
-                    "delayed": 0,
-                    "inflight": 1,
-                    "dead": 0,
-                    "total": 1,
-                    "by_worker_id": {"worker-a": 1},
-                    "leases_by_worker_id": {"worker-a": 1},
-                },
-            )
+            stats = queue.stats()
+            self.assertEqual(stats.ready, 0)
+            self.assertEqual(stats.delayed, 0)
+            self.assertEqual(stats.inflight, 1)
+            self.assertEqual(stats.dead, 0)
+            self.assertEqual(stats.total, 1)
+            self.assertEqual(stats.by_worker_id, {"worker-a": 1})
+            self.assertEqual(stats.leases_by_worker_id, {"worker-a": 1})
+            self.assertIsNotNone(stats.oldest_inflight_age_seconds)
+            self.assertIsNotNone(stats.average_inflight_age_seconds)
 
             self.assertTrue(queue.ack(message))
 
-            self.assertEqual(
-                queue.stats().as_dict(),
-                {
-                    "ready": 0,
-                    "delayed": 0,
-                    "inflight": 0,
-                    "dead": 0,
-                    "total": 0,
-                    "by_worker_id": {},
-                    "leases_by_worker_id": {"worker-a": 1},
-                },
-            )
+            stats = queue.stats()
+            self.assertEqual(stats.ready, 0)
+            self.assertEqual(stats.delayed, 0)
+            self.assertEqual(stats.inflight, 0)
+            self.assertEqual(stats.dead, 0)
+            self.assertEqual(stats.total, 0)
+            self.assertEqual(stats.by_worker_id, {})
+            self.assertEqual(stats.leases_by_worker_id, {"worker-a": 1})
+            self.assertIsNone(stats.oldest_ready_age_seconds)
+            self.assertIsNone(stats.oldest_inflight_age_seconds)
+            self.assertIsNone(stats.average_inflight_age_seconds)
 
     def test_sqlite_dead_letters_persist(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -540,33 +552,30 @@ class QueueTests(unittest.TestCase):
             )
             assert leased is not None
 
-            self.assertEqual(
-                store.stats("jobs", now=now).as_dict(),
-                {
-                    "ready": 0,
-                    "delayed": 0,
-                    "inflight": 1,
-                    "dead": 0,
-                    "total": 1,
-                    "by_worker_id": {"worker-a": 1},
-                    "leases_by_worker_id": {"worker-a": 1},
-                },
-            )
+            stats = store.stats("jobs", now=now)
+            self.assertEqual(stats.ready, 0)
+            self.assertEqual(stats.delayed, 0)
+            self.assertEqual(stats.inflight, 1)
+            self.assertEqual(stats.dead, 0)
+            self.assertEqual(stats.total, 1)
+            self.assertEqual(stats.by_worker_id, {"worker-a": 1})
+            self.assertEqual(stats.leases_by_worker_id, {"worker-a": 1})
+            self.assertIsNotNone(stats.oldest_inflight_age_seconds)
+            self.assertIsNotNone(stats.average_inflight_age_seconds)
 
             self.assertTrue(store.ack("jobs", message.id))
 
-            self.assertEqual(
-                store.stats("jobs", now=now).as_dict(),
-                {
-                    "ready": 0,
-                    "delayed": 0,
-                    "inflight": 0,
-                    "dead": 0,
-                    "total": 0,
-                    "by_worker_id": {},
-                    "leases_by_worker_id": {"worker-a": 1},
-                },
-            )
+            stats = store.stats("jobs", now=now)
+            self.assertEqual(stats.ready, 0)
+            self.assertEqual(stats.delayed, 0)
+            self.assertEqual(stats.inflight, 0)
+            self.assertEqual(stats.dead, 0)
+            self.assertEqual(stats.total, 0)
+            self.assertEqual(stats.by_worker_id, {})
+            self.assertEqual(stats.leases_by_worker_id, {"worker-a": 1})
+            self.assertIsNone(stats.oldest_ready_age_seconds)
+            self.assertIsNone(stats.oldest_inflight_age_seconds)
+            self.assertIsNone(stats.average_inflight_age_seconds)
 
     def test_lmdb_store_requeues_dead_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

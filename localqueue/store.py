@@ -79,6 +79,9 @@ class QueueStats:
     total: int = 0
     by_worker_id: dict[str, int] = field(default_factory=dict)
     leases_by_worker_id: dict[str, int] = field(default_factory=dict)
+    oldest_ready_age_seconds: float | None = None
+    oldest_inflight_age_seconds: float | None = None
+    average_inflight_age_seconds: float | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -89,6 +92,9 @@ class QueueStats:
             "total": self.total,
             "by_worker_id": self.by_worker_id,
             "leases_by_worker_id": self.leases_by_worker_id,
+            "oldest_ready_age_seconds": self.oldest_ready_age_seconds,
+            "oldest_inflight_age_seconds": self.oldest_inflight_age_seconds,
+            "average_inflight_age_seconds": self.average_inflight_age_seconds,
         }
 
 
@@ -1399,17 +1405,23 @@ def _stats_from_records(
     dead = 0
     total = 0
     by_worker_id: Counter[str] = Counter()
+    ready_ages: list[float] = []
+    inflight_ages: list[float] = []
     for record in records:
         total += 1
         if record.state == _READY:
             if record.available_at <= now:
                 ready += 1
+                ready_ages.append(max(now - record.available_at, 0.0))
             else:
                 delayed += 1
         elif record.state == _INFLIGHT:
             inflight += 1
             if record.leased_by:
                 by_worker_id[record.leased_by] += 1
+            leased_at = _last_leased_at(record)
+            if leased_at is not None:
+                inflight_ages.append(max(now - leased_at, 0.0))
         elif record.state == _DEAD:
             dead += 1
     return QueueStats(
@@ -1420,12 +1432,25 @@ def _stats_from_records(
         total=total,
         by_worker_id=dict(sorted(by_worker_id.items())),
         leases_by_worker_id=dict(sorted((leases_by_worker_id or {}).items())),
+        oldest_ready_age_seconds=max(ready_ages) if ready_ages else None,
+        oldest_inflight_age_seconds=max(inflight_ages) if inflight_ages else None,
+        average_inflight_age_seconds=(
+            sum(inflight_ages) / len(inflight_ages) if inflight_ages else None
+        ),
     )
 
 
 def _validate_limit(limit: int | None) -> None:
     if limit is not None and limit < 0:
         raise ValueError("limit cannot be negative")
+
+
+def _last_leased_at(record: _QueueRecord) -> float | None:
+    for event in reversed(record.attempt_history):
+        if event.get("type") == "leased":
+            leased_at = event.get("at")
+            return float(leased_at) if leased_at is not None else None
+    return None
 
 
 def _timestamp_from_index_key(key: bytes, *, expected_state: str) -> float:

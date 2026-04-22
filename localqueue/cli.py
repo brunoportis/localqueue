@@ -921,6 +921,7 @@ def _filter_dead_letters(
 def _dead_letter_summary(messages: list[QueueMessage]) -> dict[str, Any]:
     by_error_type = Counter[str]()
     by_attempts = Counter[str]()
+    by_worker_id = Counter[str]()
     failed_ats: list[float] = []
     for message in messages:
         error_type = "None"
@@ -928,12 +929,16 @@ def _dead_letter_summary(messages: list[QueueMessage]) -> dict[str, Any]:
             error_type = str(message.last_error.get("type") or "None")
         by_error_type[error_type] += 1
         by_attempts[str(message.attempts)] += 1
+        worker_id = _last_attempt_worker_id(message)
+        if worker_id is not None:
+            by_worker_id[worker_id] += 1
         if message.failed_at is not None:
             failed_ats.append(message.failed_at)
     summary: dict[str, Any] = {
         "count": len(messages),
         "by_error_type": dict(sorted(by_error_type.items())),
         "by_attempts": dict(sorted(by_attempts.items(), key=lambda item: int(item[0]))),
+        "by_worker_id": dict(sorted(by_worker_id.items())),
     }
     if failed_ats:
         summary["failed_at"] = {
@@ -941,6 +946,14 @@ def _dead_letter_summary(messages: list[QueueMessage]) -> dict[str, Any]:
             "newest": max(failed_ats),
         }
     return summary
+
+
+def _last_attempt_worker_id(message: QueueMessage) -> str | None:
+    for event in reversed(message.attempt_history):
+        if event.get("type") == "leased":
+            worker_id = event.get("leased_by")
+            return None if worker_id is None else str(worker_id)
+    return None
 
 
 def _format_command(command: list[str]) -> str:

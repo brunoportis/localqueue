@@ -333,6 +333,10 @@ queue.purge()
 `qsize()` counts messages available for immediate delivery. `stats()` returns
 ready, delayed, inflight, dead, and total counts, plus `by_worker_id` for
 current inflight leases and `leases_by_worker_id` for historical lease counts.
+It also reports `oldest_ready_age_seconds`, `oldest_inflight_age_seconds`, and
+`average_inflight_age_seconds` so you can spot backlog and stuck workers from
+the terminal. `oldest_inflight_age_seconds` is a coarse proxy for handler
+duration on messages that are still running.
 `inspect()` reads one message by id without changing state. `dead_letters()`
 lists dead-letter messages for inspection. `requeue_dead()` moves a dead-letter
 message back to the ready queue. `purge()` removes all records for that queue,
@@ -358,7 +362,8 @@ localqueue queue dead jobs --watch --interval 2
 
 Use `queue dead --summary` when you want a quick aggregate view, and combine it
 with `--min-attempts`, `--max-attempts`, `--error-contains`, or
-`--failed-within` when the dead-letter list is noisy.
+`--failed-within` when the dead-letter list is noisy. The summary groups by
+error type, attempt count, and worker id that last leased the message.
 
 ## Safe shutdown
 

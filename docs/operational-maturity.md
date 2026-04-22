@@ -81,9 +81,9 @@ That means measuring the current ceiling before promising more:
 
 - [ ] Add optional Prometheus or OpenTelemetry metrics.
 - [x] Track per-message attempt history, not only the latest error.
-- [ ] Track queue latency, handler duration, and time spent inflight.
+- [x] Track queue latency, handler duration, and time spent inflight.
 - [x] Track throughput by queue and worker id.
-- [ ] Add aggregate failure summaries for dead-letter inspection.
+- [x] Add aggregate failure summaries for dead-letter inspection.
 - [ ] Evaluate structured event logging for enqueue, lease, ack, release, and
   dead-letter transitions.
 
