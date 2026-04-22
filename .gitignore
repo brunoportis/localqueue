@@ -17,3 +17,4 @@ site/
 /localqueue_queue.sqlite3
 /localqueue_retries
 /localqueue_retries.sqlite3
+feedback.md
