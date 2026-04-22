@@ -45,6 +45,76 @@ async def async_task(job_id: str) -> dict:
     return await fetch_payload(job_id)
 ```
 
+## Retry policies by exception type
+
+Use the retry predicate to make the policy match the failure mode.
+Keep permanent validation errors out of the retry set and reserve retries for
+transient failures.
+
+### Transient network failures
+
+Retry connection problems and timeout-like failures when the remote side is
+temporarily unavailable.
+
+```python
+from localqueue.retry import key_from_argument, persistent_retry
+from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
+
+
+@persistent_retry(
+    key_fn=key_from_argument("job_id"),
+    stop=stop_after_attempt(5),
+    wait=wait_fixed(2),
+    retry=retry_if_exception_type((ConnectionError, TimeoutError)),
+)
+def send_webhook(job_id: str) -> None:
+    post_webhook(job_id)
+```
+
+### File-system or storage contention
+
+Retry contention errors when the local store is busy and the operation can be
+retried safely.
+
+```python
+from localqueue.retry import key_from_argument, persistent_retry
+from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
+
+
+@persistent_retry(
+    key_fn=key_from_argument("job_id"),
+    stop=stop_after_attempt(4),
+    wait=wait_fixed(1),
+    retry=retry_if_exception_type(OSError),
+)
+def write_report(job_id: str) -> None:
+    persist_report(job_id)
+```
+
+### Permanent validation failures
+
+Do not add validation errors to the retry predicate. Let them fail fast so the
+recorded attempt history stays about recoverable failures, not bad input.
+
+```python
+from localqueue.retry import key_from_argument, persistent_retry
+from tenacity import retry_if_exception_type, stop_after_attempt
+
+
+@persistent_retry(
+    key_fn=key_from_argument("job_id"),
+    stop=stop_after_attempt(3),
+    retry=retry_if_exception_type(ConnectionError),
+)
+def process_invoice(job_id: str, amount: int) -> None:
+    if amount <= 0:
+        raise ValueError("amount must be positive")
+    charge_card(job_id, amount)
+```
+
+`ValueError` in this example is not retried. Only the transient connection
+failure is.
+
 ## Retry keys
 
 Each persistent retry needs a stable key. Pass `key=` when the retryer is bound

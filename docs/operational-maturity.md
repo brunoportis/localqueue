@@ -67,7 +67,7 @@ That means measuring the current ceiling before promising more:
 
 ## Retry and worker policies
 
-- [ ] Add examples for different policies by exception type.
+- [x] Add examples for different policies by exception type.
 - [ ] Evaluate built-in permanent-failure classification.
 - [ ] Evaluate queue-level retry defaults that can be reused by many workers.
 - [ ] Evaluate rate limiting for handlers that call external services.
