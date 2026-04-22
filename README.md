@@ -78,6 +78,8 @@ retry_store_path: ./localqueue_retries.sqlite3
 used by `queue process` to persist retry attempts.
 
 The CLI starts with queue management commands. Values are JSON by default.
+For scripting, `queue inspect`, `queue stats`, and `queue dead` accept
+`--json` and print machine-readable output.
 
 ```bash
 localqueue queue add emails --value '{"to":"user@example.com"}'

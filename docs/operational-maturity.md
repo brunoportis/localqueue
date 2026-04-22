@@ -9,6 +9,25 @@ plus persistent retry state powered by Tenacity. The checklist below tracks the
 work needed before describing it as a mature production queue system instead of
 a local worker library.
 
+## Near-term focus
+
+The next release should improve two things that matter for real local workers:
+
+- performance, especially under multiple producers and consumers sharing one
+  SQLite file
+- guarantees, especially where the project is intentionally at-least-once and
+  best-effort rather than distributed or strongly ordered
+
+That means measuring the current ceiling before promising more:
+
+- benchmark WAL contention and queue throughput with concurrent processes
+- document the practical limits for a single host and a single SQLite file
+- keep ordering language explicit: best effort under concurrency, not strict
+  global ordering
+- keep delivery language explicit: at least once, not exactly once
+- keep recovery language explicit: inspection and requeue are local operations,
+  not cross-cluster coordination
+
 ## Concurrency and locking
 
 - [x] Document practical SQLite concurrency limits for producers and workers.

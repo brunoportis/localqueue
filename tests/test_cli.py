@@ -270,7 +270,7 @@ class CliTests(unittest.TestCase):
             )
 
             stats_result = self._invoke(
-                ["queue", "stats", "emails", "--store-path", store_path]
+                ["queue", "stats", "emails", "--store-path", store_path, "--json"]
             )
             self.assertEqual(stats_result.exit_code, 0, stats_result.output)
             self.assertEqual(json.loads(stats_result.stdout)["ready"], 1)
@@ -297,7 +297,16 @@ class CliTests(unittest.TestCase):
             )
 
             dead_list_result = self._invoke(
-                ["queue", "dead", "emails", "--limit", "1", "--store-path", store_path]
+                [
+                    "queue",
+                    "dead",
+                    "emails",
+                    "--limit",
+                    "1",
+                    "--store-path",
+                    store_path,
+                    "--json",
+                ]
             )
             self.assertEqual(dead_list_result.exit_code, 0, dead_list_result.output)
             self.assertEqual(json.loads(dead_list_result.stdout)[0]["id"], added["id"])
@@ -1045,6 +1054,7 @@ class CliTests(unittest.TestCase):
                     message.id,
                     "--store-path",
                     store_path,
+                    "--json",
                 ],
             )
 

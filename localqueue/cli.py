@@ -192,6 +192,7 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         queue: str,
         message_id: str,
         store_path: str | None = typer.Option(None, "--store-path"),
+        json_output: bool = typer.Option(False, "--json"),
     ) -> None:
         message = _queue(queue, _resolve_store_path(store_path, config)).inspect(
             message_id
@@ -264,6 +265,7 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         store_path: str | None = typer.Option(None, "--store-path"),
         watch: bool = typer.Option(False, "--watch"),
         interval: float = typer.Option(1.0, "--interval", min=0.001),
+        json_output: bool = typer.Option(False, "--json"),
     ) -> None:
         persistent_queue = _queue(queue, _resolve_store_path(store_path, config))
         with _shutdown_state() as shutdown:
@@ -282,6 +284,7 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         limit: int | None = typer.Option(None, "--limit", min=0),
         watch: bool = typer.Option(False, "--watch"),
         interval: float = typer.Option(1.0, "--interval", min=0.001),
+        json_output: bool = typer.Option(False, "--json"),
     ) -> None:
         persistent_queue = _queue(queue, _resolve_store_path(store_path, config))
         with _shutdown_state() as shutdown:
