@@ -990,6 +990,7 @@ class CliTests(unittest.TestCase):
                     "dead": 0,
                     "total": 1,
                     "by_worker_id": {"worker-a": 1},
+                    "leases_by_worker_id": {"worker-a": 1},
                 }
             ],
         )

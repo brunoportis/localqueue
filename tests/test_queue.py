@@ -84,6 +84,10 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(stats.total, 3)
         self.assertEqual(stats.by_worker_id, {"worker-a": 1})
         self.assertEqual(
+            stats.leases_by_worker_id,
+            {"worker-a": 1, "worker-b": 1},
+        )
+        self.assertEqual(
             stats.as_dict(),
             {
                 "ready": 0,
@@ -92,6 +96,21 @@ class QueueTests(unittest.TestCase):
                 "dead": 1,
                 "total": 3,
                 "by_worker_id": {"worker-a": 1},
+                "leases_by_worker_id": {"worker-a": 1, "worker-b": 1},
+            },
+        )
+
+        self.assertTrue(queue.ack(inflight))
+        self.assertEqual(
+            queue.stats().as_dict(),
+            {
+                "ready": 0,
+                "delayed": 1,
+                "inflight": 0,
+                "dead": 1,
+                "total": 2,
+                "by_worker_id": {},
+                "leases_by_worker_id": {"worker-a": 1, "worker-b": 1},
             },
         )
 
@@ -354,16 +373,19 @@ class QueueTests(unittest.TestCase):
             self.assertGreaterEqual(sum(lock_retries.values()), 0)
 
             queue = PersistentQueue(queue_name, store_path=store_path)
-            self.assertEqual(
-                queue.stats().as_dict(),
-                {
-                    "ready": 0,
-                    "delayed": 0,
-                    "inflight": 0,
-                    "dead": 0,
-                    "total": 0,
-                    "by_worker_id": {},
-                },
+            stats = queue.stats().as_dict()
+            self.assertEqual(stats["ready"], 0)
+            self.assertEqual(stats["delayed"], 0)
+            self.assertEqual(stats["inflight"], 0)
+            self.assertEqual(stats["dead"], 0)
+            self.assertEqual(stats["total"], 0)
+            self.assertEqual(stats["by_worker_id"], {})
+            self.assertEqual(sum(stats["leases_by_worker_id"].values()), total_messages)
+            self.assertTrue(
+                all(
+                    worker.startswith("consumer-")
+                    for worker in stats["leases_by_worker_id"]
+                )
             )
 
     def test_lmdb_store_queue_operations(self) -> None:
@@ -419,6 +441,41 @@ class QueueTests(unittest.TestCase):
                     "dead": 1,
                     "total": 1,
                     "by_worker_id": {},
+                    "leases_by_worker_id": {},
+                },
+            )
+
+    def test_sqlite_store_tracks_worker_throughput_after_ack(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            queue = PersistentQueue("jobs", store_path=f"{tmpdir}/queue.sqlite3")
+            _ = queue.put("item")
+            message = queue.get_message(leased_by="worker-a")
+
+            self.assertEqual(
+                queue.stats().as_dict(),
+                {
+                    "ready": 0,
+                    "delayed": 0,
+                    "inflight": 1,
+                    "dead": 0,
+                    "total": 1,
+                    "by_worker_id": {"worker-a": 1},
+                    "leases_by_worker_id": {"worker-a": 1},
+                },
+            )
+
+            self.assertTrue(queue.ack(message))
+
+            self.assertEqual(
+                queue.stats().as_dict(),
+                {
+                    "ready": 0,
+                    "delayed": 0,
+                    "inflight": 0,
+                    "dead": 0,
+                    "total": 0,
+                    "by_worker_id": {},
+                    "leases_by_worker_id": {"worker-a": 1},
                 },
             )
 
@@ -472,6 +529,44 @@ class QueueTests(unittest.TestCase):
             released = store.get("jobs", leased.id)
             assert released is not None
             self.assertIsNone(released.leased_by)
+
+    def test_lmdb_store_tracks_worker_throughput_after_ack(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LMDBQueueStore(tmpdir)
+            now = time.time()
+            message = store.enqueue("jobs", {"id": 1}, available_at=now)
+            leased = store.dequeue(
+                "jobs", lease_timeout=30, now=now, leased_by="worker-a"
+            )
+            assert leased is not None
+
+            self.assertEqual(
+                store.stats("jobs", now=now).as_dict(),
+                {
+                    "ready": 0,
+                    "delayed": 0,
+                    "inflight": 1,
+                    "dead": 0,
+                    "total": 1,
+                    "by_worker_id": {"worker-a": 1},
+                    "leases_by_worker_id": {"worker-a": 1},
+                },
+            )
+
+            self.assertTrue(store.ack("jobs", message.id))
+
+            self.assertEqual(
+                store.stats("jobs", now=now).as_dict(),
+                {
+                    "ready": 0,
+                    "delayed": 0,
+                    "inflight": 0,
+                    "dead": 0,
+                    "total": 0,
+                    "by_worker_id": {},
+                    "leases_by_worker_id": {"worker-a": 1},
+                },
+            )
 
     def test_lmdb_store_requeues_dead_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

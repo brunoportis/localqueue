@@ -331,11 +331,12 @@ queue.purge()
 ```
 
 `qsize()` counts messages available for immediate delivery. `stats()` returns
-ready, delayed, inflight, dead, and total counts. `inspect()` reads one message
-by id without changing state. `dead_letters()` lists dead-letter messages for
-inspection. `requeue_dead()` moves a dead-letter message back to the ready queue.
-`purge()` removes all records for that queue, including ready, inflight, and
-dead-letter records.
+ready, delayed, inflight, dead, and total counts, plus `by_worker_id` for
+current inflight leases and `leases_by_worker_id` for historical lease counts.
+`inspect()` reads one message by id without changing state. `dead_letters()`
+lists dead-letter messages for inspection. `requeue_dead()` moves a dead-letter
+message back to the ready queue. `purge()` removes all records for that queue,
+including ready, inflight, and dead-letter records.
 
 From the CLI, use `queue stats --watch` to monitor those counts while workers
 are running:
@@ -345,8 +346,9 @@ localqueue queue stats jobs --watch --interval 1
 ```
 
 Each sample is printed as JSON with `ready`, `delayed`, `inflight`, `dead`, and
-`total` counts, plus `by_worker_id` when messages are leased. Stop the watch
-with `Ctrl-C`.
+`total` counts, plus `by_worker_id` for current inflight leases and
+`leases_by_worker_id` for historical lease counts. The historical count is a
+coarse throughput proxy, not a completion metric. Stop the watch with `Ctrl-C`.
 
 Use `queue dead --watch` to keep an eye on recent failures:
 

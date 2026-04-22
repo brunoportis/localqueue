@@ -78,6 +78,7 @@ class QueueStats:
     dead: int = 0
     total: int = 0
     by_worker_id: dict[str, int] = field(default_factory=dict)
+    leases_by_worker_id: dict[str, int] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -87,6 +88,7 @@ class QueueStats:
             "dead": self.dead,
             "total": self.total,
             "by_worker_id": self.by_worker_id,
+            "leases_by_worker_id": self.leases_by_worker_id,
         }
 
 
@@ -209,11 +211,13 @@ class QueueStoreLockedError(RuntimeError):
 class MemoryQueueStore:
     _records: dict[str, dict[str, _QueueRecord]]
     _seq: dict[str, int]
+    _worker_stats: dict[str, Counter[str]]
     _lock: threading.Lock
 
     def __init__(self) -> None:
         self._records = {}
         self._seq = {}
+        self._worker_stats = {}
         self._lock = threading.Lock()
 
     def enqueue(self, queue: str, value: Any, *, available_at: float) -> QueueMessage:
@@ -263,6 +267,8 @@ class MemoryQueueStore:
                 ],
             )
             self._records[queue][record.id] = updated
+            if leased_by is not None:
+                self._worker_stats.setdefault(queue, Counter())[leased_by] += 1
             return updated.to_message()
 
     def get(self, queue: str, message_id: str) -> QueueMessage | None:
@@ -359,7 +365,13 @@ class MemoryQueueStore:
     def stats(self, queue: str, *, now: float) -> QueueStats:
         with self._lock:
             self._reclaim_expired(queue, now)
-            return _stats_from_records(self._records.get(queue, {}).values(), now=now)
+            return _stats_from_records(
+                self._records.get(queue, {}).values(),
+                now=now,
+                leases_by_worker_id=dict(
+                    sorted(self._worker_stats.get(queue, {}).items())
+                ),
+            )
 
     def dead_letters(
         self, queue: str, *, limit: int | None = None
@@ -399,6 +411,7 @@ class MemoryQueueStore:
         with self._lock:
             count = len(self._records.get(queue, {}))
             self._records[queue] = {}
+            self._worker_stats.pop(queue, None)
             return count
 
     def _next_seq(self, queue: str) -> int:
@@ -489,6 +502,14 @@ class SQLiteQueueStore:
             "value INTEGER NOT NULL"
             ")"
         )
+        self._connection.execute(
+            "CREATE TABLE IF NOT EXISTS queue_worker_stats ("
+            "queue TEXT NOT NULL, "
+            "worker_id TEXT NOT NULL, "
+            "leased_count INTEGER NOT NULL, "
+            "PRIMARY KEY(queue, worker_id)"
+            ")"
+        )
         self._connection.commit()
         self._lock = threading.Lock()
 
@@ -542,6 +563,8 @@ class SQLiteQueueStore:
                 ],
             )
             self._upsert_record(connection, updated, sequence=self._sequence(row[1]))
+            if leased_by is not None:
+                self._increment_worker_stats(connection, queue, leased_by)
             return updated.to_message()
 
     def get(self, queue: str, message_id: str) -> QueueMessage | None:
@@ -652,8 +675,17 @@ class SQLiteQueueStore:
                 "SELECT record_json FROM queue_messages WHERE queue = ?",
                 (queue,),
             )
+            worker_stats = connection.execute(
+                "SELECT worker_id, leased_count FROM queue_worker_stats "
+                "WHERE queue = ? ORDER BY worker_id",
+                (queue,),
+            )
             return _stats_from_records(
-                (_decode_record(row[0]) for row in cursor.fetchall()), now=now
+                (_decode_record(row[0]) for row in cursor.fetchall()),
+                now=now,
+                leases_by_worker_id={
+                    row[0]: int(row[1]) for row in worker_stats.fetchall()
+                },
             )
 
     def dead_letters(
@@ -699,6 +731,9 @@ class SQLiteQueueStore:
             cursor = connection.execute(
                 "DELETE FROM queue_messages WHERE queue = ?", (queue,)
             )
+            _ = connection.execute(
+                "DELETE FROM queue_worker_stats WHERE queue = ?", (queue,)
+            )
             return cursor.rowcount
 
     def close(self) -> None:
@@ -733,6 +768,24 @@ class SQLiteQueueStore:
             (queue, value),
         )
         return value
+
+    def _increment_worker_stats(
+        self, connection: sqlite3.Connection, queue: str, worker_id: str
+    ) -> None:
+        cursor = connection.execute(
+            "SELECT leased_count FROM queue_worker_stats "
+            "WHERE queue = ? AND worker_id = ?",
+            (queue, worker_id),
+        )
+        row = cursor.fetchone()
+        leased_count = 1 if row is None else int(row[0]) + 1
+        connection.execute(
+            "INSERT INTO queue_worker_stats(queue, worker_id, leased_count) "
+            "VALUES(?, ?, ?) "
+            "ON CONFLICT(queue, worker_id) DO UPDATE SET "
+            "leased_count = excluded.leased_count",
+            (queue, worker_id, leased_count),
+        )
 
     def _get_record(
         self, connection: sqlite3.Connection, queue: str, message_id: str
@@ -906,6 +959,8 @@ class LMDBQueueStore:
             self._put_record(txn, updated)
             assert updated.index_key is not None
             _ = txn.put(updated.index_key, updated.id.encode("utf-8"))
+            if leased_by is not None:
+                self._increment_worker_stats(txn, queue, leased_by)
             return updated.to_message()
 
     def get(self, queue: str, message_id: str) -> QueueMessage | None:
@@ -1031,7 +1086,14 @@ class LMDBQueueStore:
                     if not key.startswith(prefix):
                         break
                     records.append(_decode_record(bytes(raw)))
-            return _stats_from_records(records, now=now)
+            raw = txn.get(_worker_stats_key(queue))
+            return _stats_from_records(
+                records,
+                now=now,
+                leases_by_worker_id=self._decode_worker_stats(
+                    bytes(raw) if raw is not None else None
+                ),
+            )
 
     def dead_letters(
         self, queue: str, *, limit: int | None = None
@@ -1168,6 +1230,26 @@ class LMDBQueueStore:
         if record.index_key is not None:
             _ = txn.delete(record.index_key)
 
+    def _increment_worker_stats(
+        self, txn: lmdb.Transaction, queue: str, worker_id: str
+    ) -> None:
+        raw = txn.get(_worker_stats_key(queue))
+        stats = self._decode_worker_stats(bytes(raw) if raw is not None else None)
+        stats[worker_id] = stats.get(worker_id, 0) + 1
+        _ = txn.put(_worker_stats_key(queue), _encode_worker_stats(stats))
+
+    @staticmethod
+    def _decode_worker_stats(raw: bytes | None) -> dict[str, int]:
+        if raw is None:
+            return {}
+        try:
+            payload = json.loads(bytes(raw).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("queue worker stats are not valid JSON") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("queue worker stats payload must be a JSON object")
+        return {str(key): int(value) for key, value in payload.items()}
+
 
 def _safe_queue(queue: str) -> str:
     if not queue:
@@ -1238,6 +1320,10 @@ def _dead_prefix(queue: str) -> bytes:
     return f"queue:{_safe_queue(queue)}:dead:".encode("utf-8")
 
 
+def _worker_stats_key(queue: str) -> bytes:
+    return f"queue:{_safe_queue(queue)}:worker-stats".encode("utf-8")
+
+
 def _encode_record(record: _QueueRecord) -> bytes:
     payload = {
         "version": _QUEUE_RECORD_VERSION,
@@ -1295,7 +1381,18 @@ def _decode_record(raw: bytes | str) -> _QueueRecord:
     )
 
 
-def _stats_from_records(records: Iterable[_QueueRecord], *, now: float) -> QueueStats:
+def _encode_worker_stats(stats: dict[str, int]) -> bytes:
+    return json.dumps(dict(sorted(stats.items())), separators=(",", ":")).encode(
+        "utf-8"
+    )
+
+
+def _stats_from_records(
+    records: Iterable[_QueueRecord],
+    *,
+    now: float,
+    leases_by_worker_id: dict[str, int] | None = None,
+) -> QueueStats:
     ready = 0
     delayed = 0
     inflight = 0
@@ -1322,6 +1419,7 @@ def _stats_from_records(records: Iterable[_QueueRecord], *, now: float) -> Queue
         dead=dead,
         total=total,
         by_worker_id=dict(sorted(by_worker_id.items())),
+        leases_by_worker_id=dict(sorted((leases_by_worker_id or {}).items())),
     )
 
 

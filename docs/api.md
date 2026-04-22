@@ -112,6 +112,7 @@ Dataclass returned by `stats()`.
 | `dead` | dead-letter messages hidden from normal delivery |
 | `total` | all messages still stored for the queue |
 | `by_worker_id` | current inflight counts grouped by `leased_by` |
+| `leases_by_worker_id` | historical lease counts grouped by `leased_by`, a coarse throughput proxy |
 
 ### Worker decorators
 
