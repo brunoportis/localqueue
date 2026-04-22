@@ -91,12 +91,14 @@ Dataclass returned by `put()` and `get_message()`.
 | `available_at` | earliest delivery timestamp |
 | `leased_until` | lease expiration timestamp, if inflight |
 | `leased_by` | optional worker id that currently owns the lease, if inflight |
+| `attempt_history` | list of lease and outcome events recorded for this message |
 | `last_error` | structured error from the most recent failed processing attempt, if recorded |
 | `failed_at` | timestamp for `last_error`, if recorded |
 
 For `localqueue queue exec` failures, `last_error` also includes `command`,
 `exit_code`, `stdout`, and `stderr` fields so command workers can be inspected
-from `queue inspect` and `queue dead`.
+from `queue inspect` and `queue dead`. `attempt_history` shows the lease and
+terminal events that led to the current state.
 
 #### `QueueStats`
 

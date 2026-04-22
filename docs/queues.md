@@ -171,7 +171,9 @@ message = queue.inspect("message-id")
 Pass `error=` to `release()` or `dead_letter()` to persist the processing
 failure on the message. Worker decorators and `localqueue queue process`
 record this automatically. The next `QueueMessage` includes `last_error` with
-the exception type, module, and message, plus `failed_at`.
+the exception type, module, and message, plus `failed_at`. It also carries an
+`attempt_history` list with lease and outcome events so inspection can show the
+path a message took through the queue.
 
 `localqueue` provides at-least-once delivery. A message can be processed more
 than once when a worker crashes, when a lease expires, or when a message is

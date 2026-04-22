@@ -793,6 +793,8 @@ class CliTests(unittest.TestCase):
             self.assertEqual(payload["last_error"]["stderr"], "cannot deliver")
             self.assertIn("status 7", payload["last_error"]["message"])
             self.assertIn("cannot deliver", payload["last_error"]["message"])
+            self.assertEqual(payload["attempt_history"][0]["type"], "leased")
+            self.assertEqual(payload["attempt_history"][-1]["type"], "dead_lettered")
 
             dead_letters = PersistentQueue(
                 "emails", store_path=store_path

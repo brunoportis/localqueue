@@ -80,7 +80,7 @@ That means measuring the current ceiling before promising more:
 ## Observability
 
 - [ ] Add optional Prometheus or OpenTelemetry metrics.
-- [ ] Track per-message attempt history, not only the latest error.
+- [x] Track per-message attempt history, not only the latest error.
 - [ ] Track queue latency, handler duration, and time spent inflight.
 - [ ] Track throughput by queue and worker id.
 - [ ] Add aggregate failure summaries for dead-letter inspection.

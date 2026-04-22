@@ -616,9 +616,18 @@ def _process_queue_messages(
             _print_json(console, {"id": message.id, "state": "acked"})
             continue
 
+        payload = (
+            _message_payload(current_message)
+            if (current_message := queue.inspect(message.id)) is not None
+            else {"id": message.id, "queue": message.queue}
+        )
         _print_json(
             console,
-            {"id": message.id, "state": "failed", "last_error": result.last_error},
+            {
+                **payload,
+                "state": "failed",
+                "last_error": result.last_error,
+            },
         )
         if forever:
             continue
@@ -862,6 +871,7 @@ def _message_payload(message: QueueMessage) -> dict[str, Any]:
         "leased_by": message.leased_by,
         "last_error": message.last_error,
         "failed_at": message.failed_at,
+        "attempt_history": message.attempt_history,
     }
 
 

@@ -112,12 +112,18 @@ class QueueTests(unittest.TestCase):
         message = queue.get_message(leased_by="worker-a")
 
         self.assertEqual(message.leased_by, "worker-a")
+        self.assertEqual(message.attempt_history[0]["type"], "leased")
+        self.assertEqual(message.attempt_history[0]["attempt"], 1)
+        self.assertEqual(message.attempt_history[0]["leased_by"], "worker-a")
         inspected = queue.inspect(message.id)
         assert inspected is not None
         self.assertEqual(inspected.leased_by, "worker-a")
         self.assertTrue(queue.release(message))
         redelivered = queue.get_message()
         self.assertIsNone(redelivered.leased_by)
+        self.assertEqual(redelivered.attempt_history[0]["type"], "leased")
+        self.assertEqual(redelivered.attempt_history[1]["type"], "released")
+        self.assertEqual(redelivered.attempt_history[2]["type"], "leased")
 
     def test_dead_letters_lists_dead_messages(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())
@@ -136,6 +142,8 @@ class QueueTests(unittest.TestCase):
         assert by_value["second"].last_error is not None
         self.assertEqual(by_value["first"].last_error["message"], "first failed")
         self.assertEqual(by_value["second"].last_error["message"], "second failed")
+        self.assertEqual(by_value["first"].attempt_history[0]["type"], "leased")
+        self.assertEqual(by_value["first"].attempt_history[1]["type"], "dead_lettered")
         self.assertEqual(len(queue.dead_letters(limit=1)), 1)
         with self.assertRaises(ValueError):
             _ = queue.dead_letters(limit=-1)
@@ -474,9 +482,10 @@ class QueueTests(unittest.TestCase):
 
             assert raw is not None
             payload = json.loads(bytes(raw).decode("utf-8"))
-            self.assertEqual(payload["version"], 1)
+            self.assertEqual(payload["version"], 2)
             self.assertEqual(payload["value"], {"kind": "email"})
             self.assertIsNone(payload["leased_by"])
+            self.assertEqual(payload["attempt_history"], [])
 
     def test_lmdb_store_rejects_non_json_serializable_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -553,6 +562,27 @@ class QueueTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             _ = _decode_record(b'{"version":999}')
+
+        decoded = _decode_record(
+            json.dumps(
+                {
+                    "version": 1,
+                    "id": "job-1",
+                    "value": "x",
+                    "queue": "jobs",
+                    "attempts": 1,
+                    "created_at": 1.0,
+                    "available_at": 1.0,
+                    "leased_until": None,
+                    "leased_by": None,
+                    "last_error": None,
+                    "failed_at": None,
+                    "state": "ready",
+                    "index_key": None,
+                }
+            ).encode("utf-8")
+        )
+        self.assertEqual(decoded.attempt_history, [])
 
     def test_lmdb_store_reclaims_expired_leases(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

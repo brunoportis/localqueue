@@ -6,7 +6,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, Iterator, Protocol
@@ -19,7 +19,7 @@ _ENVS_LOCK = threading.Lock()
 _READY = "ready"
 _INFLIGHT = "inflight"
 _DEAD = "dead"
-_QUEUE_RECORD_VERSION = 1
+_QUEUE_RECORD_VERSION = 2
 
 
 def _import_lmdb() -> Any:
@@ -31,6 +31,26 @@ def _import_lmdb() -> Any:
             'install with `pip install "localqueue[lmdb]"`'
         ) from exc
     return lmdb
+
+
+def _attempt_event(
+    event_type: str,
+    *,
+    at: float,
+    attempt: int,
+    leased_by: str | None = None,
+    last_error: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    event: dict[str, Any] = {
+        "type": event_type,
+        "at": at,
+        "attempt": attempt,
+    }
+    if leased_by is not None:
+        event["leased_by"] = leased_by
+    if last_error is not None:
+        event["last_error"] = last_error
+    return event
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +66,7 @@ class QueueMessage:
     leased_by: str | None = None
     last_error: dict[str, Any] | None = None
     failed_at: float | None = None
+    attempt_history: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +101,7 @@ class _QueueRecord:
     failed_at: float | None
     state: str
     index_key: bytes | None
+    attempt_history: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def new(cls, queue: str, value: Any, available_at: float) -> "_QueueRecord":
@@ -111,6 +133,7 @@ class _QueueRecord:
             leased_by=self.leased_by,
             last_error=self.last_error,
             failed_at=self.failed_at,
+            attempt_history=list(self.attempt_history),
         )
 
 
@@ -226,6 +249,15 @@ class MemoryQueueStore:
                 leased_by=leased_by,
                 state=_INFLIGHT,
                 index_key=self._inflight_key(queue, leased_until, record.id),
+                attempt_history=record.attempt_history
+                + [
+                    _attempt_event(
+                        "leased",
+                        at=now,
+                        attempt=record.attempts + 1,
+                        leased_by=leased_by,
+                    )
+                ],
             )
             self._records[queue][record.id] = updated
             return updated.to_message()
@@ -264,6 +296,17 @@ class MemoryQueueStore:
                 failed_at=failed_at if failed_at is not None else record.failed_at,
                 state=_READY,
                 index_key=self._ready_key(queue, available_at, seq, message_id),
+                attempt_history=record.attempt_history
+                + [
+                    _attempt_event(
+                        "released",
+                        at=time.time(),
+                        attempt=record.attempts,
+                        last_error=last_error
+                        if last_error is not None
+                        else record.last_error,
+                    )
+                ],
             )
             return True
 
@@ -287,6 +330,17 @@ class MemoryQueueStore:
                 failed_at=failed_at if failed_at is not None else record.failed_at,
                 state=_DEAD,
                 index_key=self._dead_key(queue, message_id),
+                attempt_history=record.attempt_history
+                + [
+                    _attempt_event(
+                        "dead_lettered",
+                        at=time.time(),
+                        attempt=record.attempts,
+                        last_error=last_error
+                        if last_error is not None
+                        else record.last_error,
+                    )
+                ],
             )
             return True
 
@@ -364,6 +418,15 @@ class MemoryQueueStore:
                     leased_by=None,
                     state=_READY,
                     index_key=self._ready_key(queue, now, seq, record.id),
+                    attempt_history=record.attempt_history
+                    + [
+                        _attempt_event(
+                            "lease_expired",
+                            at=now,
+                            attempt=record.attempts,
+                            leased_by=record.leased_by,
+                        )
+                    ],
                 )
 
     @staticmethod
@@ -465,6 +528,15 @@ class SQLiteQueueStore:
                 leased_by=leased_by,
                 state=_INFLIGHT,
                 index_key=_inflight_key(queue, leased_until, record.id),
+                attempt_history=record.attempt_history
+                + [
+                    _attempt_event(
+                        "leased",
+                        at=now,
+                        attempt=record.attempts + 1,
+                        leased_by=leased_by,
+                    )
+                ],
             )
             self._upsert_record(connection, updated, sequence=self._sequence(row[1]))
             return updated.to_message()
@@ -507,6 +579,17 @@ class SQLiteQueueStore:
                 failed_at=failed_at if failed_at is not None else record.failed_at,
                 state=_READY,
                 index_key=_ready_key(queue, available_at, seq, message_id),
+                attempt_history=record.attempt_history
+                + [
+                    _attempt_event(
+                        "released",
+                        at=time.time(),
+                        attempt=record.attempts,
+                        last_error=last_error
+                        if last_error is not None
+                        else record.last_error,
+                    )
+                ],
             )
             self._upsert_record(connection, updated, sequence=seq)
             return True
@@ -531,6 +614,17 @@ class SQLiteQueueStore:
                 failed_at=failed_at if failed_at is not None else record.failed_at,
                 state=_DEAD,
                 index_key=_dead_key(queue, message_id),
+                attempt_history=record.attempt_history
+                + [
+                    _attempt_event(
+                        "dead_lettered",
+                        at=time.time(),
+                        attempt=record.attempts,
+                        last_error=last_error
+                        if last_error is not None
+                        else record.last_error,
+                    )
+                ],
             )
             self._upsert_record(
                 connection,
@@ -709,6 +803,15 @@ class SQLiteQueueStore:
                 leased_by=None,
                 state=_READY,
                 index_key=_ready_key(queue, now, seq, message_id),
+                attempt_history=record.attempt_history
+                + [
+                    _attempt_event(
+                        "lease_expired",
+                        at=now,
+                        attempt=record.attempts,
+                        leased_by=record.leased_by,
+                    )
+                ],
             )
             self._upsert_record(connection, updated, sequence=seq)
 
@@ -786,6 +889,15 @@ class LMDBQueueStore:
                 leased_by=leased_by,
                 state=_INFLIGHT,
                 index_key=_inflight_key(queue, leased_until, record.id),
+                attempt_history=record.attempt_history
+                + [
+                    _attempt_event(
+                        "leased",
+                        at=now,
+                        attempt=record.attempts + 1,
+                        leased_by=leased_by,
+                    )
+                ],
             )
             _ = txn.delete(key)
             self._put_record(txn, updated)
@@ -833,6 +945,17 @@ class LMDBQueueStore:
                 failed_at=failed_at if failed_at is not None else record.failed_at,
                 state=_READY,
                 index_key=_ready_key(queue, available_at, seq, message_id),
+                attempt_history=record.attempt_history
+                + [
+                    _attempt_event(
+                        "released",
+                        at=time.time(),
+                        attempt=record.attempts,
+                        last_error=last_error
+                        if last_error is not None
+                        else record.last_error,
+                    )
+                ],
             )
             self._put_record(txn, updated)
             assert updated.index_key is not None
@@ -860,6 +983,17 @@ class LMDBQueueStore:
                 failed_at=failed_at if failed_at is not None else record.failed_at,
                 state=_DEAD,
                 index_key=_dead_key(queue, message_id),
+                attempt_history=record.attempt_history
+                + [
+                    _attempt_event(
+                        "dead_lettered",
+                        at=time.time(),
+                        attempt=record.attempts,
+                        last_error=last_error
+                        if last_error is not None
+                        else record.last_error,
+                    )
+                ],
             )
             self._put_record(txn, updated)
             assert updated.index_key is not None
@@ -931,6 +1065,14 @@ class LMDBQueueStore:
                 leased_by=None,
                 state=_READY,
                 index_key=_ready_key(queue, available_at, seq, message_id),
+                attempt_history=record.attempt_history
+                + [
+                    _attempt_event(
+                        "requeued",
+                        at=time.time(),
+                        attempt=record.attempts,
+                    )
+                ],
             )
             self._put_record(txn, updated)
             assert updated.index_key is not None
@@ -987,6 +1129,15 @@ class LMDBQueueStore:
                 leased_by=None,
                 state=_READY,
                 index_key=_ready_key(queue, now, seq, message_id),
+                attempt_history=record.attempt_history
+                + [
+                    _attempt_event(
+                        "lease_expired",
+                        at=now,
+                        attempt=record.attempts,
+                        leased_by=record.leased_by,
+                    )
+                ],
             )
             self._put_record(txn, updated)
             assert updated.index_key is not None
@@ -1097,6 +1248,7 @@ def _encode_record(record: _QueueRecord) -> bytes:
         "leased_by": record.leased_by,
         "last_error": record.last_error,
         "failed_at": record.failed_at,
+        "attempt_history": record.attempt_history,
         "state": record.state,
         "index_key": record.index_key.decode("utf-8")
         if record.index_key is not None
@@ -1119,7 +1271,7 @@ def _decode_record(raw: bytes | str) -> _QueueRecord:
         raise ValueError("queue record is not valid JSON") from exc
 
     version = payload.get("version")
-    if version != _QUEUE_RECORD_VERSION:
+    if version not in {1, _QUEUE_RECORD_VERSION}:
         raise ValueError(f"unsupported queue record version: {version!r}")
 
     index_key = payload["index_key"]
@@ -1134,6 +1286,7 @@ def _decode_record(raw: bytes | str) -> _QueueRecord:
         leased_by=payload.get("leased_by"),
         last_error=payload.get("last_error"),
         failed_at=payload.get("failed_at"),
+        attempt_history=payload.get("attempt_history", []),
         state=payload["state"],
         index_key=index_key.encode("utf-8") if index_key is not None else None,
     )
