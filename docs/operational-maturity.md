@@ -47,12 +47,17 @@ That means measuring the current ceiling before promising more:
 
 ## Distributed operation
 
-- [ ] Decide whether multi-host operation is in scope.
+- [x] Decide whether multi-host operation is in scope.
 - [x] Add explicit documentation that the default model is local-file storage,
   not distributed coordination.
 - [x] Evaluate worker heartbeats beyond lease expiration.
 - [x] Evaluate worker identity, liveness inspection, and stale-worker reporting.
 - [ ] Evaluate sharding or namespacing guidance for independent queues.
+
+`localqueue` does not try to coordinate work across multiple machines. The
+supported model is a single host, one local store, and local recovery through
+inspection, retry, and requeue. Heartbeats and stale-worker reporting are
+inspection tools for that local model, not a distributed liveness protocol.
 
 ## Delivery semantics
 
