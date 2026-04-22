@@ -147,6 +147,15 @@ localqueue queue stats webhooks --watch --interval 1
 Pass `--log-events` on the CLI when you want structured JSON transition events
 on stderr for enqueue, lease, ack, release, dead-letter, requeue, and purge.
 
+If the producer can replay work, pass a stable `dedupe_key` so repeated
+enqueues reuse the same stored message until it is acknowledged or cleaned up.
+
+```bash
+localqueue queue add webhooks \
+  --dedupe-key webhook-123 \
+  --value '{"url":"https://example.com/hook"}'
+```
+
 ## Queue-style usage
 
 For simple workflows, use the familiar `put()`, `get()`, and `task_done()` methods.
@@ -295,6 +304,10 @@ queue = PersistentQueue("jobs", store=MemoryQueueStore())
 
 Persistent queue stores serialize records as versioned JSON. Queue values must be
 JSON-serializable.
+
+When you use `dedupe_key`, the key is stored with the message and returned on
+inspection. Reusing the same key returns the original message for that queue
+until the stored record is removed by `ack()`, `purge()`, or retention cleanup.
 
 Prefer small payloads. Store large files, blobs, or generated artifacts outside
 the queue and enqueue references such as paths, object keys, or database ids.

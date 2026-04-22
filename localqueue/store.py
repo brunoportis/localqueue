@@ -20,7 +20,7 @@ _ENVS_LOCK = threading.Lock()
 _READY = "ready"
 _INFLIGHT = "inflight"
 _DEAD = "dead"
-_QUEUE_RECORD_VERSION = 2
+_QUEUE_RECORD_VERSION = 4
 
 
 def _import_lmdb() -> Any:
@@ -68,6 +68,7 @@ class QueueMessage:
     last_error: dict[str, Any] | None = None
     failed_at: float | None = None
     attempt_history: list[dict[str, Any]] = field(default_factory=list)
+    dedupe_key: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,12 +111,20 @@ class _QueueRecord:
     leased_by: str | None
     last_error: dict[str, Any] | None
     failed_at: float | None
+    dedupe_key: str | None
     state: str
     index_key: bytes | None
     attempt_history: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
-    def new(cls, queue: str, value: Any, available_at: float) -> "_QueueRecord":
+    def new(
+        cls,
+        queue: str,
+        value: Any,
+        available_at: float,
+        *,
+        dedupe_key: str | None = None,
+    ) -> "_QueueRecord":
         return cls(
             id=uuid.uuid4().hex,
             value=value,
@@ -127,6 +136,7 @@ class _QueueRecord:
             leased_by=None,
             last_error=None,
             failed_at=None,
+            dedupe_key=dedupe_key,
             state=_READY,
             index_key=None,
         )
@@ -145,12 +155,18 @@ class _QueueRecord:
             last_error=self.last_error,
             failed_at=self.failed_at,
             attempt_history=list(self.attempt_history),
+            dedupe_key=self.dedupe_key,
         )
 
 
 class QueueStore(Protocol):
     def enqueue(
-        self, queue: str, value: Any, *, available_at: float
+        self,
+        queue: str,
+        value: Any,
+        *,
+        available_at: float,
+        dedupe_key: str | None = None,
     ) -> QueueMessage: ...
 
     def dequeue(
@@ -226,22 +242,40 @@ class MemoryQueueStore:
     _records: dict[str, dict[str, _QueueRecord]]
     _seq: dict[str, int]
     _worker_stats: dict[str, Counter[str]]
+    _dedupe_keys: dict[str, dict[str, str]]
     _lock: threading.Lock
 
     def __init__(self) -> None:
         self._records = {}
         self._seq = {}
         self._worker_stats = {}
+        self._dedupe_keys = {}
         self._lock = threading.Lock()
 
-    def enqueue(self, queue: str, value: Any, *, available_at: float) -> QueueMessage:
+    def enqueue(
+        self,
+        queue: str,
+        value: Any,
+        *,
+        available_at: float,
+        dedupe_key: str | None = None,
+    ) -> QueueMessage:
         with self._lock:
-            record = _QueueRecord.new(queue, value, available_at)
+            if dedupe_key is not None:
+                existing_id = self._dedupe_keys.get(queue, {}).get(dedupe_key)
+                if existing_id is not None:
+                    record = self._records.get(queue, {}).get(existing_id)
+                    if record is not None:
+                        return record.to_message()
+                    _ = self._dedupe_keys.setdefault(queue, {}).pop(dedupe_key, None)
+            record = _QueueRecord.new(queue, value, available_at, dedupe_key=dedupe_key)
             seq = self._next_seq(queue)
             record = replace(
                 record, index_key=self._ready_key(queue, available_at, seq, record.id)
             )
             self._records.setdefault(queue, {})[record.id] = record
+            if dedupe_key is not None:
+                self._dedupe_keys.setdefault(queue, {})[dedupe_key] = record.id
             return record.to_message()
 
     def dequeue(
@@ -294,7 +328,12 @@ class MemoryQueueStore:
 
     def ack(self, queue: str, message_id: str) -> bool:
         with self._lock:
-            return self._records.get(queue, {}).pop(message_id, None) is not None
+            record = self._records.get(queue, {}).pop(message_id, None)
+            if record is None:
+                return False
+            if record.dedupe_key is not None:
+                self._dedupe_keys.get(queue, {}).pop(record.dedupe_key, None)
+            return True
 
     def release(
         self,
@@ -428,7 +467,9 @@ class MemoryQueueStore:
                 and _dead_record_age(record, now=now) >= older_than
             ]
             for message_id in doomed:
-                _ = records.pop(message_id, None)
+                record = records.pop(message_id, None)
+                if record is not None and record.dedupe_key is not None:
+                    self._dedupe_keys.get(queue, {}).pop(record.dedupe_key, None)
             return len(doomed)
 
     def count_dead_letters_older_than(
@@ -450,6 +491,7 @@ class MemoryQueueStore:
             count = len(self._records.get(queue, {}))
             self._records[queue] = {}
             self._worker_stats.pop(queue, None)
+            self._dedupe_keys.pop(queue, None)
             return count
 
     def _next_seq(self, queue: str) -> int:
@@ -548,18 +590,42 @@ class SQLiteQueueStore:
             "PRIMARY KEY(queue, worker_id)"
             ")"
         )
+        self._connection.execute(
+            "CREATE TABLE IF NOT EXISTS queue_dedupe_keys ("
+            "queue TEXT NOT NULL, "
+            "dedupe_key TEXT NOT NULL, "
+            "message_id TEXT NOT NULL, "
+            "PRIMARY KEY(queue, dedupe_key)"
+            ")"
+        )
         self._connection.commit()
         self._lock = threading.Lock()
 
-    def enqueue(self, queue: str, value: Any, *, available_at: float) -> QueueMessage:
+    def enqueue(
+        self,
+        queue: str,
+        value: Any,
+        *,
+        available_at: float,
+        dedupe_key: str | None = None,
+    ) -> QueueMessage:
         _validate_json_serializable(value)
         with self._transaction() as connection:
-            record = _QueueRecord.new(queue, value, available_at)
+            if dedupe_key is not None:
+                existing_id = self._lookup_dedupe_key(connection, queue, dedupe_key)
+                if existing_id is not None:
+                    record = self._get_record(connection, queue, existing_id)
+                    if record is not None:
+                        return record.to_message()
+                    self._delete_dedupe_key(connection, queue, dedupe_key)
+            record = _QueueRecord.new(queue, value, available_at, dedupe_key=dedupe_key)
             seq = self._next_seq(connection, queue)
             record = replace(
                 record, index_key=_ready_key(queue, available_at, seq, record.id)
             )
             self._upsert_record(connection, record, sequence=seq)
+            if dedupe_key is not None:
+                self._set_dedupe_key(connection, queue, dedupe_key, record.id)
             return record.to_message()
 
     def dequeue(
@@ -614,6 +680,10 @@ class SQLiteQueueStore:
 
     def ack(self, queue: str, message_id: str) -> bool:
         with self._transaction() as connection:
+            record = self._get_record(connection, queue, message_id)
+            if record is None:
+                return False
+            self._delete_dedupe_key_for_record(connection, record)
             cursor = connection.execute(
                 "DELETE FROM queue_messages WHERE queue = ? AND id = ?",
                 (queue, message_id),
@@ -774,6 +844,9 @@ class SQLiteQueueStore:
                 if _dead_record_age(_decode_record(raw), now=now) >= older_than
             ]
             for message_id in doomed:
+                record = self._get_record(connection, queue, message_id)
+                if record is not None:
+                    self._delete_dedupe_key_for_record(connection, record)
                 _ = connection.execute(
                     "DELETE FROM queue_messages WHERE queue = ? AND id = ?",
                     (queue, message_id),
@@ -799,6 +872,9 @@ class SQLiteQueueStore:
 
     def purge(self, queue: str) -> int:
         with self._transaction() as connection:
+            _ = connection.execute(
+                "DELETE FROM queue_dedupe_keys WHERE queue = ?", (queue,)
+            )
             cursor = connection.execute(
                 "DELETE FROM queue_messages WHERE queue = ?", (queue,)
             )
@@ -857,6 +933,47 @@ class SQLiteQueueStore:
             "leased_count = excluded.leased_count",
             (queue, worker_id, leased_count),
         )
+
+    def _lookup_dedupe_key(
+        self, connection: sqlite3.Connection, queue: str, dedupe_key: str
+    ) -> str | None:
+        cursor = connection.execute(
+            "SELECT message_id FROM queue_dedupe_keys "
+            "WHERE queue = ? AND dedupe_key = ?",
+            (queue, dedupe_key),
+        )
+        row = cursor.fetchone()
+        return None if row is None else str(row[0])
+
+    def _set_dedupe_key(
+        self,
+        connection: sqlite3.Connection,
+        queue: str,
+        dedupe_key: str,
+        message_id: str,
+    ) -> None:
+        connection.execute(
+            "INSERT INTO queue_dedupe_keys(queue, dedupe_key, message_id) "
+            "VALUES(?, ?, ?) "
+            "ON CONFLICT(queue, dedupe_key) DO UPDATE SET "
+            "message_id = excluded.message_id",
+            (queue, dedupe_key, message_id),
+        )
+
+    def _delete_dedupe_key(
+        self, connection: sqlite3.Connection, queue: str, dedupe_key: str
+    ) -> None:
+        _ = connection.execute(
+            "DELETE FROM queue_dedupe_keys WHERE queue = ? AND dedupe_key = ?",
+            (queue, dedupe_key),
+        )
+
+    def _delete_dedupe_key_for_record(
+        self, connection: sqlite3.Connection, record: _QueueRecord
+    ) -> None:
+        if record.dedupe_key is None:
+            return
+        self._delete_dedupe_key(connection, record.queue, record.dedupe_key)
 
     def _get_record(
         self, connection: sqlite3.Connection, queue: str, message_id: str
@@ -967,10 +1084,24 @@ class LMDBQueueStore:
                 _ENVS[key] = env
             self._env = env
 
-    def enqueue(self, queue: str, value: Any, *, available_at: float) -> QueueMessage:
+    def enqueue(
+        self,
+        queue: str,
+        value: Any,
+        *,
+        available_at: float,
+        dedupe_key: str | None = None,
+    ) -> QueueMessage:
         _validate_json_serializable(value)
         with self._env.begin(write=True) as txn:
-            record = _QueueRecord.new(queue, value, available_at)
+            if dedupe_key is not None:
+                existing_id = self._lookup_dedupe_key(txn, queue, dedupe_key)
+                if existing_id is not None:
+                    record = self._get_record(txn, queue, existing_id)
+                    if record is not None:
+                        return record.to_message()
+                    _ = txn.delete(_dedupe_key_key(queue, dedupe_key))
+            record = _QueueRecord.new(queue, value, available_at, dedupe_key=dedupe_key)
             seq = self._next_seq(txn, queue)
             record = replace(
                 record, index_key=_ready_key(queue, available_at, seq, record.id)
@@ -978,6 +1109,8 @@ class LMDBQueueStore:
             self._put_record(txn, record)
             assert record.index_key is not None
             _ = txn.put(record.index_key, record.id.encode("utf-8"))
+            if dedupe_key is not None:
+                self._set_dedupe_key(txn, queue, dedupe_key, record.id)
             return record.to_message()
 
     def dequeue(
@@ -1047,6 +1180,7 @@ class LMDBQueueStore:
             if record is None:
                 return False
             self._delete_index(txn, record)
+            self._delete_dedupe_key_for_record(txn, record)
             _ = txn.delete(_message_key(queue, message_id))
             return True
 
@@ -1238,6 +1372,7 @@ class LMDBQueueStore:
                 if record is None:
                     continue
                 _ = txn.delete(_dead_key(queue, message_id))
+                self._delete_dedupe_key_for_record(txn, record)
                 _ = txn.delete(_message_key(queue, message_id))
             return len(doomed)
 
@@ -1281,6 +1416,8 @@ class LMDBQueueStore:
             for key in keys:
                 if key.startswith(_message_prefix(queue)):
                     count += 1
+                _ = txn.delete(key)
+            for key in list(self._iter_dedupe_keys(txn, queue)):
                 _ = txn.delete(key)
             return count
 
@@ -1347,6 +1484,44 @@ class LMDBQueueStore:
     def _delete_index(self, txn: lmdb.Transaction, record: _QueueRecord) -> None:
         if record.index_key is not None:
             _ = txn.delete(record.index_key)
+
+    def _lookup_dedupe_key(
+        self, txn: lmdb.Transaction, queue: str, dedupe_key: str
+    ) -> str | None:
+        raw = txn.get(_dedupe_key_key(queue, dedupe_key))
+        return None if raw is None else bytes(raw).decode("utf-8")
+
+    def _set_dedupe_key(
+        self,
+        txn: lmdb.Transaction,
+        queue: str,
+        dedupe_key: str,
+        message_id: str,
+    ) -> None:
+        _ = txn.put(_dedupe_key_key(queue, dedupe_key), message_id.encode("utf-8"))
+
+    def _delete_dedupe_key(
+        self, txn: lmdb.Transaction, queue: str, dedupe_key: str
+    ) -> None:
+        _ = txn.delete(_dedupe_key_key(queue, dedupe_key))
+
+    def _delete_dedupe_key_for_record(
+        self, txn: lmdb.Transaction, record: _QueueRecord
+    ) -> None:
+        if record.dedupe_key is None:
+            return
+        self._delete_dedupe_key(txn, record.queue, record.dedupe_key)
+
+    def _iter_dedupe_keys(self, txn: lmdb.Transaction, queue: str) -> Iterator[bytes]:
+        cursor = txn.cursor()
+        prefix = _dedupe_prefix(queue)
+        if not cursor.set_range(prefix):
+            return
+        for key, _ in cursor:
+            key = bytes(key)
+            if not key.startswith(prefix):
+                break
+            yield key
 
     def _increment_worker_stats(
         self, txn: lmdb.Transaction, queue: str, worker_id: str
@@ -1442,6 +1617,20 @@ def _worker_stats_key(queue: str) -> bytes:
     return f"queue:{_safe_queue(queue)}:worker-stats".encode("utf-8")
 
 
+def _dedupe_token(dedupe_key: str) -> str:
+    return dedupe_key.encode("utf-8").hex()
+
+
+def _dedupe_prefix(queue: str) -> bytes:
+    return f"queue:{_safe_queue(queue)}:dedupe:".encode("utf-8")
+
+
+def _dedupe_key_key(queue: str, dedupe_key: str) -> bytes:
+    return f"queue:{_safe_queue(queue)}:dedupe:{_dedupe_token(dedupe_key)}".encode(
+        "utf-8"
+    )
+
+
 def _encode_record(record: _QueueRecord) -> bytes:
     payload = {
         "version": _QUEUE_RECORD_VERSION,
@@ -1455,6 +1644,7 @@ def _encode_record(record: _QueueRecord) -> bytes:
         "leased_by": record.leased_by,
         "last_error": record.last_error,
         "failed_at": record.failed_at,
+        "dedupe_key": record.dedupe_key,
         "attempt_history": record.attempt_history,
         "state": record.state,
         "index_key": record.index_key.decode("utf-8")
@@ -1478,7 +1668,7 @@ def _decode_record(raw: bytes | str) -> _QueueRecord:
         raise ValueError("queue record is not valid JSON") from exc
 
     version = payload.get("version")
-    if version not in {1, _QUEUE_RECORD_VERSION}:
+    if version not in {1, 2, 3, _QUEUE_RECORD_VERSION}:
         raise ValueError(f"unsupported queue record version: {version!r}")
 
     index_key = payload["index_key"]
@@ -1493,6 +1683,7 @@ def _decode_record(raw: bytes | str) -> _QueueRecord:
         leased_by=payload.get("leased_by"),
         last_error=payload.get("last_error"),
         failed_at=payload.get("failed_at"),
+        dedupe_key=payload.get("dedupe_key"),
         attempt_history=payload.get("attempt_history", []),
         state=payload["state"],
         index_key=index_key.encode("utf-8") if index_key is not None else None,

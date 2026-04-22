@@ -59,7 +59,7 @@ That means measuring the current ceiling before promising more:
 - [x] Document at-least-once delivery prominently in the README and queue docs.
 - [x] Add idempotency guidance for handlers.
 - [x] Provide examples for idempotent job keys and external side effects.
-- [ ] Evaluate deduplication support for enqueue operations.
+- [x] Evaluate deduplication support for enqueue operations.
 - [x] Evaluate stronger ordering guarantees, or document why ordering is best
   effort under concurrency.
 - [x] Document the failure window between a successful handler side effect and

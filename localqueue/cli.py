@@ -178,6 +178,7 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         value: str | None = typer.Option(None, "--value"),
         store_path: str | None = typer.Option(None, "--store-path"),
         delay: float = typer.Option(0.0, "--delay", min=0.0),
+        dedupe_key: str | None = typer.Option(None, "--dedupe-key"),
         raw: bool = typer.Option(False, "--raw"),
         log_events: bool = typer.Option(False, "--log-events"),
     ) -> None:
@@ -187,7 +188,7 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         except ValueError as exc:
             raise typer.BadParameter(str(exc)) from exc
         message = _queue(queue, _resolve_store_path(store_path, config)).put(
-            payload, delay=delay
+            payload, delay=delay, dedupe_key=dedupe_key
         )
         if log_events:
             _emit_event(
@@ -1138,6 +1139,7 @@ def _message_payload(message: QueueMessage) -> dict[str, Any]:
         "leased_by": message.leased_by,
         "last_error": message.last_error,
         "failed_at": message.failed_at,
+        "dedupe_key": message.dedupe_key,
         "attempt_history": message.attempt_history,
     }
 

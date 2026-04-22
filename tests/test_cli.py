@@ -749,6 +749,45 @@ class CliTests(unittest.TestCase):
             self.assertNotEqual(invalid_result.exit_code, 0)
             self.assertIn("value must be valid JSON", invalid_result.output)
 
+    def test_queue_add_deduplicates_when_key_is_reused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_path = str(Path(tmpdir) / "queues")
+
+            first = self._invoke(
+                [
+                    "queue",
+                    "add",
+                    "emails",
+                    "--value",
+                    '{"to":"first@example.com"}',
+                    "--dedupe-key",
+                    "job-1",
+                    "--store-path",
+                    store_path,
+                ]
+            )
+            second = self._invoke(
+                [
+                    "queue",
+                    "add",
+                    "emails",
+                    "--value",
+                    '{"to":"second@example.com"}',
+                    "--dedupe-key",
+                    "job-1",
+                    "--store-path",
+                    store_path,
+                ]
+            )
+
+            self.assertEqual(first.exit_code, 0, first.output)
+            self.assertEqual(second.exit_code, 0, second.output)
+            first_payload = json.loads(first.stdout)
+            second_payload = json.loads(second.stdout)
+            self.assertEqual(first_payload["id"], second_payload["id"])
+            self.assertEqual(first_payload["value"], {"to": "first@example.com"})
+            self.assertEqual(second_payload["value"], {"to": "first@example.com"})
+
     def test_queue_add_logs_structured_enqueue_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store_path = str(Path(tmpdir) / "queues")

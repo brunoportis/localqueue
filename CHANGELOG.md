@@ -8,6 +8,7 @@
 - Add `examples/sqlite_process_harness.py` for process-level throughput and crash-recovery checks.
 - Add process-based stress tests for SQLite producer and consumer coordination.
 - Add dead-letter filters and summaries for `queue dead`.
+- Add enqueue deduplication with `--dedupe-key` and `dedupe_key=`.
 - Add a short-term maturity note focused on performance and guarantees.
 
 ## 0.2.0

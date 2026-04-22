@@ -49,9 +49,12 @@ class PersistentQueue:
         timeout: float | None = None,
         *,
         delay: float = 0.0,
+        dedupe_key: str | None = None,
     ) -> QueueMessage:
         if delay < 0:
             raise ValueError("delay cannot be negative")
+        if dedupe_key is not None and not dedupe_key:
+            raise ValueError("dedupe_key cannot be empty")
         deadline = _deadline(timeout)
         with self._condition:
             while self.full():
@@ -65,6 +68,7 @@ class PersistentQueue:
                 self.name,
                 item,
                 available_at=time.time() + delay,
+                dedupe_key=dedupe_key,
             )
             _ = self._condition.notify_all()
             return message

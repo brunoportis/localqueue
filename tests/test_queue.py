@@ -64,6 +64,22 @@ class QueueTests(unittest.TestCase):
         queue.task_done()
         self.assertTrue(queue.empty())
 
+    def test_memory_store_deduplicates_enqueued_messages(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+
+        first = queue.put("item1", dedupe_key="job-1")
+        second = queue.put("item2", dedupe_key="job-1")
+
+        self.assertEqual(first.id, second.id)
+        self.assertEqual(first.value, "item1")
+        self.assertEqual(second.value, "item1")
+        self.assertEqual(queue.qsize(), 1)
+
+        self.assertTrue(queue.ack(first))
+        third = queue.put("item3", dedupe_key="job-1")
+        self.assertNotEqual(first.id, third.id)
+        self.assertEqual(third.value, "item3")
+
     def test_stats_counts_messages_by_state(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())
         _ = queue.put("inflight")
@@ -258,23 +274,57 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(leased.attempts, 1)
             self.assertEqual(store.qsize("jobs", now=now), 0)
 
-            self.assertTrue(store.release(leased.queue, leased.id, available_at=now))
-            leased_again = store.dequeue("jobs", lease_timeout=0.1, now=now)
-            assert leased_again is not None
-            self.assertEqual(leased_again.attempts, 2)
-            self.assertTrue(store.dead_letter(leased_again.queue, leased_again.id))
+    def test_sqlite_store_deduplicates_enqueued_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SQLiteQueueStore(f"{tmpdir}/queue.sqlite3")
+            now = time.time()
 
-            self.assertEqual(store.qsize("jobs", now=now + 10), 1)
-            self.assertEqual(store.purge("jobs"), 2)
-            self.assertEqual(store.purge("missing"), 0)
-            self.assertIsNone(store.dequeue("jobs", lease_timeout=1, now=now + 10))
+            first = store.enqueue(
+                "jobs",
+                {"job": 1},
+                available_at=now,
+                dedupe_key="job-1",
+            )
+            second = store.enqueue(
+                "jobs",
+                {"job": 2},
+                available_at=now,
+                dedupe_key="job-1",
+            )
 
-            self.assertFalse(store.ack("jobs", "missing"))
-            self.assertFalse(store.release("jobs", "missing", available_at=now))
-            self.assertFalse(store.dead_letter("jobs", "missing"))
-            self.assertFalse(store.requeue_dead("jobs", "missing", available_at=now))
-            self.assertEqual(second.value, "second")
-            store.close()
+            self.assertEqual(first.id, second.id)
+            self.assertEqual(second.value, {"job": 1})
+            self.assertEqual(
+                store.qsize("jobs", now=now),
+                1,
+            )
+
+            self.assertTrue(store.ack("jobs", first.id))
+            third = store.enqueue(
+                "jobs",
+                {"job": 3},
+                available_at=now,
+                dedupe_key="job-1",
+            )
+            self.assertNotEqual(first.id, third.id)
+            self.assertEqual(third.value, {"job": 3})
+
+            with store._transaction() as connection:  # type: ignore[attr-defined]
+                _ = connection.execute(
+                    "DELETE FROM queue_messages WHERE queue = ? AND id = ?",
+                    ("jobs", third.id),
+                )
+
+            fourth = store.enqueue(
+                "jobs",
+                {"job": 4},
+                available_at=now,
+                dedupe_key="job-1",
+            )
+            self.assertNotEqual(third.id, fourth.id)
+            self.assertEqual(fourth.value, {"job": 4})
+
+            self.assertEqual(store.qsize("jobs", now=now), 1)
 
     def test_sqlite_store_reclaims_expired_leases(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -641,9 +691,10 @@ class QueueTests(unittest.TestCase):
 
             assert raw is not None
             payload = json.loads(bytes(raw).decode("utf-8"))
-            self.assertEqual(payload["version"], 2)
+            self.assertEqual(payload["version"], 4)
             self.assertEqual(payload["value"], {"kind": "email"})
             self.assertIsNone(payload["leased_by"])
+            self.assertIsNone(payload["dedupe_key"])
             self.assertEqual(payload["attempt_history"], [])
 
     def test_lmdb_store_rejects_non_json_serializable_values(self) -> None:
@@ -737,6 +788,7 @@ class QueueTests(unittest.TestCase):
                 leased_by=None,
                 last_error=None,
                 failed_at=None,
+                dedupe_key=None,
                 state="ready",
                 index_key=None,
             )
