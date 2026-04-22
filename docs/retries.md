@@ -134,6 +134,12 @@ retry wrapper. Use `min_interval` to slow down a worker between messages and
 `circuit_breaker_failures` plus `circuit_breaker_cooldown` to pause a noisy
 worker after repeated recoverable failures.
 
+Use Tenacity `wait` for spacing between retry attempts inside one call. Use
+`release_delay` when a worker gives the message back to the queue and you want
+the next delivery to be delayed. If the handler runtime can approach the lease
+limit, increase `lease_timeout` so the store does not reclaim the message too
+early. Those three knobs solve different timing problems.
+
 ## Retry keys
 
 Each persistent retry needs a stable key. Pass `key=` when the retryer is bound

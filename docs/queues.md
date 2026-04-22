@@ -12,6 +12,10 @@ It is local infrastructure: producers and consumers should run where they can
 share the same queue store safely. It is not a distributed broker and does not
 provide multi-host coordination.
 
+If you have independent workloads, give them separate queue names instead of
+loading everything into one queue. Each queue keeps its own stats, dead
+letters, retention settings, and worker identity history.
+
 ## Creating a queue
 
 ```python
@@ -287,6 +291,20 @@ this as `--worker-id` on `queue pop` and `queue process`.
 counts ready messages at the time of the store read. Expired leases are reclaimed
 by `get_message()`, so a message whose lease has expired may not appear as ready
 until a consumer attempts to lease work.
+
+## Retry timing
+
+`lease_timeout` should outlive the normal handler runtime, including any retry
+work that happens inside the handler. `release_delay` is for when the worker
+hands the message back to the queue and you want the next delivery to wait a
+bit. Tenacity `wait` is for backoff between retry attempts inside one handler
+call. In practice:
+
+- raise `lease_timeout` when the work is simply taking longer than expected
+- use Tenacity `wait` when a retryable error should pause before the next
+  attempt inside the same call
+- use `release_delay` when the queue should hold the message before the next
+  delivery after the worker gives up for now
 
 ## Delayed delivery
 

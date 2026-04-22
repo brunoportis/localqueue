@@ -52,7 +52,7 @@ That means measuring the current ceiling before promising more:
   not distributed coordination.
 - [x] Evaluate worker heartbeats beyond lease expiration.
 - [x] Evaluate worker identity, liveness inspection, and stale-worker reporting.
-- [ ] Evaluate sharding or namespacing guidance for independent queues.
+- [x] Evaluate sharding or namespacing guidance for independent queues.
 
 `localqueue` does not try to coordinate work across multiple machines. The
 supported model is a single host, one local store, and local recovery through
@@ -77,7 +77,7 @@ inspection tools for that local model, not a distributed liveness protocol.
 - [x] Evaluate queue-level retry defaults that can be reused by many workers.
 - [x] Evaluate rate limiting for handlers that call external services.
 - [x] Evaluate circuit-breaker integration or documentation.
-- [ ] Add clearer guidance for `release_delay`, Tenacity `wait`, and
+- [x] Add clearer guidance for `release_delay`, Tenacity `wait`, and
   `lease_timeout` interactions.
 - [x] Reject ambiguous worker-loop combinations such as `--forever` with
   `--max-jobs`.
