@@ -90,6 +90,7 @@ localqueue queue add emails --value '{"to":"user@example.com"}'
 echo '{"to":"user@example.com"}' | localqueue queue add emails
 localqueue queue size emails
 localqueue queue stats emails
+localqueue queue stats emails --watch --interval 1
 localqueue queue inspect emails <message-id>
 localqueue queue dead emails
 localqueue queue requeue-dead emails <message-id>
@@ -249,6 +250,8 @@ Use `queue stats` when you need ready, delayed, inflight, dead-letter, and total
 counts instead of only ready messages. Use `queue inspect` to inspect one
 message by id, `queue dead` to list dead-letter messages, and
 `queue requeue-dead` to retry one after the failure cause is fixed.
+Use `queue stats --watch` to print those counts repeatedly while local workers
+are running.
 
 ## Operational boundaries
 

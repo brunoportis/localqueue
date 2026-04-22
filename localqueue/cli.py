@@ -251,9 +251,18 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
     def queue_stats(
         queue: str,
         store_path: str | None = typer.Option(None, "--store-path"),
+        watch: bool = typer.Option(False, "--watch"),
+        interval: float = typer.Option(1.0, "--interval", min=0.001),
     ) -> None:
-        stats = _queue(queue, _resolve_store_path(store_path, config)).stats()
-        _print_json(console, stats.as_dict())
+        persistent_queue = _queue(queue, _resolve_store_path(store_path, config))
+        with _shutdown_state() as shutdown:
+            _print_queue_stats(
+                persistent_queue,
+                console=console,
+                watch=watch,
+                interval=interval,
+                shutdown=shutdown,
+            )
 
     @queue_app.command("dead")
     def queue_dead(
@@ -548,6 +557,25 @@ def _process_queue_messages(
         return 1
 
     return 0
+
+
+def _print_queue_stats(
+    queue: PersistentQueue,
+    *,
+    console: Any,
+    watch: bool,
+    interval: float,
+    shutdown: _ShutdownState,
+) -> None:
+    while True:
+        _print_json(console, queue.stats().as_dict())
+        if not watch:
+            return
+        if shutdown.requested:
+            return
+        time.sleep(interval)
+        if shutdown.requested:
+            return
 
 
 def _poll_timeout(forever: bool, block: bool, timeout: float | None) -> float | None:

@@ -315,3 +315,13 @@ by id without changing state. `dead_letters()` lists dead-letter messages for
 inspection. `requeue_dead()` moves a dead-letter message back to the ready queue.
 `purge()` removes all records for that queue, including ready, inflight, and
 dead-letter records.
+
+From the CLI, use `queue stats --watch` to monitor those counts while workers
+are running:
+
+```bash
+localqueue queue stats jobs --watch --interval 1
+```
+
+Each sample is printed as JSON with `ready`, `delayed`, `inflight`, `dead`, and
+`total` counts. Stop the watch with `Ctrl-C`.

@@ -64,6 +64,12 @@ localqueue queue process emails myapp.workers:send_email \
   --max-tries 5
 ```
 
+Watch queue counts while workers run:
+
+```bash
+localqueue queue stats emails --watch --interval 1
+```
+
 For a local smoke test, enqueue one job and process it with the bundled example
 handler:
 

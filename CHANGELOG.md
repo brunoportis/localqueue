@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add `queue stats --watch` for monitoring queue counts while workers run.
+
 ## 0.1.1
 
 - Add project URLs for PyPI metadata.

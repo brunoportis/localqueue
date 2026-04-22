@@ -28,6 +28,7 @@ from localqueue.cli import (
     _load_callable,
     _load_config,
     _parse_json,
+    _print_queue_stats,
     _process_message,
     _process_queue_messages,
     _read_value,
@@ -723,6 +724,29 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertEqual(console.values, [])
         self.assertEqual(err_console.messages, ["[yellow]queue is empty[/yellow]"])
+
+    def test_print_queue_stats_watch_stops_on_shutdown(self) -> None:
+        queue = PersistentQueue("emails", store=MemoryQueueStore())
+        _ = queue.put({"to": "user@example.com"})
+        console = _JsonConsole()
+        shutdown = _ShutdownState()
+
+        def request_shutdown(_interval: float) -> None:
+            shutdown.requested = True
+
+        with mock.patch("time.sleep", side_effect=request_shutdown):
+            _print_queue_stats(
+                queue,
+                console=console,
+                watch=True,
+                interval=0.001,
+                shutdown=shutdown,
+            )
+
+        self.assertEqual(
+            console.values,
+            [{"ready": 1, "delayed": 0, "inflight": 0, "dead": 0, "total": 1}],
+        )
 
     def test_process_queue_messages_forever_stops_after_current_message(self) -> None:
         queue = PersistentQueue("emails", store=MemoryQueueStore())
