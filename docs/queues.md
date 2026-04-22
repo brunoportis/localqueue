@@ -291,6 +291,22 @@ simplicity also defines the operating limits.
   multi-host coordination, high throughput, retention controls, built-in
   metrics, or mature operational tooling.
 
+### SQLite housekeeping
+
+SQLite files can keep running for a long time, but they still need normal file
+maintenance.
+
+- Keep the main `*.sqlite3` file and its retry store together when you back up
+  or restore a queue.
+- If you use WAL mode, expect `-wal` and `-shm` files alongside the database
+  file. Restore the whole set, not just the main file.
+- Run `VACUUM` when you want to reclaim space after a lot of deletes or
+  dead-letter churn.
+- Stop producers and consumers before copying the store files to another
+  location.
+- If the store looks corrupted or partially written, restore from the latest
+  known-good backup instead of trying to patch records by hand.
+
 ## Capacity and cleanup
 
 Set `maxsize` to limit ready queue capacity.

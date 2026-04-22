@@ -91,10 +91,10 @@ That means measuring the current ceiling before promising more:
 
 - [ ] Define a schema migration strategy for SQLite stores.
 - [x] Document backup and restore expectations.
-- [ ] Add maintenance guidance for `VACUUM`, WAL files, and long-lived stores.
+- [x] Add maintenance guidance for `VACUUM`, WAL files, and long-lived stores.
 - [ ] Add retention or cleanup controls for dead-letter records.
 - [ ] Add cleanup controls for old retry records.
-- [ ] Document recovery behavior for corrupted or partially written store files.
+- [x] Document recovery behavior for corrupted or partially written store files.
 - [ ] Add compatibility tests for store files created by older package versions.
 
 ## API stability
