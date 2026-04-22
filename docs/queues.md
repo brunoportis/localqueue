@@ -61,6 +61,11 @@ Tenacity retry policy.
 Worker handlers receive `message.value` as their first argument. Call the handler
 with no arguments to consume the next queued message.
 
+`localqueue` treats validation-style failures such as `ValueError`, `TypeError`,
+`KeyError`, `IndexError`, and missing command execution as permanent failures.
+Those are dead-lettered even when the worker is configured to release on final
+failure.
+
 Change that behavior with `dead_letter_on_failure=False`. The older
 `dead_letter_on_exhaustion` name is still accepted as a compatibility alias.
 

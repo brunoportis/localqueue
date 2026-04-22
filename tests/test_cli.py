@@ -831,6 +831,48 @@ class CliTests(unittest.TestCase):
             self.assertEqual(dead_letters[0].last_error["exit_code"], 7)
             self.assertEqual(dead_letters[0].last_error["stderr"], "cannot deliver")
 
+    def test_queue_exec_missing_command_is_dead_lettered(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            store_path = str(tmp_path / "queues")
+            retry_store_path = str(tmp_path / "retries.sqlite3")
+            queue = PersistentQueue("emails", store_path=store_path)
+            message = queue.put({"to": "user@example.com"})
+
+            result = self._invoke(
+                [
+                    "queue",
+                    "exec",
+                    "emails",
+                    "--store-path",
+                    store_path,
+                    "--retry-store-path",
+                    retry_store_path,
+                    "--max-tries",
+                    "1",
+                    "--release-on-exhaustion",
+                    "--",
+                    "command-that-does-not-exist-12345",
+                ]
+            )
+
+            self.assertEqual(result.exit_code, 1, result.output)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["id"], message.id)
+            self.assertEqual(payload["state"], "failed")
+            self.assertEqual(payload["last_error"]["type"], "_CommandNotFoundError")
+            self.assertEqual(payload["last_error"]["exit_code"], 127)
+            self.assertEqual(payload["last_error"]["stderr"], "command not found")
+            self.assertEqual(payload["attempt_history"][-1]["type"], "dead_lettered")
+
+            dead_letters = PersistentQueue(
+                "emails", store_path=store_path
+            ).dead_letters()
+            self.assertEqual(len(dead_letters), 1)
+            self.assertEqual(dead_letters[0].id, message.id)
+            assert dead_letters[0].last_error is not None
+            self.assertEqual(dead_letters[0].last_error["exit_code"], 127)
+
     def test_queue_requeue_dead_all_moves_every_dead_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store_path = str(Path(tmpdir) / "queues")

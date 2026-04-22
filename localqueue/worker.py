@@ -7,6 +7,7 @@ from typing import Any, TypeVar, cast
 
 from .retry import PersistentAsyncRetrying, PersistentRetrying
 
+from .failure import is_permanent_failure
 from .queue import PersistentQueue
 from .store import QueueMessage
 
@@ -136,7 +137,7 @@ def persistent_worker(
             try:
                 result = retryer(fn, message.value, *args, **kwargs)
             except Exception as exc:
-                if worker_config.dead_letter_on_failure:
+                if is_permanent_failure(exc) or worker_config.dead_letter_on_failure:
                     queue.dead_letter(message, error=exc)
                 else:
                     queue.release(message, delay=worker_config.release_delay, error=exc)
@@ -175,7 +176,7 @@ def persistent_async_worker(
             try:
                 result = await retryer(fn, message.value, *args, **kwargs)
             except Exception as exc:
-                if worker_config.dead_letter_on_failure:
+                if is_permanent_failure(exc) or worker_config.dead_letter_on_failure:
                     queue.dead_letter(message, error=exc)
                 else:
                     queue.release(

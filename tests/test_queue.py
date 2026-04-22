@@ -1143,6 +1143,59 @@ class QueueTests(unittest.TestCase):
 
         self.assertEqual(queue.qsize(), 1)
 
+    def test_worker_dead_letters_validation_errors_even_when_release_is_selected(
+        self,
+    ) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+        _ = queue.put("bad")
+
+        @persistent_worker(
+            queue,
+            store=MemoryAttemptStore(),
+            max_tries=1,
+            wait=lambda _: 0,
+            dead_letter_on_exhaustion=False,
+        )
+        def fail(value: str) -> None:
+            raise ValueError(value)
+
+        with self.assertRaises(ValueError):
+            cast(Any, fail)()
+
+        self.assertTrue(queue.empty())
+        dead_letters = queue.dead_letters()
+        self.assertEqual(len(dead_letters), 1)
+        assert dead_letters[0].last_error is not None
+        self.assertEqual(dead_letters[0].last_error["type"], "ValueError")
+
+    def test_async_worker_dead_letters_validation_errors_even_when_release_is_selected(
+        self,
+    ) -> None:
+        async def scenario() -> None:
+            queue = PersistentQueue("test", store=MemoryQueueStore())
+            _ = queue.put("bad")
+
+            @persistent_async_worker(
+                queue,
+                store=MemoryAttemptStore(),
+                max_tries=1,
+                wait=lambda _: 0,
+                dead_letter_on_exhaustion=False,
+            )
+            async def fail(value: str) -> None:
+                raise ValueError(value)
+
+            with self.assertRaises(ValueError):
+                await cast(Any, fail)()
+
+            self.assertTrue(queue.empty())
+            dead_letters = queue.dead_letters()
+            self.assertEqual(len(dead_letters), 1)
+            assert dead_letters[0].last_error is not None
+            self.assertEqual(dead_letters[0].last_error["type"], "ValueError")
+
+        asyncio.run(scenario())
+
     def test_worker_config_rejects_conflicting_failure_policy_names(self) -> None:
         with self.assertRaises(ValueError):
             _ = PersistentWorkerConfig(

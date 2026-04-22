@@ -18,6 +18,7 @@ from typing import Any, Iterator
 
 from tenacity import wait_none
 
+from .failure import is_permanent_failure
 from .queue import PersistentQueue
 from .retry import (
     PersistentRetryExhausted,
@@ -542,12 +543,14 @@ def _process_message(
             last_error = _error_payload(exc)
             record = retryer.get_record(message.id)
             exhausted = record is not None and record.exhausted
-            if exhausted:
+            if is_permanent_failure(exc) or exhausted:
                 _ = _finish_failed_message(
                     queue,
                     message,
                     release_delay=release_delay,
-                    dead_letter_on_exhaustion=dead_letter_on_exhaustion,
+                    dead_letter_on_exhaustion=True
+                    if is_permanent_failure(exc)
+                    else dead_letter_on_exhaustion,
                     error=exc,
                 )
             else:
