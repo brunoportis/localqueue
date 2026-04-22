@@ -94,6 +94,9 @@ That means measuring the current ceiling before promising more:
 - [x] Add maintenance guidance for `VACUUM`, WAL files, and long-lived stores.
 - [x] Add retention or cleanup controls for dead-letter records.
 - [x] Add cleanup controls for old retry records.
+- [x] Add preview mode before cleanup removes records.
+- [x] Add configurable retention defaults for dead letters and retry records.
+- [x] Add a one-shot queue health summary for day-to-day checks.
 - [x] Document recovery behavior for corrupted or partially written store files.
 - [ ] Add compatibility tests for store files created by older package versions.
 

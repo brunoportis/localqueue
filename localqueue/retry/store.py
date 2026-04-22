@@ -59,6 +59,8 @@ class AttemptStore(Protocol):
 
     def prune_exhausted(self, *, older_than: float, now: float) -> int: ...
 
+    def count_exhausted_older_than(self, *, older_than: float, now: float) -> int: ...
+
 
 class MemoryAttemptStore:
     _records: dict[str, RetryRecord]
@@ -94,6 +96,15 @@ class MemoryAttemptStore:
             for key in doomed:
                 _ = self._records.pop(key, None)
             return len(doomed)
+
+    def count_exhausted_older_than(self, *, older_than: float, now: float) -> int:
+        cutoff = now - older_than
+        with self._lock:
+            return sum(
+                1
+                for record in self._records.values()
+                if record.exhausted and record.first_attempt_at <= cutoff
+            )
 
 
 class LMDBAttemptStore:
@@ -150,6 +161,18 @@ class LMDBAttemptStore:
             for key in doomed:
                 _ = txn.delete(key)
             return len(doomed)
+
+    def count_exhausted_older_than(self, *, older_than: float, now: float) -> int:
+        cutoff = now - older_than
+        with self._env.begin() as txn:
+            cursor = txn.cursor()
+            count = 0
+            if cursor.first():
+                for key, raw in cursor:
+                    record = RetryRecord(**json.loads(bytes(raw).decode("utf-8")))
+                    if record.exhausted and record.first_attempt_at <= cutoff:
+                        count += 1
+            return count
 
 
 class SQLiteAttemptStore:
@@ -218,6 +241,17 @@ class SQLiteAttemptStore:
                 )
             self._connection.commit()
             return len(doomed)
+
+    def count_exhausted_older_than(self, *, older_than: float, now: float) -> int:
+        cutoff = now - older_than
+        with self._lock:
+            cursor = self._connection.execute("SELECT record_json FROM retry_records")
+            count = 0
+            for (raw,) in cursor.fetchall():
+                record = RetryRecord(**json.loads(raw))
+                if record.exhausted and record.first_attempt_at <= cutoff:
+                    count += 1
+            return count
 
     def close(self) -> None:
         with self._lock:

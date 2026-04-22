@@ -201,6 +201,10 @@ class QueueStore(Protocol):
         self, queue: str, *, older_than: float, now: float
     ) -> int: ...
 
+    def count_dead_letters_older_than(
+        self, queue: str, *, older_than: float, now: float
+    ) -> int: ...
+
     def empty(self, queue: str, *, now: float) -> bool: ...
 
     def purge(self, queue: str) -> int: ...
@@ -426,6 +430,17 @@ class MemoryQueueStore:
             for message_id in doomed:
                 _ = records.pop(message_id, None)
             return len(doomed)
+
+    def count_dead_letters_older_than(
+        self, queue: str, *, older_than: float, now: float
+    ) -> int:
+        with self._lock:
+            return sum(
+                1
+                for record in self._records.get(queue, {}).values()
+                if record.state == _DEAD
+                and _dead_record_age(record, now=now) >= older_than
+            )
 
     def empty(self, queue: str, *, now: float) -> bool:
         return self.qsize(queue, now=now) == 0
@@ -764,6 +779,20 @@ class SQLiteQueueStore:
                     (queue, message_id),
                 )
             return len(doomed)
+
+    def count_dead_letters_older_than(
+        self, queue: str, *, older_than: float, now: float
+    ) -> int:
+        with self._lock:
+            cursor = self._connection.execute(
+                "SELECT record_json FROM queue_messages WHERE queue = ? AND state = ?",
+                (queue, _DEAD),
+            )
+            count = 0
+            for (raw,) in cursor.fetchall():
+                if _dead_record_age(_decode_record(raw), now=now) >= older_than:
+                    count += 1
+            return count
 
     def empty(self, queue: str, *, now: float) -> bool:
         return self.qsize(queue, now=now) == 0
@@ -1211,6 +1240,27 @@ class LMDBQueueStore:
                 _ = txn.delete(_dead_key(queue, message_id))
                 _ = txn.delete(_message_key(queue, message_id))
             return len(doomed)
+
+    def count_dead_letters_older_than(
+        self, queue: str, *, older_than: float, now: float
+    ) -> int:
+        with self._env.begin() as txn:
+            count = 0
+            cursor = txn.cursor()
+            prefix = _dead_prefix(queue)
+            if not cursor.set_range(prefix):
+                return 0
+            for key, raw_id in cursor:
+                key = bytes(key)
+                if not key.startswith(prefix):
+                    break
+                record = self._get_record(txn, queue, bytes(raw_id).decode("utf-8"))
+                if (
+                    record is not None
+                    and _dead_record_age(record, now=now) >= older_than
+                ):
+                    count += 1
+            return count
 
     def empty(self, queue: str, *, now: float) -> bool:
         return self.qsize(queue, now=now) == 0

@@ -45,6 +45,7 @@ Core methods:
 | `dead_letters(limit=None)` | list dead-letter messages |
 | `requeue_dead(message, delay=0.0)` | return a dead-letter message to ready delivery |
 | `prune_dead_letters(older_than)` | remove dead letters older than the given age |
+| `count_dead_letters_older_than(older_than)` | count dead letters older than the given age without removing them |
 | `empty()` | whether there are no ready messages |
 | `full()` | whether ready capacity is reached |
 | `purge()` | remove all queue records |

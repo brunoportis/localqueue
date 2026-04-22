@@ -20,6 +20,7 @@ localqueue queue add emails --value '{"to":"user@example.com"}'
 localqueue queue exec emails -- python scripts/send_email.py
 localqueue queue stats emails --watch --interval 1
 localqueue queue dead emails --summary
+localqueue queue health emails
 ```
 
 `queue exec` runs an external command per message. The message value is written to stdin as JSON, and exit code `0` acks the message.

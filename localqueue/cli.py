@@ -117,6 +117,12 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
     def config_init(
         store_path: str = typer.Option(DEFAULT_STORE_PATH, "--store-path"),
         retry_store_path: str | None = typer.Option(None, "--retry-store-path"),
+        dead_letter_ttl_seconds: float | None = typer.Option(
+            None, "--dead-letter-ttl-seconds", min=0.0
+        ),
+        retry_record_ttl_seconds: float | None = typer.Option(
+            None, "--retry-record-ttl-seconds", min=0.0
+        ),
         force: bool = typer.Option(False, "--force"),
     ) -> None:
         path = _config_path()
@@ -129,6 +135,10 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         new_config: dict[str, Any] = {"store_path": store_path}
         if retry_store_path is not None:
             new_config["retry_store_path"] = retry_store_path
+        if dead_letter_ttl_seconds is not None:
+            new_config["dead_letter_ttl_seconds"] = dead_letter_ttl_seconds
+        if retry_record_ttl_seconds is not None:
+            new_config["retry_record_ttl_seconds"] = retry_record_ttl_seconds
         _write_config(yaml, new_config)
         config.clear()
         config.update(new_config)
@@ -139,15 +149,23 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         key: str,
         value: str,
     ) -> None:
-        if key not in {"store_path", "retry_store_path"}:
+        if key not in {
+            "store_path",
+            "retry_store_path",
+            "dead_letter_ttl_seconds",
+            "retry_record_ttl_seconds",
+        }:
             err_console.print(
                 "[red]unsupported config key:[/red] "
-                + f"{key}; use store_path or retry_store_path"
+                + (
+                    f"{key}; use store_path, retry_store_path, "
+                    "dead_letter_ttl_seconds, or retry_record_ttl_seconds"
+                )
             )
             raise typer.Exit(1)
 
         updated = dict(config)
-        updated[key] = value
+        updated[key] = _coerce_config_value(key, value)
         _write_config(yaml, updated)
         config.clear()
         config.update(updated)
@@ -281,6 +299,23 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
                 shutdown=shutdown,
             )
 
+    @queue_app.command("health")
+    def queue_health(
+        queue: str,
+        store_path: str | None = typer.Option(None, "--store-path"),
+        json_output: bool = typer.Option(False, "--json"),
+    ) -> None:
+        persistent_queue = _queue(queue, _resolve_store_path(store_path, config))
+        _print_json(
+            console,
+            {
+                "queue": queue,
+                "stats": persistent_queue.stats().as_dict(),
+                "dead_letters": _dead_letter_summary(persistent_queue.dead_letters()),
+                "retention": _retention_settings(config),
+            },
+        )
+
     @queue_app.command("dead")
     def queue_dead(
         queue: str,
@@ -294,12 +329,20 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         max_attempts: int | None = typer.Option(None, "--max-attempts", min=0),
         error_contains: str | None = typer.Option(None, "--error-contains"),
         failed_within: float | None = typer.Option(None, "--failed-within", min=0.0),
+        dry_run: bool = typer.Option(False, "--dry-run"),
         prune_older_than: float | None = typer.Option(
             None, "--prune-older-than", min=0.0
         ),
     ) -> None:
         persistent_queue = _queue(queue, _resolve_store_path(store_path, config))
-        if prune_older_than is not None:
+        if prune_older_than is not None or dry_run:
+            older_than = _resolve_dead_letter_ttl(prune_older_than, config)
+            if older_than is None:
+                err_console.print(
+                    "[red]pass --prune-older-than or configure "
+                    "dead_letter_ttl_seconds[/red]"
+                )
+                raise typer.Exit(1)
             if any(
                 (
                     watch,
@@ -316,8 +359,19 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
                     + "it cannot be combined with list or watch options[/red]"
                 )
                 raise typer.Exit(1)
-            deleted = persistent_queue.prune_dead_letters(older_than=prune_older_than)
-            _print_json(console, {"deleted": deleted})
+            deleted = (
+                persistent_queue.count_dead_letters_older_than(older_than=older_than)
+                if dry_run
+                else persistent_queue.prune_dead_letters(older_than=older_than)
+            )
+            _print_json(
+                console,
+                {
+                    "dry_run": dry_run,
+                    "older_than": older_than,
+                    "would_delete" if dry_run else "deleted": deleted,
+                },
+            )
             return
         with _shutdown_state() as shutdown:
             _print_dead_letters(
@@ -336,15 +390,36 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
 
     @retry_app.command("prune")
     def retry_prune(
-        older_than: float = typer.Option(..., "--older-than", min=0.0),
+        older_than: float | None = typer.Option(None, "--older-than", min=0.0),
         retry_store_path: str | None = typer.Option(None, "--retry-store-path"),
+        dry_run: bool = typer.Option(False, "--dry-run"),
     ) -> None:
         store = SQLiteAttemptStore(_resolve_retry_store_path(retry_store_path, config))
         try:
-            deleted = store.prune_exhausted(older_than=older_than, now=time.time())
+            resolved_older_than = _resolve_retry_record_ttl(older_than, config)
+            if resolved_older_than is None:
+                err_console.print(
+                    "[red]pass --older-than or configure retry_record_ttl_seconds[/red]"
+                )
+                raise typer.Exit(1)
+            now = time.time()
+            deleted = (
+                store.count_exhausted_older_than(
+                    older_than=resolved_older_than, now=now
+                )
+                if dry_run
+                else store.prune_exhausted(older_than=resolved_older_than, now=now)
+            )
         finally:
             store.close()
-        _print_json(console, {"deleted": deleted})
+        _print_json(
+            console,
+            {
+                "dry_run": dry_run,
+                "older_than": resolved_older_than,
+                "would_delete" if dry_run else "deleted": deleted,
+            },
+        )
 
     @queue_app.command("requeue-dead")
     def queue_requeue_dead(
@@ -853,6 +928,37 @@ def _resolve_retry_store_path(explicit: str | None, config: dict[str, Any]) -> s
     if value is None:
         return DEFAULT_RETRY_STORE_PATH
     return str(value)
+
+
+def _resolve_dead_letter_ttl(
+    explicit: float | None, config: dict[str, Any]
+) -> float | None:
+    value = explicit if explicit is not None else config.get("dead_letter_ttl_seconds")
+    if value is None:
+        return None
+    return float(value)
+
+
+def _resolve_retry_record_ttl(
+    explicit: float | None, config: dict[str, Any]
+) -> float | None:
+    value = explicit if explicit is not None else config.get("retry_record_ttl_seconds")
+    if value is None:
+        return None
+    return float(value)
+
+
+def _retention_settings(config: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "dead_letter_ttl_seconds": config.get("dead_letter_ttl_seconds"),
+        "retry_record_ttl_seconds": config.get("retry_record_ttl_seconds"),
+    }
+
+
+def _coerce_config_value(key: str, value: str) -> str | float:
+    if key in {"dead_letter_ttl_seconds", "retry_record_ttl_seconds"}:
+        return float(value)
+    return value
 
 
 def _load_callable(spec: str) -> Callable[[Any], Any]:

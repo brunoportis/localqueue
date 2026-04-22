@@ -119,10 +119,15 @@ Exhausted retry records can be cleaned up later with the CLI:
 
 ```bash
 localqueue retry prune --older-than 604800
+localqueue retry prune --dry-run --older-than 604800
 ```
 
 This removes only exhausted retry records older than the requested age. It does
 not touch active records that may still be in use.
+
+If you want a default retention policy, set `retry_record_ttl_seconds` with
+`localqueue config set`. Then `localqueue retry prune --dry-run` can preview the
+configured age and `localqueue retry prune` can use it directly.
 
 ## Retry keys
 

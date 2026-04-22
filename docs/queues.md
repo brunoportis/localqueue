@@ -377,6 +377,18 @@ inspected them:
 localqueue queue dead emails --prune-older-than 86400
 ```
 
+Use `--dry-run` with cleanup commands when you want to preview how many records
+would be removed without touching the store yet:
+
+```bash
+localqueue queue dead emails --dry-run --prune-older-than 86400
+localqueue retry prune --dry-run --older-than 604800
+```
+
+If you want cleanup defaults to live in config instead of on the command line,
+set `dead_letter_ttl_seconds` and `retry_record_ttl_seconds` with
+`localqueue config set`.
+
 ## Safe shutdown
 
 `queue process` and `queue exec` handle `SIGINT` and `SIGTERM` by finishing the
@@ -433,3 +445,12 @@ dead letter back to ready delivery:
 ```bash
 localqueue queue requeue-dead jobs --all
 ```
+
+For a compact one-shot summary, use `queue health`:
+
+```bash
+localqueue queue health emails
+```
+
+It combines queue stats, dead-letter summary, and the configured retention
+values so you can see the state and the cleanup policy in one pass.
