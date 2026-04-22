@@ -1,6 +1,7 @@
 # `localqueue`
 
 [![Tests](https://github.com/brunoportis/localqueue/actions/workflows/tests.yml/badge.svg)](https://github.com/brunoportis/localqueue/actions/workflows/tests.yml)
+[![CodeQL](https://github.com/brunoportis/localqueue/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/brunoportis/localqueue/actions/workflows/github-code-scanning/codeql)
 ![Coverage](https://img.shields.io/badge/coverage-%E2%89%A595%25-brightgreen)
 
 Durable local queues for Python workers, with persistent retry state powered by
