@@ -82,6 +82,26 @@ For small examples, worker options can also be passed directly to the decorator.
 Use `persistent_async_worker()` for async handlers. Queue operations are performed
 off the event loop with `asyncio.to_thread()`.
 
+## Command workers
+
+Use `localqueue queue exec` when a queued message should be processed by an
+external command instead of an importable Python function.
+
+```bash
+localqueue queue exec jobs -- python scripts/process_job.py
+localqueue queue exec webhooks -- curl -X POST https://example.com/hook -d @-
+localqueue queue exec jobs -- sh -c 'jq -r .id | xargs -I{} ./process-job {}'
+```
+
+The command receives `message.value` on stdin as JSON. `localqueue` captures the
+command output so the CLI can keep printing its own JSON status. Exit code `0`
+acks the message. Any other exit code raises a command failure, records the exit
+code and stderr in `last_error`, and applies the same retry, release, or
+dead-letter behavior as `queue process`.
+
+Commands are executed without an implicit shell. Use `sh -c` explicitly when you
+want pipes, redirects, shell expansion, or multiple commands.
+
 ## Queue-style usage
 
 For simple workflows, use the familiar `put()`, `get()`, and `task_done()` methods.

@@ -23,6 +23,7 @@ from localqueue.cli import (
     DEFAULT_RETRY_STORE_PATH,
     _ShutdownState,
     _build_app,
+    _command_handler,
     _config_path,
     _load_callable,
     _load_config,
@@ -494,6 +495,120 @@ class CliTests(unittest.TestCase):
 
             self.assertEqual(result.exit_code, 1)
             self.assertIn("module:function", result.output)
+
+    def test_command_handler_passes_message_value_as_json_stdin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            output_path = tmp_path / "payload.json"
+            script_path = tmp_path / "write_payload.py"
+            script_path.write_text(
+                "import pathlib\n"
+                "import sys\n"
+                f"pathlib.Path({str(output_path)!r}).write_text(sys.stdin.read())\n",
+                encoding="utf-8",
+            )
+
+            handler = _command_handler([sys.executable, str(script_path)])
+            handler({"to": "user@example.com"})
+
+            self.assertEqual(
+                json.loads(output_path.read_text(encoding="utf-8")),
+                {"to": "user@example.com"},
+            )
+
+    def test_queue_exec_command_acks_successful_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            store_path = str(tmp_path / "queues")
+            retry_store_path = str(tmp_path / "retries.sqlite3")
+            output_path = tmp_path / "payload.json"
+            script_path = tmp_path / "write_payload.py"
+            script_path.write_text(
+                "import pathlib\n"
+                "import sys\n"
+                f"pathlib.Path({str(output_path)!r}).write_text(sys.stdin.read())\n",
+                encoding="utf-8",
+            )
+            queue = PersistentQueue("emails", store_path=store_path)
+            _ = queue.put({"to": "user@example.com"})
+
+            result = self._invoke(
+                [
+                    "queue",
+                    "exec",
+                    "emails",
+                    "--store-path",
+                    store_path,
+                    "--retry-store-path",
+                    retry_store_path,
+                    "--max-tries",
+                    "1",
+                    "--",
+                    sys.executable,
+                    str(script_path),
+                ]
+            )
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertEqual(json.loads(result.stdout)["state"], "acked")
+            self.assertEqual(
+                PersistentQueue("emails", store_path=store_path).qsize(), 0
+            )
+            self.assertEqual(
+                json.loads(output_path.read_text(encoding="utf-8")),
+                {"to": "user@example.com"},
+            )
+
+    def test_queue_exec_command_dead_letters_failed_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            store_path = str(tmp_path / "queues")
+            retry_store_path = str(tmp_path / "retries.sqlite3")
+            script_path = tmp_path / "fail.py"
+            script_path.write_text(
+                "import sys\n"
+                "sys.stderr.write('cannot deliver\\n')\n"
+                "raise SystemExit(7)\n",
+                encoding="utf-8",
+            )
+            queue = PersistentQueue("emails", store_path=store_path)
+            message = queue.put({"to": "user@example.com"})
+
+            result = self._invoke(
+                [
+                    "queue",
+                    "exec",
+                    "emails",
+                    "--store-path",
+                    store_path,
+                    "--retry-store-path",
+                    retry_store_path,
+                    "--max-tries",
+                    "1",
+                    "--",
+                    sys.executable,
+                    str(script_path),
+                ]
+            )
+
+            self.assertEqual(result.exit_code, 1)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["id"], message.id)
+            self.assertEqual(payload["state"], "failed")
+            self.assertEqual(payload["last_error"]["type"], "_CommandExecutionError")
+            self.assertEqual(payload["last_error"]["exit_code"], 7)
+            self.assertEqual(payload["last_error"]["stderr"], "cannot deliver")
+            self.assertIn("status 7", payload["last_error"]["message"])
+            self.assertIn("cannot deliver", payload["last_error"]["message"])
+
+            dead_letters = PersistentQueue(
+                "emails", store_path=store_path
+            ).dead_letters()
+            self.assertEqual(len(dead_letters), 1)
+            self.assertEqual(dead_letters[0].id, message.id)
+            assert dead_letters[0].last_error is not None
+            self.assertEqual(dead_letters[0].last_error["exit_code"], 7)
+            self.assertEqual(dead_letters[0].last_error["stderr"], "cannot deliver")
 
     def test_process_message_acks_successful_handler(self) -> None:
         queue = PersistentQueue("emails", store=MemoryQueueStore())

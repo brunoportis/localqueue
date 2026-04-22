@@ -95,6 +95,7 @@ localqueue queue dead emails
 localqueue queue requeue-dead emails <message-id>
 localqueue queue pop emails --worker-id worker-1
 localqueue queue ack emails <message-id>
+localqueue queue exec emails -- python scripts/send_email.py
 ```
 
 Use `--raw` when the queue value should be stored as a string:
@@ -114,6 +115,17 @@ dead-letter storage by default.
 
 ```bash
 localqueue queue process emails myapp.workers:send_email --max-tries 5
+```
+
+Use `queue exec` when the handler is an external command. The message value is
+written to the command's stdin as JSON. Exit code `0` acknowledges the message;
+any other exit code is treated as a processing failure and follows the same
+retry, release, and dead-letter rules as `queue process`.
+
+```bash
+localqueue queue exec emails -- python scripts/send_email.py
+localqueue queue exec webhooks -- curl -X POST https://example.com/hook -d @-
+localqueue queue exec emails -- sh -c 'jq -r .to | xargs -I{} curl https://example.com/{}'
 ```
 
 Use `--forever` for a long-running worker. When interrupted with `SIGINT` or

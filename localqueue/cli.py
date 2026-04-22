@@ -4,6 +4,7 @@ import importlib
 import json
 import os
 import signal
+import subprocess
 import sys
 import time
 from collections.abc import Callable
@@ -38,6 +39,32 @@ class _ProcessResult:
 @dataclass(slots=True)
 class _ShutdownState:
     requested: bool = False
+
+
+class _CommandExecutionError(RuntimeError):
+    command: list[str]
+    exit_code: int
+    stdout: str
+    stderr: str
+
+    def __init__(
+        self,
+        command: list[str],
+        *,
+        exit_code: int,
+        stdout: str,
+        stderr: str,
+    ) -> None:
+        self.command = command
+        self.exit_code = exit_code
+        self.stdout = _truncate_output(stdout.strip())
+        self.stderr = _truncate_output(stderr.strip())
+        stderr_message = _truncate_output(stderr.strip())
+        detail = f": {stderr_message}" if stderr_message else ""
+        super().__init__(
+            f"command exited with status {exit_code}: {_format_command(command)}"
+            + detail
+        )
 
 
 def main(args: list[str] | None = None) -> None:
@@ -311,6 +338,55 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         if exit_code:
             raise typer.Exit(exit_code)
 
+    @queue_app.command("exec")
+    def queue_exec(
+        queue: str,
+        command: list[str] = typer.Argument(
+            ...,
+            help="Command to run. Use '--' before commands that contain options.",
+        ),
+        store_path: str | None = typer.Option(None, "--store-path"),
+        retry_store_path: str | None = typer.Option(None, "--retry-store-path"),
+        max_jobs: int = typer.Option(1, "--max-jobs", min=1),
+        forever: bool = typer.Option(False, "--forever"),
+        max_tries: int = typer.Option(3, "--max-tries", min=1),
+        lease_timeout: float = typer.Option(30.0, "--lease-timeout", min=0.001),
+        worker_id: str | None = typer.Option(None, "--worker-id"),
+        block: bool = typer.Option(False, "--block"),
+        timeout: float | None = typer.Option(None, "--timeout", min=0.0),
+        idle_sleep: float = typer.Option(1.0, "--idle-sleep", min=0.001),
+        release_delay: float = typer.Option(0.0, "--release-delay", min=0.0),
+        dead_letter_on_exhaustion: bool = typer.Option(
+            True,
+            "--dead-letter-on-exhaustion/--release-on-exhaustion",
+        ),
+    ) -> None:
+        persistent_queue = _queue(
+            queue,
+            _resolve_store_path(store_path, config),
+            lease_timeout=lease_timeout,
+        )
+        with _shutdown_state() as shutdown:
+            exit_code = _process_queue_messages(
+                persistent_queue,
+                _command_handler(command),
+                console=console,
+                err_console=err_console,
+                shutdown=shutdown,
+                retry_store_path=_resolve_retry_store_path(retry_store_path, config),
+                max_jobs=max_jobs,
+                forever=forever,
+                max_tries=max_tries,
+                worker_id=worker_id,
+                block=block,
+                timeout=timeout,
+                idle_sleep=idle_sleep,
+                release_delay=release_delay,
+                dead_letter_on_exhaustion=dead_letter_on_exhaustion,
+            )
+        if exit_code:
+            raise typer.Exit(exit_code)
+
     return app
 
 
@@ -514,6 +590,16 @@ def _finish_failed_message(
 def _error_payload(error: BaseException | str | None) -> dict[str, Any] | None:
     if error is None:
         return None
+    if isinstance(error, _CommandExecutionError):
+        return {
+            "type": type(error).__name__,
+            "module": type(error).__module__,
+            "message": str(error),
+            "command": error.command,
+            "exit_code": error.exit_code,
+            "stdout": _truncate_output(error.stdout.strip()),
+            "stderr": _truncate_output(error.stderr.strip()),
+        }
     if isinstance(error, BaseException):
         error_type = type(error)
         return {
@@ -601,6 +687,29 @@ def _load_callable(spec: str) -> Callable[[Any], Any]:
     return target
 
 
+def _command_handler(command: list[str]) -> Callable[[Any], None]:
+    if not command:
+        raise ValueError("command cannot be empty")
+
+    def run_command(value: Any) -> None:
+        completed = subprocess.run(
+            command,
+            input=_json_dumps(value) + "\n",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise _CommandExecutionError(
+                command,
+                exit_code=completed.returncode,
+                stdout=completed.stdout,
+                stderr=completed.stderr,
+            )
+
+    return run_command
+
+
 def _message_payload(message: QueueMessage) -> dict[str, Any]:
     return {
         "id": message.id,
@@ -619,6 +728,16 @@ def _message_payload(message: QueueMessage) -> dict[str, Any]:
 
 def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _format_command(command: list[str]) -> str:
+    return " ".join(command)
+
+
+def _truncate_output(value: str, *, limit: int = 500) -> str:
+    if len(value) <= limit:
+        return value
+    return value[: limit - 3] + "..."
 
 
 def _print_json(console: Any, value: Any) -> None:

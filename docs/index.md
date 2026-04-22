@@ -41,6 +41,16 @@ Run one queued message with an importable handler:
 localqueue queue process emails myapp.workers:send_email --max-tries 5
 ```
 
+Run one queued message with an external command:
+
+```bash
+localqueue queue exec emails -- python scripts/send_email.py
+```
+
+`queue exec` writes the message value to the command's stdin as JSON. Exit code
+`0` acknowledges the message. Any other exit code is treated as a failed handler
+attempt and follows the configured retry, release, and dead-letter policy.
+
 Run a continuous local worker with `--forever`. `SIGINT` and `SIGTERM` request a
 graceful stop after the current message finishes.
 

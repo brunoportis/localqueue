@@ -248,9 +248,14 @@ def _error_payload(error: BaseException | str | None) -> dict[str, Any] | None:
         return None
     if isinstance(error, BaseException):
         error_type = type(error)
-        return {
+        payload: dict[str, Any] = {
             "type": error_type.__name__,
             "module": error_type.__module__,
             "message": str(error),
         }
+        for attr in ("command", "exit_code", "stdout", "stderr"):
+            value = getattr(error, attr, None)
+            if value is not None:
+                payload[attr] = value
+        return payload
     return {"type": None, "module": None, "message": str(error)}

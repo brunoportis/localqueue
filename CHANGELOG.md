@@ -3,13 +3,17 @@
 ## 0.1.0
 
 - Add persistent retry wrappers for sync and async Tenacity retryers.
-- Add LMDB-backed persistent queues with leases, delayed delivery,
+- Add SQLite-backed durable local queues with leases, delayed delivery,
   acknowledgements, release, dead-letter records, and requeue from dead-letter
-  storage.
+  storage. LMDB remains available as an optional backend.
 - Add CLI commands for config, queue add/pop/ack/release/dead-letter/stats,
   inspect, dead-letter listing, dead-letter requeue, and continuous processing.
+- Add `queue exec` for processing messages with external commands that receive
+  the message value as JSON on stdin.
 - Add worker identity metadata with `--worker-id` and `leased_by` for inflight
   message inspection.
+- Document local-worker operational boundaries, at-least-once delivery, and
+  idempotency guidance.
 - Add focused examples for enqueueing and processing email jobs locally.
 - Add MIT license metadata for package distribution.
 - Add `dead_letter_on_failure` as the preferred worker failure policy option,
