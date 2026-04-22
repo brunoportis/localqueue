@@ -28,7 +28,7 @@ _default_store_local = threading.local()
 
 
 def _sqlite_default_store_factory() -> AttemptStore:
-    return SQLiteAttemptStore("persistence_db.sqlite3")
+    return SQLiteAttemptStore("localqueue_retries.sqlite3")
 
 
 _default_store_factory: Callable[[], AttemptStore] = _sqlite_default_store_factory

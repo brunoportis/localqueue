@@ -5,7 +5,7 @@ from collections.abc import Callable
 from queue import Empty
 from typing import Any, TypeVar, cast
 
-from persistentretry import PersistentAsyncRetrying, PersistentRetrying
+from .retry import PersistentAsyncRetrying, PersistentRetrying
 
 from .queue import PersistentQueue
 from .store import QueueMessage

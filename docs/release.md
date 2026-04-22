@@ -64,28 +64,28 @@ Before `1.0.0`, use this convention:
 9. Inspect the artifacts:
 
    ```bash
-   tar -tzf dist/persistentretry-<version>.tar.gz | less
-   python -m zipfile -l dist/persistentretry-<version>-py3-none-any.whl
+   tar -tzf dist/localqueue-<version>.tar.gz | less
+   python -m zipfile -l dist/localqueue-<version>-py3-none-any.whl
    ```
 
 10. Install the wheel in a clean virtual environment:
 
    ```bash
-   uv venv /tmp/persistentretry-release-venv
-   uv pip install --python /tmp/persistentretry-release-venv/bin/python \
-     "dist/persistentretry-<version>-py3-none-any.whl[all]"
-   /tmp/persistentretry-release-venv/bin/persistentretry --help
+   uv venv /tmp/localqueue-release-venv
+   uv pip install --python /tmp/localqueue-release-venv/bin/python \
+     "dist/localqueue-<version>-py3-none-any.whl[all]"
+   /tmp/localqueue-release-venv/bin/localqueue --help
    ```
 
 11. Run a local smoke test:
 
     ```bash
     uv run python examples/enqueue_email.py user@example.com \
-      --store-path /tmp/persistentretry-smoke
+      --store-path /tmp/localqueue-smoke
 
-    uv run persistentretry queue process emails examples.email_worker:send_email \
-      --store-path /tmp/persistentretry-smoke \
-      --retry-store-path /tmp/persistentretry-smoke-retries.sqlite3 \
+    uv run localqueue queue process emails examples.email_worker:send_email \
+      --store-path /tmp/localqueue-smoke \
+      --retry-store-path /tmp/localqueue-smoke-retries.sqlite3 \
       --worker-id worker-smoke \
       --max-tries 3
     ```

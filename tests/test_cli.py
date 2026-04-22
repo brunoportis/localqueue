@@ -16,9 +16,9 @@ import typer
 from typer.testing import CliRunner
 import yaml
 
-from persistentqueue import MemoryQueueStore, PersistentQueue
-from persistentretry import MemoryAttemptStore, SQLiteAttemptStore
-from persistentretry.cli import (
+from localqueue import MemoryQueueStore, PersistentQueue
+from localqueue.retry import MemoryAttemptStore, SQLiteAttemptStore
+from localqueue.cli import (
     CONFIG_FILENAME,
     DEFAULT_RETRY_STORE_PATH,
     _ShutdownState,
@@ -34,7 +34,7 @@ from persistentretry.cli import (
     _resolve_store_path,
     _write_config,
 )
-from persistentretry.core import configure_default_store
+from localqueue.retry import configure_default_store
 
 
 def handle_payload(payload: dict[str, str]) -> None:
@@ -118,12 +118,12 @@ class CliTests(unittest.TestCase):
         ):
             self.assertEqual(
                 _config_path(),
-                Path("/tmp/config") / "persistentretry" / CONFIG_FILENAME,
+                Path("/tmp/config") / "localqueue" / CONFIG_FILENAME,
             )
 
     def test_load_and_write_config_use_yaml_mapping(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "persistentretry" / "config.yaml"
+            path = Path(tmpdir) / "localqueue" / "config.yaml"
             _write_config(
                 yaml,
                 {"store_path": "/tmp/queues", "retry_store_path": "/tmp/retries"},
@@ -157,7 +157,7 @@ class CliTests(unittest.TestCase):
                 config_path = Path(path_result.stdout.strip())
                 self.assertEqual(
                     config_path,
-                    Path(tmpdir) / "persistentretry" / CONFIG_FILENAME,
+                    Path(tmpdir) / "localqueue" / CONFIG_FILENAME,
                 )
 
                 init_result = self._invoke(

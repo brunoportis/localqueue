@@ -1,7 +1,7 @@
 [project]
-site_name = "persistentretry"
+site_name = "localqueue"
 site_description = "Durable local queues for Python, with persistent retry state powered by Tenacity."
-site_author = "persistentretry authors"
+site_author = "localqueue authors"
 copyright = "Copyright &copy; 2026 The authors"
 
 nav = [
@@ -9,6 +9,7 @@ nav = [
   { "Persistent queues" = "queues.md" },
   { "Persistent retries" = "retries.md" },
   { "API reference" = "api.md" },
+  { "Operational maturity" = "operational-maturity.md" },
   { "Release" = "release.md" },
 ]
 

@@ -1,18 +1,17 @@
-# `persistentretry`
+# `localqueue`
 
-[![Tests](https://github.com/brunoportis/persistentretry/actions/workflows/tests.yml/badge.svg)](https://github.com/brunoportis/persistentretry/actions/workflows/tests.yml)
+[![Tests](https://github.com/brunoportis/localqueue/actions/workflows/tests.yml/badge.svg)](https://github.com/brunoportis/localqueue/actions/workflows/tests.yml)
 ![Coverage](https://img.shields.io/badge/coverage-%E2%89%A595%25-brightgreen)
 
 Durable queues for Python, with persistent retry state powered by Tenacity.
 
-`persistentretry` provides two small building blocks for reliable local job
+`localqueue` provides two small building blocks for reliable local job
 processing:
 
-- `persistentqueue`: a SQLite-backed queue with at-least-once delivery, leases,
-  delayed delivery, acknowledgements, release, and dead-letter records.
-- `persistentretry`: a retry layer around
-  [`tenacity`](https://tenacity.readthedocs.io/en/latest/) that persists retry
-  budgets across process restarts.
+- a SQLite-backed queue with at-least-once delivery, leases, delayed delivery,
+  acknowledgements, release, and dead-letter records
+- `localqueue.retry`: a Tenacity-backed retry adapter that persists retry
+  budgets across process restarts
 
 Use the queue when you have jobs to deliver and process. Use the retry layer
 directly when you already have a delivery mechanism and only need durable retry
@@ -41,36 +40,36 @@ and lower-level retry wrappers.
 ## Install
 
 ```bash
-pip install persistentretry
+pip install localqueue
 ```
 
-`persistentretry` requires Python 3.11 or newer.
+`localqueue` requires Python 3.11 or newer.
 
 Install the optional CLI dependencies with:
 
 ```bash
-pip install "persistentretry[cli]"
+pip install "localqueue[cli]"
 ```
 
-Install `persistentretry[lmdb]` when you want the optional LMDB queue or retry
+Install `localqueue[lmdb]` when you want the optional LMDB queue or retry
 stores.
 
 ## CLI
 
 The CLI reads YAML configuration from
-`~/.config/persistentretry/config.yaml`. `XDG_CONFIG_HOME` is respected when set.
+`~/.config/localqueue/config.yaml`. `XDG_CONFIG_HOME` is respected when set.
 
 ```bash
-persistentretry config init --store-path ./persistence_queue.sqlite3
-persistentretry config show
-persistentretry config set retry_store_path ./persistence_retries.sqlite3
+localqueue config init --store-path ./localqueue_queue.sqlite3
+localqueue config show
+localqueue config set retry_store_path ./localqueue_retries.sqlite3
 ```
 
 Example config:
 
 ```yaml
-store_path: ./persistence_queue.sqlite3
-retry_store_path: ./persistence_retries.sqlite3
+store_path: ./localqueue_queue.sqlite3
+retry_store_path: ./localqueue_retries.sqlite3
 ```
 
 `store_path` is the SQLite queue file. `retry_store_path` is the SQLite file
@@ -79,21 +78,21 @@ used by `queue process` to persist retry attempts.
 The CLI starts with queue management commands. Values are JSON by default.
 
 ```bash
-persistentretry queue add emails --value '{"to":"user@example.com"}'
-echo '{"to":"user@example.com"}' | persistentretry queue add emails
-persistentretry queue size emails
-persistentretry queue stats emails
-persistentretry queue inspect emails <message-id>
-persistentretry queue dead emails
-persistentretry queue requeue-dead emails <message-id>
-persistentretry queue pop emails --worker-id worker-1
-persistentretry queue ack emails <message-id>
+localqueue queue add emails --value '{"to":"user@example.com"}'
+echo '{"to":"user@example.com"}' | localqueue queue add emails
+localqueue queue size emails
+localqueue queue stats emails
+localqueue queue inspect emails <message-id>
+localqueue queue dead emails
+localqueue queue requeue-dead emails <message-id>
+localqueue queue pop emails --worker-id worker-1
+localqueue queue ack emails <message-id>
 ```
 
 Use `--raw` when the queue value should be stored as a string:
 
 ```bash
-persistentretry queue add emails --value user@example.com --raw
+localqueue queue add emails --value user@example.com --raw
 ```
 
 Queue values are stored as JSON in the queue store, so values must be
@@ -106,14 +105,14 @@ persistent retry budget is exhausted, in which case the message is moved to
 dead-letter storage by default.
 
 ```bash
-persistentretry queue process emails myapp.workers:send_email --max-tries 5
+localqueue queue process emails myapp.workers:send_email --max-tries 5
 ```
 
 Use `--forever` for a long-running worker. When interrupted with `SIGINT` or
 `SIGTERM`, the CLI finishes the current message before stopping.
 
 ```bash
-persistentretry queue process emails myapp.workers:send_email \
+localqueue queue process emails myapp.workers:send_email \
   --forever \
   --block \
   --worker-id worker-1 \
@@ -130,13 +129,13 @@ dependencies. It enqueues one email job, processes it with the example handler,
 and leaves no external services running.
 
 ```bash
-persistentretry queue add emails \
-  --store-path /tmp/persistentretry-demo \
+localqueue queue add emails \
+  --store-path /tmp/localqueue-demo \
   --value '{"to":"user@example.com"}'
 
-persistentretry queue process emails examples.email_worker:send_email \
-  --store-path /tmp/persistentretry-demo \
-  --retry-store-path /tmp/persistentretry-demo-retries.sqlite3 \
+localqueue queue process emails examples.email_worker:send_email \
+  --store-path /tmp/localqueue-demo \
+  --retry-store-path /tmp/localqueue-demo-retries.sqlite3 \
   --worker-id worker-1 \
   --max-tries 3
 ```
@@ -144,18 +143,18 @@ persistentretry queue process emails examples.email_worker:send_email \
 Inspect worker ownership while a message is leased:
 
 ```bash
-persistentretry queue inspect emails <message-id> \
-  --store-path /tmp/persistentretry-demo
+localqueue queue inspect emails <message-id> \
+  --store-path /tmp/localqueue-demo
 ```
 
 ## Queue worker
 
 ```python
-from persistentqueue import PersistentQueue, PersistentWorkerConfig, persistent_worker
+from localqueue import PersistentQueue, PersistentWorkerConfig, persistent_worker
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_exponential
 
 
-queue = PersistentQueue("emails", store_path="./persistence_queue.sqlite3")
+queue = PersistentQueue("emails", store_path="./localqueue_queue.sqlite3")
 queue.put({"to": "user@example.com"})
 
 worker_config = PersistentWorkerConfig(
@@ -186,9 +185,9 @@ Use `persistent_async_worker()` for async handlers.
 ## Manual queue control
 
 ```python
-from persistentqueue import PersistentQueue
+from localqueue import PersistentQueue
 
-queue = PersistentQueue("emails", store_path="./persistence_queue.sqlite3")
+queue = PersistentQueue("emails", store_path="./localqueue_queue.sqlite3")
 
 queue.put({"to": "user@example.com"})
 
@@ -204,7 +203,7 @@ else:
     queue.ack(message)
 ```
 
-`persistentqueue` uses at-least-once delivery:
+`localqueue` uses at-least-once delivery:
 
 - `put()` persists before returning
 - `get_message()` leases a message and moves it to `inflight`
@@ -223,10 +222,10 @@ message by id, `queue dead` to list dead-letter messages, and
 
 ## Persistent retry layer
 
-Use `persistentretry` directly when the job source is not `persistentqueue`.
+Use `localqueue.retry` directly when the job source is not `localqueue`.
 
 ```python
-from persistentretry import key_from_argument, persistent_retry
+from localqueue.retry import key_from_argument, persistent_retry
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
 
 
@@ -252,15 +251,15 @@ When a retry budget is exhausted, later calls with the same key raise
 
 ## Stores
 
-The default queue store is SQLite at `./persistence_queue.sqlite3`.
+The default queue store is SQLite at `./localqueue_queue.sqlite3`.
 
-The default retry store is SQLite at `./persistence_db.sqlite3`.
+The default retry store is SQLite at `./localqueue_retries.sqlite3`.
 The CLI `retry_store_path` setting also uses SQLite. In the Python retry API,
 `PersistentRetrying(store_path=...)` selects an optional LMDB attempt-store
 directory; pass `store=SQLiteAttemptStore("retries.sqlite3")` when you want a
 SQLite file explicitly.
 
-LMDB remains available as an optional backend through `persistentretry[lmdb]`
+LMDB remains available as an optional backend through `localqueue[lmdb]`
 and explicit `LMDBQueueStore` or `LMDBAttemptStore` usage.
 
 For tests, use `MemoryQueueStore` and `MemoryAttemptStore`.
@@ -270,8 +269,9 @@ For tests, use `MemoryQueueStore` and `MemoryAttemptStore`.
 - [Persistent queues](docs/queues.md): message lifecycle, workers, leases, delay, and dead-letter behavior.
 - [Persistent retries](docs/retries.md): decorators, low-level retryers, keys, stores, and exhaustion behavior.
 - [API reference](docs/api.md): exported classes, functions, and protocols.
+- [Operational maturity](docs/operational-maturity.md): checklist for future production-hardening work.
 - [Release checklist](docs/release.md): manual versioning, build, smoke test, and publish steps.
 
 ## License
 
-`persistentretry` is distributed under the MIT license. See [LICENSE](LICENSE).
+`localqueue` is distributed under the MIT license. See [LICENSE](LICENSE).

@@ -16,15 +16,16 @@ from typing import Any, Iterator
 
 from tenacity import wait_none
 
-from persistentqueue import PersistentQueue, QueueMessage
-from persistentretry import (
+from .queue import PersistentQueue
+from .retry import (
     PersistentRetryExhausted,
     PersistentRetrying,
     SQLiteAttemptStore,
 )
+from .store import QueueMessage
 
-DEFAULT_STORE_PATH = "persistence_queue.sqlite3"
-DEFAULT_RETRY_STORE_PATH = "persistence_db.sqlite3"
+DEFAULT_STORE_PATH = "localqueue_queue.sqlite3"
+DEFAULT_RETRY_STORE_PATH = "localqueue_retries.sqlite3"
 CONFIG_FILENAME = "config.yaml"
 
 
@@ -46,8 +47,8 @@ def main(args: list[str] | None = None) -> None:
         import yaml
     except ImportError as exc:
         raise SystemExit(
-            "The persistentretry CLI requires optional dependencies. "
-            "Install with: pip install 'persistentretry[cli]'"
+            "The localqueue CLI requires optional dependencies. "
+            "Install with: pip install 'localqueue[cli]'"
         ) from exc
 
     app = _build_app(typer, yaml, Console(), Console(stderr=True))
@@ -546,8 +547,8 @@ def _read_value(value: str | None) -> str:
 def _config_path() -> Path:
     config_home = os.environ.get("XDG_CONFIG_HOME")
     if config_home:
-        return Path(config_home) / "persistentretry" / CONFIG_FILENAME
-    return Path.home() / ".config" / "persistentretry" / CONFIG_FILENAME
+        return Path(config_home) / "localqueue" / CONFIG_FILENAME
+    return Path.home() / ".config" / "localqueue" / CONFIG_FILENAME
 
 
 def _load_config(yaml: Any, path: Path | None = None) -> dict[str, Any]:

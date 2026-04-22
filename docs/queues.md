@@ -4,18 +4,18 @@ icon: lucide/inbox
 
 # Persistent Queues
 
-`persistentqueue` is the main workflow API in this project. It is a small queue
+`localqueue` is the main workflow API in this project. It is a small queue
 abstraction backed by SQLite by default and designed for durable, at-least-once
 delivery of Python values.
 
 ## Creating a queue
 
 ```python
-from persistentqueue import PersistentQueue
+from localqueue import PersistentQueue
 
 queue = PersistentQueue(
     "emails",
-    store_path="./persistence_queue.sqlite3",
+    store_path="./localqueue_queue.sqlite3",
     lease_timeout=30.0,
 )
 ```
@@ -24,12 +24,12 @@ The queue name identifies an independent stream inside the store. Queue names ca
 
 ## Retry-aware workers
 
-`persistent_worker()` connects a queue to `persistentretry`. The queue message id
+`persistent_worker()` connects a queue to `localqueue`. The queue message id
 becomes the retry key, so retry budgets survive process restarts and remain tied
 to the leased message.
 
 ```python
-from persistentqueue import PersistentQueue, PersistentWorkerConfig, persistent_worker
+from localqueue import PersistentQueue, PersistentWorkerConfig, persistent_worker
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_exponential
 
 queue = PersistentQueue("jobs")
@@ -132,7 +132,7 @@ message = queue.inspect("message-id")
 ```
 
 Pass `error=` to `release()` or `dead_letter()` to persist the processing
-failure on the message. Worker decorators and `persistentretry queue process`
+failure on the message. Worker decorators and `localqueue queue process`
 record this automatically. The next `QueueMessage` includes `last_error` with
 the exception type, module, and message, plus `failed_at`.
 
@@ -180,10 +180,10 @@ Negative delays raise `ValueError`.
 
 ## Stores
 
-The default queue store is SQLite at `./persistence_queue.sqlite3`.
+The default queue store is SQLite at `./localqueue_queue.sqlite3`.
 
 ```python
-from persistentqueue import PersistentQueue, SQLiteQueueStore
+from localqueue import PersistentQueue, SQLiteQueueStore
 
 store = SQLiteQueueStore("/var/lib/my-worker/queue.sqlite3")
 queue = PersistentQueue("jobs", store=store)
@@ -192,11 +192,11 @@ queue = PersistentQueue("jobs", store=store)
 Install the optional LMDB extra when you want the LMDB backend explicitly.
 
 ```bash
-pip install "persistentretry[lmdb]"
+pip install "localqueue[lmdb]"
 ```
 
 ```python
-from persistentqueue import LMDBQueueStore, PersistentQueue
+from localqueue import LMDBQueueStore, PersistentQueue
 
 store = LMDBQueueStore("/var/lib/my-worker/queue")
 queue = PersistentQueue("jobs", store=store)
@@ -205,7 +205,7 @@ queue = PersistentQueue("jobs", store=store)
 Use `MemoryQueueStore` for tests.
 
 ```python
-from persistentqueue import MemoryQueueStore, PersistentQueue
+from localqueue import MemoryQueueStore, PersistentQueue
 
 queue = PersistentQueue("jobs", store=MemoryQueueStore())
 ```

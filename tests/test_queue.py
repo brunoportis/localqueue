@@ -13,8 +13,8 @@ from unittest import mock
 
 import lmdb
 
-from persistentretry import MemoryAttemptStore
-from persistentqueue import (
+from localqueue.retry import MemoryAttemptStore
+from localqueue import (
     LMDBQueueStore,
     MemoryQueueStore,
     PersistentQueue,
@@ -25,7 +25,7 @@ from persistentqueue import (
     persistent_async_worker,
     persistent_worker,
 )
-from persistentqueue.store import (
+from localqueue.store import (
     _QueueRecord,
     _decode_record,
     _dead_key,
@@ -39,7 +39,7 @@ from persistentqueue.store import (
 )
 
 
-class PersistentQueueTests(unittest.TestCase):
+class QueueTests(unittest.TestCase):
     def test_constructor_rejects_invalid_arguments(self) -> None:
         store = MemoryQueueStore()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -467,7 +467,7 @@ class PersistentQueueTests(unittest.TestCase):
                 _ = store.enqueue("bad:name", "item", available_at=time.time())
 
     def test_default_sqlite_store_is_opened_lazily(self) -> None:
-        with mock.patch("persistentqueue.queue.SQLiteQueueStore") as store_cls:
+        with mock.patch("localqueue.queue.SQLiteQueueStore") as store_cls:
             queue = PersistentQueue("test")
             store_cls.assert_not_called()
 
@@ -476,16 +476,14 @@ class PersistentQueueTests(unittest.TestCase):
             store_cls.return_value = fake_store
 
             self.assertTrue(queue.empty())
-            store_cls.assert_called_once_with("persistence_queue.sqlite3")
+            store_cls.assert_called_once_with("localqueue_queue.sqlite3")
 
     def test_lmdb_lock_error_is_reworded(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             fake_lmdb = mock.Mock()
             fake_lmdb.LockError = lmdb.LockError
             fake_lmdb.open.side_effect = lmdb.LockError("busy")
-            with mock.patch(
-                "persistentqueue.store._import_lmdb", return_value=fake_lmdb
-            ):
+            with mock.patch("localqueue.store._import_lmdb", return_value=fake_lmdb):
                 with self.assertRaises(QueueStoreLockedError) as exc_info:
                     _ = LMDBQueueStore(tmpdir)
 
@@ -494,7 +492,7 @@ class PersistentQueueTests(unittest.TestCase):
     def test_lmdb_store_requires_optional_dependency(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.dict("sys.modules", {"lmdb": None}):
-                with self.assertRaisesRegex(RuntimeError, "persistentretry\\[lmdb\\]"):
+                with self.assertRaisesRegex(RuntimeError, "localqueue\\[lmdb\\]"):
                     _ = LMDBQueueStore(tmpdir)
 
     def test_lease_expiration_and_reclaim(self) -> None:

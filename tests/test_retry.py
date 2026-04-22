@@ -8,7 +8,7 @@ from unittest import mock
 
 import lmdb
 
-from persistentretry import (
+from localqueue.retry import (
     AttemptStoreLockedError,
     LMDBAttemptStore,
     MemoryAttemptStore,
@@ -25,14 +25,14 @@ from persistentretry import (
     persistent_async_retry,
     persistent_retry,
 )
-from persistentretry.core import _sqlite_default_store_factory
+from localqueue.retry.tenacity import _sqlite_default_store_factory
 
 
 class AbortRun(Exception):
     pass
 
 
-class PersistentRetryTests(unittest.TestCase):
+class RetryTests(unittest.TestCase):
     def test_constructor_rejects_invalid_store_and_stop_arguments(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.assertRaises(ValueError):
@@ -523,7 +523,7 @@ class PersistentRetryTests(unittest.TestCase):
 
     def test_store_path_is_opened_lazily(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            with mock.patch("persistentretry.core.LMDBAttemptStore") as store_cls:
+            with mock.patch("localqueue.retry.tenacity.LMDBAttemptStore") as store_cls:
                 retryer = PersistentRetrying(
                     store_path=tmpdir,
                     key="job-lazy",
@@ -571,7 +571,7 @@ class PersistentRetryTests(unittest.TestCase):
             fake_lmdb.LockError = lmdb.LockError
             fake_lmdb.open.side_effect = lmdb.LockError("busy")
             with mock.patch(
-                "persistentretry.store._import_lmdb", return_value=fake_lmdb
+                "localqueue.retry.store._import_lmdb", return_value=fake_lmdb
             ):
                 with self.assertRaises(AttemptStoreLockedError) as exc_info:
                     _ = LMDBAttemptStore(tmpdir)
@@ -581,7 +581,7 @@ class PersistentRetryTests(unittest.TestCase):
     def test_lmdb_store_requires_optional_dependency(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.dict("sys.modules", {"lmdb": None}):
-                with self.assertRaisesRegex(RuntimeError, "persistentretry\\[lmdb\\]"):
+                with self.assertRaisesRegex(RuntimeError, "localqueue\\[lmdb\\]"):
                     _ = LMDBAttemptStore(tmpdir)
 
 

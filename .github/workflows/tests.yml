@@ -67,7 +67,6 @@ jobs:
       - name: Test with coverage
         run: >
           uv run pytest
-          --cov=persistentretry
-          --cov=persistentqueue
+          --cov=localqueue
           --cov-report=term-missing
           --cov-fail-under=95

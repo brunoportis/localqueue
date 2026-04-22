@@ -28,7 +28,7 @@ def _import_lmdb() -> Any:
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             "LMDB support requires the optional dependency; "
-            'install with `pip install "persistentretry[lmdb]"`'
+            'install with `pip install "localqueue[lmdb]"`'
         ) from exc
     return lmdb
 

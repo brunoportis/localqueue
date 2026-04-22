@@ -13,8 +13,7 @@ site/
 /.coverage
 /.cache
 /.codex
-/persistence_db_queue
-/persistence_db_queue_retries
-/persistence_db
-/persistence_db.sqlite3
-/persistence_retries.sqlite3
+/localqueue_queue
+/localqueue_queue.sqlite3
+/localqueue_retries
+/localqueue_retries.sqlite3

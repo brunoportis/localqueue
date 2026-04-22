@@ -4,9 +4,10 @@ icon: lucide/braces
 
 # API Reference
 
-This page lists the public symbols exported by `persistentretry` and `persistentqueue`.
+This page lists the public symbols exported by `localqueue` and
+`localqueue.retry`.
 
-## persistentqueue
+## localqueue
 
 ### Queue classes
 
@@ -54,7 +55,7 @@ It keeps worker behavior and retry options together so the same policy can be
 shared by multiple queues.
 
 ```python
-from persistentqueue import PersistentWorkerConfig
+from localqueue import PersistentWorkerConfig
 from tenacity import retry_if_exception_type, wait_fixed
 
 config = PersistentWorkerConfig(
@@ -114,7 +115,7 @@ used as the persistent retry key. Worker handlers receive `message.value` as
 their first argument.
 
 ```python
-from persistentqueue import PersistentWorkerConfig, persistent_worker
+from localqueue import PersistentWorkerConfig, persistent_worker
 
 config = PersistentWorkerConfig(max_tries=3)
 
@@ -163,7 +164,7 @@ Thread-safe in-memory queue store for tests.
 
 Raised when LMDB reports that the queue store is locked by another process.
 
-## persistentretry
+## localqueue.retry
 
 ### Retry decorators
 
@@ -172,7 +173,7 @@ Raised when LMDB reports that the queue store is locked by another process.
 Creates a decorator backed by `PersistentRetrying`.
 
 ```python
-from persistentretry import key_from_argument, persistent_retry
+from localqueue.retry import key_from_argument, persistent_retry
 
 
 @persistent_retry(key_fn=key_from_argument("job_id"), max_tries=3)
@@ -185,7 +186,7 @@ def run(job_id: str) -> None:
 Creates a decorator backed by `PersistentAsyncRetrying`.
 
 ```python
-from persistentretry import key_from_argument, persistent_async_retry
+from localqueue.retry import key_from_argument, persistent_async_retry
 
 
 @persistent_async_retry(key_fn=key_from_argument("job_id"), max_tries=3)
@@ -211,7 +212,7 @@ Both decorators require `key=` or `key_fn=` and accept the persistent options be
 Creates a `key_fn` that reads the retry key from a named function argument.
 
 ```python
-from persistentretry import key_from_argument, persistent_retry
+from localqueue.retry import key_from_argument, persistent_retry
 
 
 @persistent_retry(key_fn=key_from_argument("job_id"))
@@ -225,7 +226,7 @@ Creates a `key_fn` that reads an attribute from a named function argument. Pass
 `prefix=` when the same store may contain keys for different task domains.
 
 ```python
-from persistentretry import key_from_attr, persistent_retry
+from localqueue.retry import key_from_attr, persistent_retry
 
 
 @persistent_retry(key_fn=key_from_attr("task", "id", prefix="video"))
@@ -238,7 +239,7 @@ def run(task: VideoTask) -> None:
 Shortcut for `key_from_attr(argument_name, "id", prefix=prefix)`.
 
 ```python
-from persistentretry import idempotency_key_from_id, persistent_retry
+from localqueue.retry import idempotency_key_from_id, persistent_retry
 
 
 @persistent_retry(key_fn=idempotency_key_from_id("task", prefix="video"))
@@ -254,7 +255,7 @@ Synchronous retryer. It composes Tenacity's `Retrying` internally and exposes th
 same call/decorator flow.
 
 ```python
-from persistentretry import PersistentRetrying, key_from_argument
+from localqueue.retry import PersistentRetrying, key_from_argument
 
 retryer = PersistentRetrying(key_fn=key_from_argument("job_id"), max_tries=5)
 retryer(fn, "job:1")
@@ -273,7 +274,7 @@ Methods:
 Async retryer. It accepts coroutine functions and supports coroutine Tenacity callbacks and strategies where Tenacity supports them.
 
 ```python
-from persistentretry import PersistentAsyncRetrying, key_from_argument
+from localqueue.retry import PersistentAsyncRetrying, key_from_argument
 
 retryer = PersistentAsyncRetrying(key_fn=key_from_argument("job_id"), max_tries=5)
 await retryer(fn, "job:1")
@@ -318,7 +319,7 @@ class AttemptStore:
 LMDB-backed attempt store.
 
 ```python
-from persistentretry import LMDBAttemptStore
+from localqueue.retry import LMDBAttemptStore
 
 store = LMDBAttemptStore("/var/lib/my-worker/retries")
 ```
@@ -329,7 +330,7 @@ SQLite-backed attempt store. This is the default backend and does not require LM
 native dependency.
 
 ```python
-from persistentretry import SQLiteAttemptStore
+from localqueue.retry import SQLiteAttemptStore
 
 store = SQLiteAttemptStore("/var/lib/my-worker/retries.sqlite3")
 ```

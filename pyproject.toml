@@ -1,5 +1,5 @@
 [project]
-name = "persistentretry"
+name = "localqueue"
 version = "0.1.0"
 description = "Durable local queues for Python, with persistent retry state powered by Tenacity."
 readme = "README.md"
@@ -41,15 +41,14 @@ all = [
 ]
 
 [project.scripts]
-persistentretry = "persistentretry.cli:main"
+localqueue = "localqueue.cli:main"
 
 [build-system]
 requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["persistentretry", "persistentqueue"]
-include = ["persistent_retry.py"]
+packages = ["localqueue"]
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -58,9 +57,7 @@ include = [
     "/README.md",
     "/docs",
     "/examples",
-    "/persistent_retry.py",
-    "/persistentqueue",
-    "/persistentretry",
+    "/localqueue",
     "/pyproject.toml",
     "/tests",
     "/uv.lock",

@@ -4,14 +4,14 @@ import time
 from queue import Empty
 from typing import Callable
 
-from persistentretry import (
+from localqueue.retry import (
     AttemptStoreLockedError,
     PersistentRetrying,
     PersistentRetryExhausted,
     key_from_argument,
     persistent_retry,
 )
-from persistentqueue import PersistentQueue, QueueStoreLockedError
+from localqueue import PersistentQueue, QueueStoreLockedError
 from tenacity import wait_exponential, wait_none
 
 
@@ -220,7 +220,7 @@ def run_worker_demo(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="persistentretry demo CLI; library code lives in persistentretry/ and persistentqueue/"
+        description="localqueue demo CLI; queue code lives in localqueue/ and retry code in localqueue/retry/"
     )
     _ = parser.add_argument(
         "--worker",
@@ -229,7 +229,7 @@ def parse_args() -> argparse.Namespace:
     )
     _ = parser.add_argument(
         "--db-path",
-        default="persistence_db",
+        default="localqueue_retries",
         help="LMDB directory for persisted retry state",
     )
     _ = parser.add_argument(
@@ -268,7 +268,7 @@ def main() -> int:
         print(exc)
         print(
             "Tip: rerun with --db-path pointing at a different directory, "
-            + "for example './persistence_db_demo_2'."
+            + "for example './localqueue_retries_demo_2'."
         )
         return 1
     return 0

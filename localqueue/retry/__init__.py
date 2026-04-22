@@ -1,11 +1,12 @@
-import importlib.metadata
-
-try:
-    __version__ = importlib.metadata.version("persistentretry")
-except importlib.metadata.PackageNotFoundError:
-    __version__ = "unknown"
-
-from .core import (
+from .store import (
+    AttemptStore,
+    AttemptStoreLockedError,
+    LMDBAttemptStore,
+    MemoryAttemptStore,
+    RetryRecord,
+    SQLiteAttemptStore,
+)
+from .tenacity import (
     PersistentAsyncRetrying,
     PersistentRetryExhausted,
     PersistentRetrying,
@@ -16,14 +17,6 @@ from .core import (
     key_from_attr,
     persistent_async_retry,
     persistent_retry,
-)
-from .store import (
-    AttemptStore,
-    AttemptStoreLockedError,
-    LMDBAttemptStore,
-    MemoryAttemptStore,
-    RetryRecord,
-    SQLiteAttemptStore,
 )
 
 __all__ = [
@@ -36,7 +29,6 @@ __all__ = [
     "PersistentRetrying",
     "RetryRecord",
     "SQLiteAttemptStore",
-    "__version__",
     "configure_default_store",
     "configure_default_store_factory",
     "idempotency_key_from_id",

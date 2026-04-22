@@ -213,7 +213,7 @@ class PersistentQueue:
             self._store = SQLiteQueueStore(
                 self._store_path
                 if self._store_path is not None
-                else "persistence_queue.sqlite3"
+                else "localqueue_queue.sqlite3"
             )
         return self._store
 

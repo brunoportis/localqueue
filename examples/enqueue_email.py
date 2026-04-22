@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import argparse
 
-from persistentqueue import PersistentQueue
+from localqueue import PersistentQueue
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("address")
-    parser.add_argument("--store-path", default="./persistence_db")
+    parser.add_argument("--store-path", default="./localqueue_queue.sqlite3")
     parser.add_argument("--fail", action="store_true")
     args = parser.parse_args()
 

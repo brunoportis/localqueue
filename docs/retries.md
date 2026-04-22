@@ -4,7 +4,7 @@ icon: lucide/rotate-cw
 
 # Persistent Retries
 
-`persistentretry` is the durable retry layer used by queue workers and by code
+`localqueue` is the durable retry layer used by queue workers and by code
 that already has its own delivery mechanism. It wraps Tenacity's `Retrying` and
 `AsyncRetrying` classes. You still configure `stop`, `wait`, `retry`, callbacks,
 and `retry_with()` the same way; the wrapper adds a durable attempt record before
@@ -16,7 +16,7 @@ records, start with [Persistent queues](queues.md).
 ## Decorator API
 
 ```python
-from persistentretry import key_from_argument, persistent_retry
+from localqueue.retry import key_from_argument, persistent_retry
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
 
 
@@ -33,7 +33,7 @@ def sync_task(job_id: str) -> str:
 For async functions, use `persistent_async_retry`.
 
 ```python
-from persistentretry import key_from_argument, persistent_async_retry
+from localqueue.retry import key_from_argument, persistent_async_retry
 from tenacity import stop_after_attempt
 
 
@@ -53,7 +53,7 @@ data. Calls without either option raise `ValueError` before the wrapped function
 is called. Pass `key=` when the retryer is bound to one logical job.
 
 ```python
-from persistentretry import PersistentRetrying
+from localqueue.retry import PersistentRetrying
 
 retryer = PersistentRetrying(key="invoice:1001", max_tries=5)
 retryer(generate_invoice)
@@ -62,10 +62,10 @@ retryer(generate_invoice)
 Use a documented key factory when the key must be derived from call data.
 
 ```python
-from persistentretry import idempotency_key_from_id
-from persistentretry import key_from_argument
-from persistentretry import key_from_attr
-from persistentretry import persistent_retry
+from localqueue.retry import idempotency_key_from_id
+from localqueue.retry import key_from_argument
+from localqueue.retry import key_from_attr
+from localqueue.retry import persistent_retry
 
 
 def retry_key(fn, args, kwargs) -> str:
@@ -104,7 +104,7 @@ If no key can be derived, the wrapper raises `ValueError`.
 `max_tries=` is a convenience alias for `stop=stop_after_attempt(...)`.
 
 ```python
-from persistentretry import key_from_argument, persistent_retry
+from localqueue.retry import key_from_argument, persistent_retry
 
 
 @persistent_retry(key_fn=key_from_argument("payment_id"), max_tries=4)
@@ -112,12 +112,12 @@ def charge_card(payment_id: str) -> None:
     ...
 ```
 
-Do not pass `max_tries=` and `stop=` together. If both are supplied, `persistentretry` raises `ValueError` because there would be two sources of truth for the retry budget.
+Do not pass `max_tries=` and `stop=` together. If both are supplied, `localqueue` raises `ValueError` because there would be two sources of truth for the retry budget.
 
 When a retry budget is exhausted, the attempt record is marked as exhausted. A later call with the same key raises `PersistentRetryExhausted` before calling the wrapped function again.
 
 ```python
-from persistentretry import PersistentRetryExhausted
+from localqueue.retry import PersistentRetryExhausted
 
 try:
     charge_card("payment:123")
@@ -127,14 +127,14 @@ except PersistentRetryExhausted as exc:
 
 ## Stores
 
-The default attempt store is SQLite at `./persistence_db.sqlite3`.
+The default attempt store is SQLite at `./localqueue_retries.sqlite3`.
 
 `store_path=` creates an LMDB attempt-store directory. Install
-`persistentretry[lmdb]` and use it when you want the retry API to manage an LMDB
+`localqueue[lmdb]` and use it when you want the retry API to manage an LMDB
 backend directly.
 
 ```python
-from persistentretry import PersistentRetrying, key_from_argument
+from localqueue.retry import PersistentRetrying, key_from_argument
 
 retryer = PersistentRetrying(
     store_path="/var/lib/my-worker/retries",
@@ -147,7 +147,7 @@ Provide a store instance with `store=` when you need SQLite, full control, or
 in-memory tests.
 
 ```python
-from persistentretry import SQLiteAttemptStore, key_from_argument, persistent_retry
+from localqueue.retry import SQLiteAttemptStore, key_from_argument, persistent_retry
 
 store = SQLiteAttemptStore("/var/lib/my-worker/retries.sqlite3")
 
@@ -165,7 +165,7 @@ The CLI `retry_store_path` setting and `queue process --retry-store-path` use a
 SQLite file path.
 
 ```python
-from persistentretry import MemoryAttemptStore, key_from_argument, persistent_retry
+from localqueue.retry import MemoryAttemptStore, key_from_argument, persistent_retry
 
 store = MemoryAttemptStore()
 
@@ -198,7 +198,7 @@ def before_sleep(state) -> None:
 Successful calls clear retry state by default.
 
 ```python
-from persistentretry import PersistentRetrying, key_from_argument
+from localqueue.retry import PersistentRetrying, key_from_argument
 
 retryer = PersistentRetrying(key_fn=key_from_argument("job_id"), max_tries=3)
 result = retryer(process, "job:1")
@@ -226,7 +226,7 @@ retryer.reset("job:1")
 Use `PersistentRetrying` directly when decorators are not a good fit.
 
 ```python
-from persistentretry import PersistentRetrying, key_from_argument
+from localqueue.retry import PersistentRetrying, key_from_argument
 
 retryer = PersistentRetrying(key_fn=key_from_argument("job_id"), max_tries=5)
 result = retryer(run_job, "job:123", {"priority": "high"})
@@ -235,7 +235,7 @@ result = retryer(run_job, "job:123", {"priority": "high"})
 Use `PersistentAsyncRetrying` for coroutine functions.
 
 ```python
-from persistentretry import PersistentAsyncRetrying, key_from_argument
+from localqueue.retry import PersistentAsyncRetrying, key_from_argument
 
 retryer = PersistentAsyncRetrying(key_fn=key_from_argument("job_id"), max_tries=5)
 result = await retryer(run_async_job, "job:123")
