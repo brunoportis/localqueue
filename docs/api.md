@@ -182,6 +182,10 @@ Protocol for custom queue stores.
 SQLite-backed queue store. This is the default backend. Records are serialized
 as versioned JSON; values must be JSON-serializable.
 
+The SQLite store tracks its on-disk schema version with `PRAGMA user_version`.
+Current releases accept older compatible versions and reject future versions
+until a migration is defined.
+
 #### `LMDBQueueStore`
 
 LMDB-backed queue store. Records are serialized as versioned JSON; values must be
@@ -194,6 +198,9 @@ Thread-safe in-memory queue store for tests.
 #### `QueueStoreLockedError`
 
 Raised when LMDB reports that the queue store is locked by another process.
+
+Install `localqueue[cli]` when you want the CLI entry points, and
+`localqueue[lmdb]` when you want the LMDB queue store backend.
 
 ## localqueue.retry
 

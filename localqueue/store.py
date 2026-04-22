@@ -21,6 +21,7 @@ _READY = "ready"
 _INFLIGHT = "inflight"
 _DEAD = "dead"
 _QUEUE_RECORD_VERSION = 4
+_SQLITE_SCHEMA_VERSION = 1
 
 
 def _import_lmdb() -> Any:
@@ -570,6 +571,7 @@ class SQLiteQueueStore:
         )
         self._connection.execute("PRAGMA journal_mode=WAL;")
         self._connection.execute("PRAGMA synchronous=NORMAL;")
+        self._ensure_supported_schema_version()
         self._connection.execute(
             "CREATE TABLE IF NOT EXISTS queue_messages ("
             "queue TEXT NOT NULL, "
@@ -624,6 +626,7 @@ class SQLiteQueueStore:
             "PRIMARY KEY(queue, dedupe_key)"
             ")"
         )
+        self._connection.execute(f"PRAGMA user_version = {_SQLITE_SCHEMA_VERSION}")
         self._connection.commit()
         self._lock = threading.Lock()
 
@@ -1107,6 +1110,16 @@ class SQLiteQueueStore:
                 ],
             )
             self._upsert_record(connection, updated, sequence=seq)
+
+    def _ensure_supported_schema_version(self) -> None:
+        cursor = self._connection.execute("PRAGMA user_version")
+        row = cursor.fetchone()
+        current_version = 0 if row is None else int(row[0])
+        if current_version > _SQLITE_SCHEMA_VERSION:
+            raise ValueError(
+                "unsupported SQLite queue schema version: "
+                f"{current_version}; expected at most {_SQLITE_SCHEMA_VERSION}"
+            )
 
 
 class LMDBQueueStore:

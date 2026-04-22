@@ -94,7 +94,7 @@ inspection tools for that local model, not a distributed liveness protocol.
 
 ## Storage operations
 
-- [ ] Define a schema migration strategy for SQLite stores.
+- [x] Define a schema migration strategy for SQLite stores.
 - [x] Document backup and restore expectations.
 - [x] Add maintenance guidance for `VACUUM`, WAL files, and long-lived stores.
 - [x] Add retention or cleanup controls for dead-letter records.
@@ -106,13 +106,18 @@ inspection tools for that local model, not a distributed liveness protocol.
 - [x] Add compatibility tests for SQLite store files created by older package
   versions.
 
+The SQLite store keeps a schema version in `PRAGMA user_version`. Current
+releases accept older compatible versions and reject future versions they do
+not know how to migrate yet. That keeps upgrades explicit and leaves a clear
+path for future schema changes.
+
 ## API stability
 
 - [x] Decide which APIs are stable before a `1.0` release.
 - [x] Document compatibility aliases and their planned lifetime.
 - [x] Add deprecation policy.
 - [ ] Increase coverage margin above the current 95% gate.
-- [ ] Keep docs aligned with defaults for SQLite, optional LMDB, and CLI extras.
+- [x] Keep docs aligned with defaults for SQLite, optional LMDB, and CLI extras.
 
 ## Guardrails against misuse
 

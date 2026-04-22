@@ -527,6 +527,31 @@ class QueueTests(unittest.TestCase):
             self.assertTrue(path.exists())
             store.close()
 
+    def test_sqlite_store_sets_schema_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "queue.sqlite3"
+            store = SQLiteQueueStore(path)
+            store.close()
+
+            connection = sqlite3.connect(path)
+            cursor = connection.execute("PRAGMA user_version")
+            row = cursor.fetchone()
+            connection.close()
+
+            assert row is not None
+            self.assertEqual(int(row[0]), 1)
+
+    def test_sqlite_store_rejects_future_schema_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "queue.sqlite3"
+            connection = sqlite3.connect(path)
+            connection.execute("PRAGMA user_version = 999")
+            connection.commit()
+            connection.close()
+
+            with self.assertRaises(ValueError):
+                _ = SQLiteQueueStore(path)
+
     def test_sqlite_store_handles_concurrent_producers_and_consumers(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store_path = str(Path(tmpdir) / "queue.sqlite3")

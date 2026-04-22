@@ -403,6 +403,10 @@ simplicity also defines the operating limits.
 SQLite files can keep running for a long time, but they still need normal file
 maintenance.
 
+The SQLite store keeps a schema version in `PRAGMA user_version`. Current
+releases accept older compatible versions and reject future versions they do
+not know how to migrate yet.
+
 - Keep the main `*.sqlite3` file and its retry store together when you back up
   or restore a queue.
 - If you use WAL mode, expect `-wal` and `-shm` files alongside the database
