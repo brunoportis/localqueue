@@ -128,6 +128,10 @@ localqueue queue exec webhooks -- curl -X POST https://example.com/hook -d @-
 localqueue queue exec emails -- sh -c 'jq -r .to | xargs -I{} curl https://example.com/{}'
 ```
 
+Command output is captured so the CLI can keep printing its own JSON status.
+When a command fails, `last_error` includes the command, exit code, stdout, and
+stderr, truncated for inspection.
+
 Use `--forever` for a long-running worker. When interrupted with `SIGINT` or
 `SIGTERM`, the CLI finishes the current message before stopping.
 

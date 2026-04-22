@@ -94,6 +94,10 @@ Dataclass returned by `put()` and `get_message()`.
 | `last_error` | structured error from the most recent failed processing attempt, if recorded |
 | `failed_at` | timestamp for `last_error`, if recorded |
 
+For `localqueue queue exec` failures, `last_error` also includes `command`,
+`exit_code`, `stdout`, and `stderr` fields so command workers can be inspected
+from `queue inspect` and `queue dead`.
+
 #### `QueueStats`
 
 Dataclass returned by `stats()`.

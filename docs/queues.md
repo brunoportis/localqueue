@@ -95,9 +95,19 @@ localqueue queue exec jobs -- sh -c 'jq -r .id | xargs -I{} ./process-job {}'
 
 The command receives `message.value` on stdin as JSON. `localqueue` captures the
 command output so the CLI can keep printing its own JSON status. Exit code `0`
-acks the message. Any other exit code raises a command failure, records the exit
-code and stderr in `last_error`, and applies the same retry, release, or
-dead-letter behavior as `queue process`.
+acks the message. Any other exit code raises a command failure and applies the
+same retry, release, or dead-letter behavior as `queue process`.
+
+Command failures are stored in `last_error` with structured fields:
+
+| Field | Meaning |
+| --- | --- |
+| `type` | `_CommandExecutionError` |
+| `message` | human-readable command failure |
+| `command` | argv list that was executed |
+| `exit_code` | command exit code |
+| `stdout` | captured stdout, truncated for inspection |
+| `stderr` | captured stderr, truncated for inspection |
 
 Commands are executed without an implicit shell. Use `sh -c` explicitly when you
 want pipes, redirects, shell expansion, or multiple commands.

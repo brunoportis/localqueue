@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1
+
+- Add project URLs for PyPI metadata.
+- Document `queue exec` command-failure fields stored in `last_error`.
+
 ## 0.1.0
 
 - Add persistent retry wrappers for sync and async Tenacity retryers.
