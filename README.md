@@ -4,26 +4,20 @@
 [![CodeQL](https://github.com/brunoportis/localqueue/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/brunoportis/localqueue/actions/workflows/github-code-scanning/codeql)
 ![Coverage](https://img.shields.io/badge/coverage-%E2%89%A595%25-brightgreen)
 
-Durable local queues for Python workers, with persistent retry state powered by
-Tenacity.
+Durable local queues for Python workers, scripts, and CLI tools.
 
-`localqueue` provides two small building blocks for reliable job processing in
-scripts, CLIs, cron jobs, and small worker processes:
+`localqueue` is a small local queue plus persistent retry state, built for one
+machine and backed by SQLite by default.
 
-- a SQLite-backed queue with at-least-once delivery, leases, delayed delivery,
-  acknowledgements, release, and dead-letter records
-- `localqueue.retry`: a Tenacity-backed retry adapter that persists retry
-  budgets across process restarts
-
-Use the queue when one machine needs to persist jobs and process them later. Use
-the retry layer directly when another system already delivers work and you only
-need durable retry state.
+Use the queue when you need to persist jobs on the local filesystem and process
+them later. Use `localqueue.retry` when another system already delivers work
+and you only need durable retry budgets.
 
 ## Why this exists
 
-Python has good retry tools and in-memory queues, but many worker scripts need a
-small durable local queue without bringing in Celery, Redis, RabbitMQ, SQS, or
-another broker. This project focuses on that local worker shape:
+Python has good retry tools and in-memory queues, but many scripts need a small
+durable queue without bringing in Celery, Redis, RabbitMQ, SQS, or another
+broker. This project stays focused on that local-worker shape:
 
 ```text
 enqueue job -> lease message -> run handler with retry -> ack or dead-letter
@@ -39,12 +33,11 @@ Tenacity already provides the right retry model:
 This library keeps that model and uses it as the retry engine for queue workers
 and lower-level retry wrappers.
 
-`localqueue` is not distributed coordination. The default store is a local
-SQLite file, so it is best suited to workers running on the same host or against
-the same local filesystem. If the workload needs multi-host scheduling, high
-write throughput, broker-managed retention, stream processing, or hard
-cross-service ordering guarantees, use a broker or database designed for that
-operating model.
+`localqueue` is not distributed coordination. It is best suited to workers on
+the same host or sharing the same local filesystem. If the workload needs
+multi-host scheduling, high write throughput, broker-managed retention, stream
+processing, or hard cross-service ordering guarantees, use a system designed
+for that operating model.
 
 ## Install
 
