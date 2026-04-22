@@ -77,12 +77,20 @@ Constructor options:
 | `dead_letter_on_failure` | dead-letter final handler failures when `True` |
 | `dead_letter_on_exhaustion` | compatibility alias for `dead_letter_on_failure` |
 | `release_delay` | delay used when releasing failed messages |
+| `min_interval` | minimum seconds to wait between worker message starts |
+| `circuit_breaker_failures` | consecutive recoverable failures before pausing the worker |
+| `circuit_breaker_cooldown` | pause duration after the breaker opens |
 | `**retry_kwargs` | forwarded to `PersistentRetrying` |
 
 Queue-level retry defaults can also be attached to `PersistentQueue` and are
 merged into worker retry kwargs before explicit worker overrides. That keeps
 shared queue policies close to the queue definition while still letting a
 worker override a specific retry parameter when needed.
+
+`min_interval` is a per-worker rate limit. Set it when a handler talks to an
+external service that should not be hit back-to-back. The circuit-breaker pair
+(`circuit_breaker_failures` + `circuit_breaker_cooldown`) opens after repeated
+recoverable failures and pauses the worker before it fetches the next message.
 
 #### `QueueMessage`
 

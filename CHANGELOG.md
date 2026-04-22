@@ -10,6 +10,7 @@
 - Add dead-letter filters and summaries for `queue dead`.
 - Add enqueue deduplication with `--dedupe-key` and `dedupe_key=`.
 - Add queue-level retry defaults that workers can inherit from `PersistentQueue`.
+- Add worker rate limiting and circuit-breaker controls.
 - Add a short-term maturity note focused on performance and guarantees.
 
 ## 0.2.0

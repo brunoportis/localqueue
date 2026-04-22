@@ -26,6 +26,13 @@ from .retry import (
     SQLiteAttemptStore,
 )
 from .store import QueueMessage
+from .worker import (
+    PersistentWorkerConfig,
+    WorkerPolicyState,
+    _record_failure,
+    _record_success,
+    _sleep_for_policy,
+)
 
 DEFAULT_STORE_PATH = "localqueue_queue.sqlite3"
 DEFAULT_RETRY_STORE_PATH = "localqueue_retries.sqlite3"
@@ -37,6 +44,7 @@ class _ProcessResult:
     processed: bool
     last_error: dict[str, Any] | None = None
     final_state: str | None = None
+    permanent_failure: bool = False
 
 
 @dataclass(slots=True)
@@ -527,6 +535,13 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         timeout: float | None = typer.Option(None, "--timeout", min=0.0),
         idle_sleep: float = typer.Option(1.0, "--idle-sleep", min=0.001),
         release_delay: float = typer.Option(0.0, "--release-delay", min=0.0),
+        min_interval: float = typer.Option(0.0, "--min-interval", min=0.0),
+        circuit_breaker_failures: int = typer.Option(
+            0, "--circuit-breaker-failures", min=0
+        ),
+        circuit_breaker_cooldown: float = typer.Option(
+            0.0, "--circuit-breaker-cooldown", min=0.0
+        ),
         dead_letter_on_exhaustion: bool = typer.Option(
             True,
             "--dead-letter-on-exhaustion/--release-on-exhaustion",
@@ -551,6 +566,11 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
             _resolve_store_path(store_path, config),
             lease_timeout=lease_timeout,
         )
+        worker_policy = PersistentWorkerConfig(
+            min_interval=min_interval,
+            circuit_breaker_failures=circuit_breaker_failures,
+            circuit_breaker_cooldown=circuit_breaker_cooldown,
+        )
         with _shutdown_state() as shutdown:
             exit_code = _process_queue_messages(
                 persistent_queue,
@@ -558,6 +578,7 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
                 console=console,
                 err_console=err_console,
                 shutdown=shutdown,
+                worker_policy=worker_policy,
                 retry_store_path=_resolve_retry_store_path(retry_store_path, config),
                 max_jobs=max_jobs,
                 forever=forever,
@@ -592,6 +613,13 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         timeout: float | None = typer.Option(None, "--timeout", min=0.0),
         idle_sleep: float = typer.Option(1.0, "--idle-sleep", min=0.001),
         release_delay: float = typer.Option(0.0, "--release-delay", min=0.0),
+        min_interval: float = typer.Option(0.0, "--min-interval", min=0.0),
+        circuit_breaker_failures: int = typer.Option(
+            0, "--circuit-breaker-failures", min=0
+        ),
+        circuit_breaker_cooldown: float = typer.Option(
+            0.0, "--circuit-breaker-cooldown", min=0.0
+        ),
         dead_letter_on_exhaustion: bool = typer.Option(
             True,
             "--dead-letter-on-exhaustion/--release-on-exhaustion",
@@ -611,6 +639,11 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
             _resolve_store_path(store_path, config),
             lease_timeout=lease_timeout,
         )
+        worker_policy = PersistentWorkerConfig(
+            min_interval=min_interval,
+            circuit_breaker_failures=circuit_breaker_failures,
+            circuit_breaker_cooldown=circuit_breaker_cooldown,
+        )
         with _shutdown_state() as shutdown:
             exit_code = _process_queue_messages(
                 persistent_queue,
@@ -618,6 +651,7 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
                 console=console,
                 err_console=err_console,
                 shutdown=shutdown,
+                worker_policy=worker_policy,
                 retry_store_path=_resolve_retry_store_path(retry_store_path, config),
                 max_jobs=max_jobs,
                 forever=forever,
@@ -730,19 +764,23 @@ def _process_message(
                     last_error=last_error,
                 )
             return _ProcessResult(
-                processed=False, last_error=last_error, final_state="dead-letter"
+                processed=False,
+                last_error=last_error,
+                final_state="dead-letter",
+                permanent_failure=False,
             )
         except Exception as exc:
             last_error = _error_payload(exc)
             record = retryer.get_record(message.id)
             exhausted = record is not None and record.exhausted
-            if is_permanent_failure(exc) or exhausted:
+            permanent_failure = is_permanent_failure(exc)
+            if permanent_failure or exhausted:
                 _ = _finish_failed_message(
                     queue,
                     message,
                     release_delay=release_delay,
                     dead_letter_on_exhaustion=True
-                    if is_permanent_failure(exc)
+                    if permanent_failure
                     else dead_letter_on_exhaustion,
                     error=exc,
                 )
@@ -761,7 +799,10 @@ def _process_message(
                     last_error=last_error,
                 )
             return _ProcessResult(
-                processed=False, last_error=last_error, final_state=final_state
+                processed=False,
+                last_error=last_error,
+                final_state=final_state,
+                permanent_failure=permanent_failure,
             )
 
         acked = queue.ack(message)
@@ -787,6 +828,7 @@ def _process_queue_messages(
     console: Any,
     err_console: Any,
     shutdown: _ShutdownState,
+    worker_policy: PersistentWorkerConfig | None = None,
     retry_store_path: str | None,
     max_jobs: int,
     forever: bool,
@@ -801,12 +843,18 @@ def _process_queue_messages(
     mode: str = "process",
 ) -> int:
     processed = 0
+    policy_state = WorkerPolicyState()
+    resolved_policy = (
+        worker_policy if worker_policy is not None else PersistentWorkerConfig()
+    )
 
     while forever or processed < max_jobs:
         if shutdown.requested:
             if forever:
                 _print_json(console, {"state": "stopped", "processed": processed})
             return 0
+
+        _sleep_for_policy(policy_state, resolved_policy)
 
         try:
             message = queue.get_message(
@@ -850,8 +898,15 @@ def _process_queue_messages(
         )
         if result.processed:
             processed += 1
+            _record_success(policy_state)
             _print_json(console, {"id": message.id, "state": "acked"})
             continue
+
+        _record_failure(
+            policy_state,
+            resolved_policy,
+            permanent=result.permanent_failure,
+        )
 
         payload = (
             _message_payload(current_message)

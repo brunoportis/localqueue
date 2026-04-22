@@ -70,8 +70,8 @@ That means measuring the current ceiling before promising more:
 - [x] Add examples for different policies by exception type.
 - [x] Evaluate built-in permanent-failure classification.
 - [x] Evaluate queue-level retry defaults that can be reused by many workers.
-- [ ] Evaluate rate limiting for handlers that call external services.
-- [ ] Evaluate circuit-breaker integration or documentation.
+- [x] Evaluate rate limiting for handlers that call external services.
+- [x] Evaluate circuit-breaker integration or documentation.
 - [ ] Add clearer guidance for `release_delay`, Tenacity `wait`, and
   `lease_timeout` interactions.
 - [x] Reject ambiguous worker-loop combinations such as `--forever` with

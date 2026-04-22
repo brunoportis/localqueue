@@ -94,6 +94,11 @@ def handle(job: dict) -> None:
 
 For small examples, worker options can also be passed directly to the decorator.
 
+When a worker talks to a slow or fragile external service, add a small
+`min_interval` to keep requests from landing back-to-back. If the service keeps
+failing, use `circuit_breaker_failures` with `circuit_breaker_cooldown` so the
+worker pauses before it fetches the next message.
+
 Use `persistent_async_worker()` for async handlers. Queue operations are performed
 off the event loop with `asyncio.to_thread()`.
 

@@ -1542,6 +1542,93 @@ class QueueTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _ = config.with_overrides(release_delay=-1)
 
+        with self.assertRaises(ValueError):
+            _ = PersistentWorkerConfig(min_interval=-1)
+
+        with self.assertRaises(ValueError):
+            _ = PersistentWorkerConfig(circuit_breaker_failures=1)
+
+        with self.assertRaises(ValueError):
+            _ = PersistentWorkerConfig(
+                circuit_breaker_failures=1,
+                circuit_breaker_cooldown=-1,
+            )
+
+        with self.assertRaises(ValueError):
+            _ = PersistentWorkerConfig(
+                circuit_breaker_failures=0,
+                circuit_breaker_cooldown=1,
+            )
+
+        config = PersistentWorkerConfig(
+            circuit_breaker_failures=1,
+            circuit_breaker_cooldown=1,
+        )
+        with self.assertRaises(ValueError):
+            _ = config.with_overrides(circuit_breaker_cooldown=-1)
+
+    def test_worker_respects_min_interval_between_calls(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+        _ = queue.put("first")
+        _ = queue.put("second")
+        config = PersistentWorkerConfig(
+            store=MemoryAttemptStore(),
+            max_tries=1,
+            wait=lambda _: 0,
+            min_interval=1.0,
+        )
+
+        with mock.patch("localqueue.worker.time") as worker_time:
+            worker_time.time.side_effect = [100.0, 100.0, 100.4, 100.4]
+
+            @persistent_worker(queue, config=config)
+            def handle(value: str) -> str:
+                return value.upper()
+
+            self.assertEqual(cast(Any, handle)(), "FIRST")
+            self.assertEqual(cast(Any, handle)(), "SECOND")
+
+        self.assertTrue(worker_time.sleep.called)
+        self.assertAlmostEqual(
+            cast(Any, worker_time.sleep.call_args.args[0]), 0.6, places=1
+        )
+
+    def test_worker_opens_circuit_breaker_after_recoverable_failures(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+        _ = queue.put("first")
+        _ = queue.put("second")
+        config = PersistentWorkerConfig(
+            store=MemoryAttemptStore(),
+            max_tries=1,
+            wait=lambda _: 0,
+            dead_letter_on_failure=False,
+            circuit_breaker_failures=1,
+            circuit_breaker_cooldown=10.0,
+        )
+
+        with mock.patch("localqueue.worker.time") as worker_time:
+            worker_time.time.side_effect = [
+                100.0,
+                100.0,
+                100.0,
+                100.4,
+                100.4,
+                100.4,
+                100.4,
+            ]
+
+            @persistent_worker(queue, config=config)
+            def handle(value: str) -> None:
+                raise RuntimeError(value)
+
+            with self.assertRaises(RuntimeError):
+                cast(Any, handle)()
+            with self.assertRaises(RuntimeError):
+                cast(Any, handle)()
+
+        self.assertTrue(worker_time.sleep.called)
+        self.assertGreater(cast(Any, worker_time.sleep.call_args.args[0]), 0.0)
+
     def test_async_worker_accepts_config(self) -> None:
         async def scenario() -> None:
             queue = PersistentQueue("test", store=MemoryQueueStore())
