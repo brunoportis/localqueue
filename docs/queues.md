@@ -339,6 +339,53 @@ Use `queue dead --summary` when you want a quick aggregate view, and combine it
 with `--min-attempts`, `--max-attempts`, `--error-contains`, or
 `--failed-within` when the dead-letter list is noisy.
 
+## Safe shutdown
+
+`queue process` and `queue exec` handle `SIGINT` and `SIGTERM` by finishing the
+current message and then stopping before the next lease attempt. That keeps the
+lease, retry state, and final ack/release/dead-letter transition consistent.
+
+```bash
+localqueue queue process emails myapp.workers:send_email \
+  --forever \
+  --block \
+  --worker-id worker-1 \
+  --max-tries 5
+```
+
+Use `Ctrl-C` for interactive workers. Use `SIGTERM` for supervised workers
+started by systemd, Docker, or another process manager.
+
+When you need a controlled stop in your own wrapper, forward the signal and let
+the worker exit on its own instead of killing the process immediately.
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+localqueue queue exec emails --forever --block -- python scripts/send_email.py
+```
+
+## Health checks
+
+There is no separate health endpoint in the library. For local workers, a small
+command check is usually enough:
+
+```bash
+localqueue queue stats emails --json
+```
+
+Use that to confirm the queue store is reachable and the queue counts can be
+read. For a more specific check, inspect a known message id:
+
+```bash
+localqueue queue inspect emails <message-id> --json
+```
+
+If you want to check the worker loop itself, combine `queue stats --watch` with
+`queue dead --watch` while the worker is running and verify that new messages
+move through ready, inflight, and acked states as expected.
+
 When the underlying problem is fixed, `queue requeue-dead --all` moves every
 dead letter back to ready delivery:
 

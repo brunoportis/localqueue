@@ -107,8 +107,8 @@ That means measuring the current ceiling before promising more:
 
 - [x] Document recommended payload size limits.
 - [x] Add clearer lease-timeout guidance for slow jobs.
-- [ ] Add examples for safe shutdown and long-running workers.
-- [ ] Add health-check examples for worker processes.
+- [x] Add examples for safe shutdown and long-running workers.
+- [x] Add health-check examples for worker processes.
 - [ ] Add configuration validation for risky combinations where possible.
 - [x] Add warnings or docs for unbounded queue growth.
 
