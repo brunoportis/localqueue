@@ -1369,6 +1369,57 @@ class CliTests(unittest.TestCase):
         self.assertEqual(console.values, [])
         self.assertEqual(err_console.messages, ["[yellow]queue is empty[/yellow]"])
 
+    def test_process_queue_messages_reuses_retry_store_for_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            retry_store_path = str(Path(tmpdir) / "retries.sqlite3")
+
+            class TrackingSQLiteAttemptStore(SQLiteAttemptStore):
+                closed: bool
+
+                def __init__(self, path: str) -> None:
+                    super().__init__(path)
+                    self.closed = False
+                    created.append(self)
+
+                def close(self) -> None:
+                    self.closed = True
+                    super().close()
+
+            created: list[TrackingSQLiteAttemptStore] = []
+            queue = PersistentQueue("emails", store=MemoryQueueStore())
+            _ = queue.put({"to": "one@example.com"})
+            _ = queue.put({"to": "two@example.com"})
+            console = _JsonConsole()
+
+            with mock.patch(
+                "localqueue.cli.SQLiteAttemptStore",
+                TrackingSQLiteAttemptStore,
+            ):
+                result = _process_queue_messages(
+                    queue,
+                    lambda payload: payload,
+                    console=console,
+                    err_console=_JsonConsole(),
+                    shutdown=_ShutdownState(),
+                    retry_store_path=retry_store_path,
+                    max_jobs=2,
+                    forever=False,
+                    max_tries=1,
+                    worker_id=None,
+                    block=False,
+                    timeout=None,
+                    idle_sleep=0.001,
+                    release_delay=0.0,
+                    dead_letter_on_exhaustion=True,
+                )
+
+            self.assertEqual(result, 0)
+            self.assertEqual(len(created), 1)
+            self.assertTrue(created[0].closed)
+            self.assertEqual(
+                [value["state"] for value in console.values], ["acked", "acked"]
+            )
+
     def test_print_queue_stats_watch_stops_on_shutdown(self) -> None:
         queue = PersistentQueue("emails", store=MemoryQueueStore())
         _ = queue.put({"to": "user@example.com"})

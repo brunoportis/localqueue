@@ -224,27 +224,25 @@ except PersistentRetryExhausted as exc:
 
 The default attempt store is SQLite at `./localqueue_retries.sqlite3`.
 
-`store_path=` creates an LMDB attempt-store directory. Install
-`localqueue[lmdb]` and use it when you want the retry API to manage an LMDB
-backend directly.
+`store_path=` creates a SQLite attempt-store file, matching the default backend.
 
 ```python
 from localqueue.retry import PersistentRetrying, key_from_argument
 
 retryer = PersistentRetrying(
-    store_path="/var/lib/my-worker/retries",
+    store_path="/var/lib/my-worker/retries.sqlite3",
     max_tries=5,
     key_fn=key_from_argument("job_id"),
 )
 ```
 
-Provide a store instance with `store=` when you need SQLite, full control, or
-in-memory tests.
+Provide a store instance with `store=` when you need LMDB, full control, or
+in-memory tests. Install `localqueue[lmdb]` when you want the LMDB backend.
 
 ```python
-from localqueue.retry import SQLiteAttemptStore, key_from_argument, persistent_retry
+from localqueue.retry import LMDBAttemptStore, key_from_argument, persistent_retry
 
-store = SQLiteAttemptStore("/var/lib/my-worker/retries.sqlite3")
+store = LMDBAttemptStore("/var/lib/my-worker/retries")
 
 
 @persistent_retry(
@@ -257,7 +255,8 @@ def flaky(job_id: str) -> str:
 ```
 
 The CLI `retry_store_path` setting and `queue process --retry-store-path` use a
-SQLite file path.
+SQLite file path. `queue process` and `queue exec` keep one retry-store
+connection open for the worker loop and close it when the loop exits.
 
 ```python
 from localqueue.retry import MemoryAttemptStore, key_from_argument, persistent_retry
@@ -276,6 +275,11 @@ def flaky(job_id: str) -> str:
 ```
 
 `store=` and `store_path=` are mutually exclusive.
+
+Default retry stores are thread-local. Call `close_default_store()` when a
+long-lived thread is shutting down and you want to close its default SQLite
+connection explicitly. At process shutdown, `close_default_store(all_threads=True)`
+closes known factory-created default stores.
 
 ## State and callbacks
 

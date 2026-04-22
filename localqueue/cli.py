@@ -859,91 +859,102 @@ def _process_queue_messages(
     resolved_policy = (
         worker_policy if worker_policy is not None else PersistentWorkerConfig()
     )
+    owned_retry_store: SQLiteAttemptStore | None = None
 
-    while forever or processed < max_jobs:
-        if shutdown.requested:
-            if forever:
-                _print_json(console, {"state": "stopped", "processed": processed})
-            return 0
+    try:
+        while forever or processed < max_jobs:
+            if shutdown.requested:
+                if forever:
+                    _print_json(console, {"state": "stopped", "processed": processed})
+                return 0
 
-        if worker_id is not None:
-            queue.record_worker_heartbeat(worker_id)
-        _sleep_for_policy(policy_state, resolved_policy)
-
-        try:
-            message = queue.get_message(
-                block=block,
-                timeout=_poll_timeout(forever, block, timeout),
-                leased_by=worker_id,
-            )
-        except Empty:
-            if forever:
-                if not block:
-                    time.sleep(idle_sleep)
-                continue
-            if processed == 0:
-                if err_console is not None:
-                    err_console.print("[yellow]queue is empty[/yellow]")
-                return 1
-            break
-
-        if log_events and err_console is not None:
-            _emit_event(
-                err_console,
-                f"{mode}.lease",
-                queue=message.queue,
-                message_id=message.id,
-                leased_by=message.leased_by,
-                attempts=message.attempts,
-                leased_until=message.leased_until,
-            )
-
-        result = _process_message(
-            queue,
-            message,
-            handler,
-            retry_store_path=retry_store_path,
-            max_tries=max_tries,
-            release_delay=release_delay,
-            dead_letter_on_exhaustion=dead_letter_on_exhaustion,
-            log_events=log_events,
-            mode=mode,
-            err_console=err_console,
-        )
-        if result.processed:
-            processed += 1
-            _record_success(policy_state)
             if worker_id is not None:
                 queue.record_worker_heartbeat(worker_id)
-            _print_json(console, {"id": message.id, "state": "acked"})
-            continue
+            _sleep_for_policy(policy_state, resolved_policy)
 
-        _record_failure(
-            policy_state,
-            resolved_policy,
-            permanent=result.permanent_failure,
-        )
+            try:
+                message = queue.get_message(
+                    block=block,
+                    timeout=_poll_timeout(forever, block, timeout),
+                    leased_by=worker_id,
+                )
+            except Empty:
+                if forever:
+                    if not block:
+                        time.sleep(idle_sleep)
+                    continue
+                if processed == 0:
+                    if err_console is not None:
+                        err_console.print("[yellow]queue is empty[/yellow]")
+                    return 1
+                break
 
-        payload = (
-            _message_payload(current_message)
-            if (current_message := queue.inspect(message.id)) is not None
-            else {"id": message.id, "queue": message.queue}
-        )
-        _print_json(
-            console,
-            {
-                **payload,
-                "state": "failed",
-                "last_error": result.last_error,
-            },
-        )
-        if worker_id is not None:
-            queue.record_worker_heartbeat(worker_id)
-        if forever:
-            continue
-        return 1
+            if log_events and err_console is not None:
+                _emit_event(
+                    err_console,
+                    f"{mode}.lease",
+                    queue=message.queue,
+                    message_id=message.id,
+                    leased_by=message.leased_by,
+                    attempts=message.attempts,
+                    leased_until=message.leased_until,
+                )
 
-    return 0
+            if retry_store_path is not None and owned_retry_store is None:
+                owned_retry_store = SQLiteAttemptStore(retry_store_path)
+
+            result = _process_message(
+                queue,
+                message,
+                handler,
+                retry_store=owned_retry_store,
+                retry_store_path=None
+                if owned_retry_store is not None
+                else retry_store_path,
+                max_tries=max_tries,
+                release_delay=release_delay,
+                dead_letter_on_exhaustion=dead_letter_on_exhaustion,
+                log_events=log_events,
+                mode=mode,
+                err_console=err_console,
+            )
+            if result.processed:
+                processed += 1
+                _record_success(policy_state)
+                if worker_id is not None:
+                    queue.record_worker_heartbeat(worker_id)
+                _print_json(console, {"id": message.id, "state": "acked"})
+                continue
+
+            _record_failure(
+                policy_state,
+                resolved_policy,
+                permanent=result.permanent_failure,
+            )
+
+            payload = (
+                _message_payload(current_message)
+                if (current_message := queue.inspect(message.id)) is not None
+                else {"id": message.id, "queue": message.queue}
+            )
+            _print_json(
+                console,
+                {
+                    **payload,
+                    "state": "failed",
+                    "last_error": result.last_error,
+                },
+            )
+            if worker_id is not None:
+                queue.record_worker_heartbeat(worker_id)
+            if forever:
+                continue
+            return 1
+
+        return 0
+    finally:
+        if owned_retry_store is not None:
+            owned_retry_store.close()
 
 
 def _print_dead_letters(

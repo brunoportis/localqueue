@@ -5,6 +5,7 @@ import inspect
 import sys
 import threading
 import time
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, TypeVar, cast
@@ -20,11 +21,13 @@ from tenacity.retry import retry_if_exception_type
 from tenacity.stop import stop_after_attempt
 from tenacity.wait import wait_exponential
 
-from .store import AttemptStore, LMDBAttemptStore, RetryRecord, SQLiteAttemptStore
+from .store import AttemptStore, RetryRecord, SQLiteAttemptStore
 
 WrappedFn = TypeVar("WrappedFn", bound=Callable[..., Any])
 _UNSET = object()
 _default_store_local = threading.local()
+_default_owned_stores: weakref.WeakSet[Any] = weakref.WeakSet()
+_default_owned_stores_lock = threading.Lock()
 
 
 def _sqlite_default_store_factory() -> AttemptStore:
@@ -91,19 +94,41 @@ def _get_default_store() -> AttemptStore:
             factory = _default_store_factory
         store = factory()
         _default_store_local.store = store
+        with _default_owned_stores_lock:
+            try:
+                _default_owned_stores.add(store)
+            except TypeError:
+                pass
     return cast(AttemptStore, store)
 
 
 def configure_default_store(store: AttemptStore | None = None) -> None:
     if store is None:
-        existing_store = getattr(_default_store_local, "store", None)
-        close = getattr(existing_store, "close", None)
-        if callable(close):
-            close()
-        if existing_store is not None:
-            del _default_store_local.store
+        close_default_store()
         return
     _default_store_local.store = store
+
+
+def close_default_store(*, all_threads: bool = False) -> None:
+    existing_store = getattr(_default_store_local, "store", None)
+    close = getattr(existing_store, "close", None)
+    if callable(close):
+        close()
+    if existing_store is not None:
+        del _default_store_local.store
+
+    if not all_threads:
+        return
+
+    with _default_owned_stores_lock:
+        stores = list(_default_owned_stores)
+        _default_owned_stores.clear()
+    for store in stores:
+        if store is existing_store:
+            continue
+        close = getattr(store, "close", None)
+        if callable(close):
+            close()
 
 
 def configure_default_store_factory(factory: Callable[[], AttemptStore]) -> None:
@@ -286,7 +311,7 @@ class _PersistentMixin:
     def _get_store(self) -> AttemptStore:
         if self._store is None:
             if self._store_path is not None:
-                self._store = LMDBAttemptStore(self._store_path)
+                self._store = SQLiteAttemptStore(self._store_path)
             else:
                 self._store = _get_default_store()
         return self._store

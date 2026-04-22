@@ -21,7 +21,7 @@ _READY = "ready"
 _INFLIGHT = "inflight"
 _DEAD = "dead"
 _QUEUE_RECORD_VERSION = 4
-_SQLITE_SCHEMA_VERSION = 1
+_SQLITE_SCHEMA_VERSION = 2
 
 
 def _import_lmdb() -> Any:
@@ -569,65 +569,82 @@ class SQLiteQueueStore:
         self._connection = sqlite3.connect(
             self.path, timeout=timeout, check_same_thread=False
         )
-        self._connection.execute("PRAGMA journal_mode=WAL;")
-        self._connection.execute("PRAGMA synchronous=NORMAL;")
-        self._ensure_supported_schema_version()
-        self._connection.execute(
-            "CREATE TABLE IF NOT EXISTS queue_messages ("
-            "queue TEXT NOT NULL, "
-            "id TEXT NOT NULL, "
-            "record_json TEXT NOT NULL, "
-            "state TEXT NOT NULL, "
-            "available_at REAL NOT NULL, "
-            "leased_until REAL, "
-            "sequence INTEGER NOT NULL, "
-            "PRIMARY KEY(queue, id)"
-            ")"
-        )
-        self._connection.execute(
-            "CREATE INDEX IF NOT EXISTS queue_messages_ready_idx "
-            "ON queue_messages(queue, state, available_at, sequence)"
-        )
-        self._connection.execute(
-            "CREATE INDEX IF NOT EXISTS queue_messages_inflight_idx "
-            "ON queue_messages(queue, state, leased_until)"
-        )
-        self._connection.execute(
-            "CREATE INDEX IF NOT EXISTS queue_messages_dead_idx "
-            "ON queue_messages(queue, state, id)"
-        )
-        self._connection.execute(
-            "CREATE TABLE IF NOT EXISTS queue_sequences ("
-            "queue TEXT PRIMARY KEY, "
-            "value INTEGER NOT NULL"
-            ")"
-        )
-        self._connection.execute(
-            "CREATE TABLE IF NOT EXISTS queue_worker_stats ("
-            "queue TEXT NOT NULL, "
-            "worker_id TEXT NOT NULL, "
-            "leased_count INTEGER NOT NULL, "
-            "PRIMARY KEY(queue, worker_id)"
-            ")"
-        )
-        self._connection.execute(
-            "CREATE TABLE IF NOT EXISTS queue_worker_heartbeats ("
-            "queue TEXT NOT NULL, "
-            "worker_id TEXT NOT NULL, "
-            "last_seen REAL NOT NULL, "
-            "PRIMARY KEY(queue, worker_id)"
-            ")"
-        )
-        self._connection.execute(
-            "CREATE TABLE IF NOT EXISTS queue_dedupe_keys ("
-            "queue TEXT NOT NULL, "
-            "dedupe_key TEXT NOT NULL, "
-            "message_id TEXT NOT NULL, "
-            "PRIMARY KEY(queue, dedupe_key)"
-            ")"
-        )
-        self._connection.execute(f"PRAGMA user_version = {_SQLITE_SCHEMA_VERSION}")
-        self._connection.commit()
+        try:
+            self._connection.execute("PRAGMA journal_mode=WAL;")
+            self._connection.execute("PRAGMA synchronous=NORMAL;")
+            current_schema_version = self._ensure_supported_schema_version()
+            self._connection.execute(
+                "CREATE TABLE IF NOT EXISTS queue_messages ("
+                "queue TEXT NOT NULL, "
+                "id TEXT NOT NULL, "
+                "record_json TEXT NOT NULL, "
+                "state TEXT NOT NULL, "
+                "created_at REAL, "
+                "available_at REAL NOT NULL, "
+                "leased_until REAL, "
+                "leased_by TEXT, "
+                "last_leased_at REAL, "
+                "failed_at REAL, "
+                "sequence INTEGER NOT NULL, "
+                "PRIMARY KEY(queue, id)"
+                ")"
+            )
+            self._connection.execute(
+                "CREATE TABLE IF NOT EXISTS queue_sequences ("
+                "queue TEXT PRIMARY KEY, "
+                "value INTEGER NOT NULL"
+                ")"
+            )
+            self._connection.execute(
+                "CREATE TABLE IF NOT EXISTS queue_worker_stats ("
+                "queue TEXT NOT NULL, "
+                "worker_id TEXT NOT NULL, "
+                "leased_count INTEGER NOT NULL, "
+                "PRIMARY KEY(queue, worker_id)"
+                ")"
+            )
+            self._connection.execute(
+                "CREATE TABLE IF NOT EXISTS queue_worker_heartbeats ("
+                "queue TEXT NOT NULL, "
+                "worker_id TEXT NOT NULL, "
+                "last_seen REAL NOT NULL, "
+                "PRIMARY KEY(queue, worker_id)"
+                ")"
+            )
+            self._connection.execute(
+                "CREATE TABLE IF NOT EXISTS queue_dedupe_keys ("
+                "queue TEXT NOT NULL, "
+                "dedupe_key TEXT NOT NULL, "
+                "message_id TEXT NOT NULL, "
+                "PRIMARY KEY(queue, dedupe_key)"
+                ")"
+            )
+            self._migrate_sqlite_schema(current_schema_version)
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS queue_messages_ready_idx "
+                "ON queue_messages(queue, state, available_at, sequence)"
+            )
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS queue_messages_inflight_idx "
+                "ON queue_messages(queue, state, leased_until)"
+            )
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS queue_messages_dead_idx "
+                "ON queue_messages(queue, state, id)"
+            )
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS queue_messages_dead_age_idx "
+                "ON queue_messages(queue, state, failed_at, created_at)"
+            )
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS queue_messages_inflight_worker_idx "
+                "ON queue_messages(queue, state, leased_by)"
+            )
+            self._connection.execute(f"PRAGMA user_version = {_SQLITE_SCHEMA_VERSION}")
+            self._connection.commit()
+        except Exception:
+            self._connection.close()
+            raise
         self._lock = threading.Lock()
 
     def enqueue(
@@ -808,9 +825,48 @@ class SQLiteQueueStore:
     def stats(self, queue: str, *, now: float) -> QueueStats:
         with self._transaction() as connection:
             self._reclaim_expired(connection, queue, now)
-            cursor = connection.execute(
-                "SELECT record_json FROM queue_messages WHERE queue = ?",
-                (queue,),
+            row = connection.execute(
+                "SELECT "
+                "COUNT(*) AS total, "
+                "COALESCE(SUM(CASE WHEN state = ? AND available_at <= ? "
+                "THEN 1 ELSE 0 END), 0) AS ready, "
+                "COALESCE(SUM(CASE WHEN state = ? AND available_at > ? "
+                "THEN 1 ELSE 0 END), 0) AS delayed, "
+                "COALESCE(SUM(CASE WHEN state = ? THEN 1 ELSE 0 END), 0) "
+                "AS inflight, "
+                "COALESCE(SUM(CASE WHEN state = ? THEN 1 ELSE 0 END), 0) "
+                "AS dead, "
+                "MAX(CASE WHEN state = ? AND available_at <= ? "
+                "THEN ? - available_at ELSE NULL END) AS oldest_ready_age, "
+                "MAX(CASE WHEN state = ? AND last_leased_at IS NOT NULL "
+                "THEN ? - last_leased_at ELSE NULL END) "
+                "AS oldest_inflight_age, "
+                "AVG(CASE WHEN state = ? AND last_leased_at IS NOT NULL "
+                "THEN ? - last_leased_at ELSE NULL END) "
+                "AS average_inflight_age "
+                "FROM queue_messages WHERE queue = ?",
+                (
+                    _READY,
+                    now,
+                    _READY,
+                    now,
+                    _INFLIGHT,
+                    _DEAD,
+                    _READY,
+                    now,
+                    now,
+                    _INFLIGHT,
+                    now,
+                    _INFLIGHT,
+                    now,
+                    queue,
+                ),
+            ).fetchone()
+            by_worker = connection.execute(
+                "SELECT leased_by, COUNT(*) FROM queue_messages "
+                "WHERE queue = ? AND state = ? AND leased_by IS NOT NULL "
+                "GROUP BY leased_by ORDER BY leased_by",
+                (queue, _INFLIGHT),
             )
             worker_stats = connection.execute(
                 "SELECT worker_id, leased_count FROM queue_worker_stats "
@@ -822,15 +878,30 @@ class SQLiteQueueStore:
                 "WHERE queue = ? ORDER BY worker_id",
                 (queue,),
             )
-            return _stats_from_records(
-                (_decode_record(row[0]) for row in cursor.fetchall()),
-                now=now,
+            assert row is not None
+            return QueueStats(
+                ready=int(row[1]),
+                delayed=int(row[2]),
+                inflight=int(row[3]),
+                dead=int(row[4]),
+                total=int(row[0]),
+                by_worker_id={worker: int(count) for worker, count in by_worker},
                 leases_by_worker_id={
-                    row[0]: int(row[1]) for row in worker_stats.fetchall()
+                    worker: int(count) for worker, count in worker_stats.fetchall()
                 },
                 last_seen_by_worker_id={
-                    row[0]: float(row[1]) for row in heartbeat_stats.fetchall()
+                    worker: float(last_seen)
+                    for worker, last_seen in heartbeat_stats.fetchall()
                 },
+                oldest_ready_age_seconds=(
+                    None if row[5] is None else max(float(row[5]), 0.0)
+                ),
+                oldest_inflight_age_seconds=(
+                    None if row[6] is None else max(float(row[6]), 0.0)
+                ),
+                average_inflight_age_seconds=(
+                    None if row[7] is None else max(float(row[7]), 0.0)
+                ),
             )
 
     def record_worker_heartbeat(
@@ -881,40 +952,37 @@ class SQLiteQueueStore:
             return True
 
     def prune_dead_letters(self, queue: str, *, older_than: float, now: float) -> int:
+        cutoff = now - older_than
         with self._transaction() as connection:
-            cursor = connection.execute(
-                "SELECT id, record_json FROM queue_messages "
-                "WHERE queue = ? AND state = ?",
-                (queue, _DEAD),
+            _ = connection.execute(
+                "DELETE FROM queue_dedupe_keys "
+                "WHERE queue = ? AND message_id IN ("
+                "SELECT id FROM queue_messages "
+                "WHERE queue = ? AND state = ? "
+                "AND COALESCE(failed_at, created_at, 0) <= ?"
+                ")",
+                (queue, queue, _DEAD, cutoff),
             )
-            doomed = [
-                message_id
-                for message_id, raw in cursor.fetchall()
-                if _dead_record_age(_decode_record(raw), now=now) >= older_than
-            ]
-            for message_id in doomed:
-                record = self._get_record(connection, queue, message_id)
-                if record is not None:
-                    self._delete_dedupe_key_for_record(connection, record)
-                _ = connection.execute(
-                    "DELETE FROM queue_messages WHERE queue = ? AND id = ?",
-                    (queue, message_id),
-                )
-            return len(doomed)
+            cursor = connection.execute(
+                "DELETE FROM queue_messages "
+                "WHERE queue = ? AND state = ? "
+                "AND COALESCE(failed_at, created_at, 0) <= ?",
+                (queue, _DEAD, cutoff),
+            )
+            return cursor.rowcount
 
     def count_dead_letters_older_than(
         self, queue: str, *, older_than: float, now: float
     ) -> int:
+        cutoff = now - older_than
         with self._lock:
             cursor = self._connection.execute(
-                "SELECT record_json FROM queue_messages WHERE queue = ? AND state = ?",
-                (queue, _DEAD),
+                "SELECT COUNT(*) FROM queue_messages "
+                "WHERE queue = ? AND state = ? "
+                "AND COALESCE(failed_at, created_at, 0) <= ?",
+                (queue, _DEAD, cutoff),
             )
-            count = 0
-            for (raw,) in cursor.fetchall():
-                if _dead_record_age(_decode_record(raw), now=now) >= older_than:
-                    count += 1
-            return count
+            return int(cursor.fetchone()[0])
 
     def empty(self, queue: str, *, now: float) -> bool:
         return self.qsize(queue, now=now) == 0
@@ -1045,21 +1113,30 @@ class SQLiteQueueStore:
     ) -> None:
         connection.execute(
             "INSERT INTO queue_messages("
-            "queue, id, record_json, state, available_at, leased_until, sequence"
-            ") VALUES(?, ?, ?, ?, ?, ?, ?) "
+            "queue, id, record_json, state, created_at, available_at, "
+            "leased_until, leased_by, last_leased_at, failed_at, sequence"
+            ") VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(queue, id) DO UPDATE SET "
             "record_json = excluded.record_json, "
             "state = excluded.state, "
+            "created_at = excluded.created_at, "
             "available_at = excluded.available_at, "
             "leased_until = excluded.leased_until, "
+            "leased_by = excluded.leased_by, "
+            "last_leased_at = excluded.last_leased_at, "
+            "failed_at = excluded.failed_at, "
             "sequence = excluded.sequence",
             (
                 record.queue,
                 record.id,
                 _encode_record(record).decode("utf-8"),
                 record.state,
+                record.created_at,
                 record.available_at,
                 record.leased_until,
+                record.leased_by,
+                _last_leased_at(record),
+                record.failed_at,
                 sequence,
             ),
         )
@@ -1111,7 +1188,45 @@ class SQLiteQueueStore:
             )
             self._upsert_record(connection, updated, sequence=seq)
 
-    def _ensure_supported_schema_version(self) -> None:
+    def _migrate_sqlite_schema(self, current_version: int) -> None:
+        existing_columns = self._sqlite_columns("queue_messages")
+        columns_to_add = {
+            "created_at": "REAL",
+            "leased_by": "TEXT",
+            "last_leased_at": "REAL",
+            "failed_at": "REAL",
+        }
+        for column, definition in columns_to_add.items():
+            if column not in existing_columns:
+                self._connection.execute(
+                    f"ALTER TABLE queue_messages ADD COLUMN {column} {definition}"
+                )
+
+        if current_version < 2:
+            cursor = self._connection.execute(
+                "SELECT queue, id, record_json FROM queue_messages"
+            )
+            for queue, message_id, raw in cursor.fetchall():
+                record = _decode_record(raw)
+                self._connection.execute(
+                    "UPDATE queue_messages SET "
+                    "created_at = ?, leased_by = ?, last_leased_at = ?, failed_at = ? "
+                    "WHERE queue = ? AND id = ?",
+                    (
+                        record.created_at,
+                        record.leased_by,
+                        _last_leased_at(record),
+                        record.failed_at,
+                        queue,
+                        message_id,
+                    ),
+                )
+
+    def _sqlite_columns(self, table: str) -> set[str]:
+        cursor = self._connection.execute(f"PRAGMA table_info({table})")
+        return {str(row[1]) for row in cursor.fetchall()}
+
+    def _ensure_supported_schema_version(self) -> int:
         cursor = self._connection.execute("PRAGMA user_version")
         row = cursor.fetchone()
         current_version = 0 if row is None else int(row[0])
@@ -1120,6 +1235,7 @@ class SQLiteQueueStore:
                 "unsupported SQLite queue schema version: "
                 f"{current_version}; expected at most {_SQLITE_SCHEMA_VERSION}"
             )
+        return current_version
 
 
 class LMDBQueueStore:

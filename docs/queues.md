@@ -75,10 +75,12 @@ For shared queue-wide retry defaults, attach `retry_defaults` to the
 `PersistentQueue` and let workers inherit those Tenacity arguments unless the
 worker passes explicit overrides.
 
-`localqueue` treats validation-style failures such as `ValueError`, `TypeError`,
-`KeyError`, `IndexError`, and missing command execution as permanent failures.
-Those are dead-lettered even when the worker is configured to release on final
-failure.
+`localqueue` keeps built-in permanent-failure classification conservative.
+Import/name-resolution failures and missing command execution are dead-lettered
+even when the worker is configured to release on final failure. Runtime
+validation errors such as `ValueError`, `TypeError`, and `KeyError` follow the
+configured worker policy because they can represent either bad input or a
+recoverable transient condition.
 
 Change that behavior with `dead_letter_on_failure=False`. The older
 `dead_letter_on_exhaustion` name is still accepted as a compatibility alias.
@@ -404,7 +406,7 @@ SQLite files can keep running for a long time, but they still need normal file
 maintenance.
 
 The SQLite store keeps a schema version in `PRAGMA user_version`. Current
-releases accept older compatible versions and reject future versions they do
+releases migrate older compatible versions and reject future versions they do
 not know how to migrate yet.
 
 - Keep the main `*.sqlite3` file and its retry store together when you back up

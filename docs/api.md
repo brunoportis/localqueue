@@ -183,8 +183,8 @@ SQLite-backed queue store. This is the default backend. Records are serialized
 as versioned JSON; values must be JSON-serializable.
 
 The SQLite store tracks its on-disk schema version with `PRAGMA user_version`.
-Current releases accept older compatible versions and reject future versions
-until a migration is defined.
+Current releases migrate older compatible versions and reject future versions
+they do not know how to migrate yet.
 
 #### `LMDBQueueStore`
 
@@ -237,7 +237,7 @@ Both decorators require `key=` or `key_fn=` and accept the persistent options be
 | Option | Meaning |
 | --- | --- |
 | `store` | attempt store instance |
-| `store_path` | path for an LMDB attempt-store directory |
+| `store_path` | path for a SQLite attempt-store file |
 | `key` | fixed retry key |
 | `key_fn` | function that derives a retry key from the call |
 | `clear_on_success` | delete the attempt record after success |
@@ -341,6 +341,11 @@ Dataclass stored per retry key.
 | `first_attempt_at` | `float` | Unix timestamp of the first persisted attempt |
 | `exhausted` | `bool` | whether the retry budget is exhausted |
 
+#### `close_default_store(all_threads=False)`
+
+Close the default retry store for the current thread. Pass `all_threads=True`
+at process shutdown to close known factory-created default stores.
+
 #### `AttemptStore`
 
 Protocol for custom attempt stores.
@@ -365,8 +370,9 @@ store = LMDBAttemptStore("/var/lib/my-worker/retries")
 
 #### `SQLiteAttemptStore`
 
-SQLite-backed attempt store. This is the default backend and does not require LMDB's
-native dependency.
+SQLite-backed attempt store. This is the default backend and does not require
+LMDB's native dependency. Retention cleanup uses indexed `exhausted` and
+`first_attempt_at` columns instead of scanning every serialized retry record.
 
 ```python
 from localqueue.retry import SQLiteAttemptStore

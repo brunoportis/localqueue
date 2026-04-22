@@ -107,7 +107,7 @@ inspection tools for that local model, not a distributed liveness protocol.
   versions.
 
 The SQLite store keeps a schema version in `PRAGMA user_version`. Current
-releases accept older compatible versions and reject future versions they do
+releases migrate older compatible versions and reject future versions they do
 not know how to migrate yet. That keeps upgrades explicit and leaves a clear
 path for future schema changes.
 

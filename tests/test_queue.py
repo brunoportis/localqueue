@@ -539,7 +539,7 @@ class QueueTests(unittest.TestCase):
             connection.close()
 
             assert row is not None
-            self.assertEqual(int(row[0]), 1)
+            self.assertEqual(int(row[0]), 2)
 
     def test_sqlite_store_rejects_future_schema_versions(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1037,9 +1037,6 @@ class QueueTests(unittest.TestCase):
     def test_sqlite_store_reads_legacy_version_1_records(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store_path = f"{tmpdir}/queue.sqlite3"
-            store = SQLiteQueueStore(store_path)
-            store.close()
-
             legacy_record = {
                 "version": 1,
                 "id": "legacy-job",
@@ -1058,6 +1055,18 @@ class QueueTests(unittest.TestCase):
 
             connection = sqlite3.connect(store_path)
             connection.execute(
+                "CREATE TABLE queue_messages ("
+                "queue TEXT NOT NULL, "
+                "id TEXT NOT NULL, "
+                "record_json TEXT NOT NULL, "
+                "state TEXT NOT NULL, "
+                "available_at REAL NOT NULL, "
+                "leased_until REAL, "
+                "sequence INTEGER NOT NULL, "
+                "PRIMARY KEY(queue, id)"
+                ")"
+            )
+            connection.execute(
                 "INSERT INTO queue_messages("
                 "queue, id, record_json, state, available_at, leased_until, sequence"
                 ") VALUES(?, ?, ?, ?, ?, ?, ?)",
@@ -1071,6 +1080,7 @@ class QueueTests(unittest.TestCase):
                     1,
                 ),
             )
+            connection.execute("PRAGMA user_version = 1")
             connection.commit()
             connection.close()
 
@@ -1080,6 +1090,23 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(messages[0].id, "legacy-job")
             self.assertEqual(messages[0].attempt_history, [])
             self.assertEqual(messages[0].last_error, legacy_record["last_error"])
+            self.assertEqual(queue.count_dead_letters_older_than(older_than=50), 1)
+
+            connection = sqlite3.connect(store_path)
+            version_row = connection.execute("PRAGMA user_version").fetchone()
+            column_rows = connection.execute("PRAGMA table_info(queue_messages)")
+            columns = {str(row[1]) for row in column_rows.fetchall()}
+            migrated_row = connection.execute(
+                "SELECT created_at, failed_at, leased_by "
+                "FROM queue_messages WHERE queue = ? AND id = ?",
+                ("jobs", "legacy-job"),
+            ).fetchone()
+            connection.close()
+
+            assert version_row is not None
+            self.assertEqual(int(version_row[0]), 2)
+            self.assertTrue({"created_at", "failed_at", "leased_by"} <= columns)
+            self.assertEqual(migrated_row, (100.0, 120.0, "worker-a"))
 
     def test_lmdb_store_reclaims_expired_leases(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1555,7 +1582,7 @@ class QueueTests(unittest.TestCase):
 
         self.assertEqual(queue.qsize(), 1)
 
-    def test_worker_dead_letters_validation_errors_even_when_release_is_selected(
+    def test_worker_releases_validation_errors_when_release_is_selected(
         self,
     ) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())
@@ -1574,13 +1601,38 @@ class QueueTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             cast(Any, fail)()
 
+        self.assertEqual(queue.qsize(), 1)
+        message = queue.get_message()
+        self.assertEqual(message.value, "bad")
+        assert message.last_error is not None
+        self.assertEqual(message.last_error["type"], "ValueError")
+
+    def test_worker_dead_letters_import_errors_even_when_release_is_selected(
+        self,
+    ) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+        _ = queue.put("bad")
+
+        @persistent_worker(
+            queue,
+            store=MemoryAttemptStore(),
+            max_tries=1,
+            wait=lambda _: 0,
+            dead_letter_on_exhaustion=False,
+        )
+        def fail(value: str) -> None:
+            raise ImportError(value)
+
+        with self.assertRaises(ImportError):
+            cast(Any, fail)()
+
         self.assertTrue(queue.empty())
         dead_letters = queue.dead_letters()
         self.assertEqual(len(dead_letters), 1)
         assert dead_letters[0].last_error is not None
-        self.assertEqual(dead_letters[0].last_error["type"], "ValueError")
+        self.assertEqual(dead_letters[0].last_error["type"], "ImportError")
 
-    def test_async_worker_dead_letters_validation_errors_even_when_release_is_selected(
+    def test_async_worker_releases_validation_errors_when_release_is_selected(
         self,
     ) -> None:
         async def scenario() -> None:
@@ -1600,11 +1652,11 @@ class QueueTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 await cast(Any, fail)()
 
-            self.assertTrue(queue.empty())
-            dead_letters = queue.dead_letters()
-            self.assertEqual(len(dead_letters), 1)
-            assert dead_letters[0].last_error is not None
-            self.assertEqual(dead_letters[0].last_error["type"], "ValueError")
+            self.assertEqual(queue.qsize(), 1)
+            message = queue.get_message()
+            self.assertEqual(message.value, "bad")
+            assert message.last_error is not None
+            self.assertEqual(message.last_error["type"], "ValueError")
 
         asyncio.run(scenario())
 

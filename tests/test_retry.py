@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import sqlite3
 import tempfile
+import threading
 import unittest
 from typing import Any, cast
 from unittest import mock
@@ -17,6 +20,7 @@ from localqueue.retry import (
     PersistentRetrying,
     RetryRecord,
     SQLiteAttemptStore,
+    close_default_store,
     configure_default_store,
     configure_default_store_factory,
     idempotency_key_from_id,
@@ -30,6 +34,28 @@ from localqueue.retry.tenacity import _sqlite_default_store_factory
 
 class AbortRun(Exception):
     pass
+
+
+class CloseTrackingStore(MemoryAttemptStore):
+    closed: bool
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def json_dumps_record(record: RetryRecord) -> str:
+    return json.dumps(
+        {
+            "attempts": record.attempts,
+            "first_attempt_at": record.first_attempt_at,
+            "exhausted": record.exhausted,
+        },
+        separators=(",", ":"),
+    )
 
 
 class RetryTests(unittest.TestCase):
@@ -191,6 +217,55 @@ class RetryTests(unittest.TestCase):
         finally:
             configure_default_store_factory(_sqlite_default_store_factory)
             configure_default_store(None)
+
+    def test_default_store_can_be_closed_explicitly(self) -> None:
+        store = CloseTrackingStore()
+
+        configure_default_store(store)
+        try:
+            retryer = PersistentRetrying(
+                key="close-current", max_tries=1, wait=lambda _: 0
+            )
+            with self.assertRaises(RuntimeError):
+                _ = retryer(lambda: (_ for _ in ()).throw(RuntimeError("fail")))
+
+            close_default_store()
+
+            self.assertTrue(store.closed)
+        finally:
+            configure_default_store_factory(_sqlite_default_store_factory)
+            close_default_store(all_threads=True)
+
+    def test_default_store_can_close_factory_stores_across_threads(self) -> None:
+        stores: list[CloseTrackingStore] = []
+        stores_lock = threading.Lock()
+
+        def factory() -> CloseTrackingStore:
+            store = CloseTrackingStore()
+            with stores_lock:
+                stores.append(store)
+            return store
+
+        def run_retry(key: str) -> None:
+            retryer = PersistentRetrying(key=key, max_tries=1, wait=lambda _: 0)
+            with self.assertRaises(RuntimeError):
+                _ = retryer(lambda: (_ for _ in ()).throw(RuntimeError("fail")))
+
+        try:
+            configure_default_store_factory(factory)
+            run_retry("main-thread")
+            thread = threading.Thread(target=run_retry, args=("worker-thread",))
+            thread.start()
+            thread.join(timeout=2.0)
+            self.assertFalse(thread.is_alive())
+
+            close_default_store(all_threads=True)
+
+            self.assertEqual(len(stores), 2)
+            self.assertTrue(all(store.closed for store in stores))
+        finally:
+            configure_default_store_factory(_sqlite_default_store_factory)
+            close_default_store(all_threads=True)
 
     def test_attempts_resume_after_interrupted_run(self) -> None:
         store = MemoryAttemptStore()
@@ -567,6 +642,63 @@ class RetryTests(unittest.TestCase):
             self.assertIsNone(store.load("new"))
             store.close()
 
+    def test_sqlite_store_sets_schema_version_and_indexes_retention(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = f"{tmpdir}/retries.sqlite3"
+            store = SQLiteAttemptStore(path)
+            store.close()
+
+            connection = sqlite3.connect(path)
+            try:
+                version_row = connection.execute("PRAGMA user_version").fetchone()
+                columns = {
+                    str(row[1])
+                    for row in connection.execute("PRAGMA table_info(retry_records)")
+                }
+                indexes = {
+                    str(row[1])
+                    for row in connection.execute("PRAGMA index_list(retry_records)")
+                }
+            finally:
+                connection.close()
+
+            assert version_row is not None
+            self.assertEqual(int(version_row[0]), 1)
+            self.assertTrue({"first_attempt_at", "exhausted"} <= columns)
+            self.assertIn("retry_records_exhausted_idx", indexes)
+
+    def test_sqlite_store_migrates_legacy_records_for_retention(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = f"{tmpdir}/retries.sqlite3"
+            connection = sqlite3.connect(path)
+            legacy = RetryRecord(attempts=3, first_attempt_at=100.0, exhausted=True)
+            active = RetryRecord(attempts=1, first_attempt_at=100.0, exhausted=False)
+            connection.execute(
+                "CREATE TABLE retry_records (key TEXT PRIMARY KEY, record_json TEXT NOT NULL)"
+            )
+            connection.execute(
+                "INSERT INTO retry_records(key, record_json) VALUES(?, ?)",
+                ("old", json_dumps_record(legacy)),
+            )
+            connection.execute(
+                "INSERT INTO retry_records(key, record_json) VALUES(?, ?)",
+                ("active", json_dumps_record(active)),
+            )
+            connection.commit()
+            connection.close()
+
+            store = SQLiteAttemptStore(path)
+            try:
+                self.assertEqual(
+                    store.count_exhausted_older_than(older_than=50, now=200.0),
+                    1,
+                )
+                self.assertEqual(store.prune_exhausted(older_than=50, now=200.0), 1)
+                self.assertIsNone(store.load("old"))
+                self.assertIsNotNone(store.load("active"))
+            finally:
+                store.close()
+
     def test_lmdb_store_prunes_and_counts_exhausted_records(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store = LMDBAttemptStore(tmpdir)
@@ -588,9 +720,12 @@ class RetryTests(unittest.TestCase):
 
     def test_store_path_is_opened_lazily(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            with mock.patch("localqueue.retry.tenacity.LMDBAttemptStore") as store_cls:
+            path = f"{tmpdir}/retries.sqlite3"
+            with mock.patch(
+                "localqueue.retry.tenacity.SQLiteAttemptStore"
+            ) as store_cls:
                 retryer = PersistentRetrying(
-                    store_path=tmpdir,
+                    store_path=path,
                     key="job-lazy",
                     max_tries=1,
                     wait=lambda _: 0,  # pyright: ignore[reportUnknownLambdaType]
@@ -609,6 +744,28 @@ class RetryTests(unittest.TestCase):
 
                 store_cls.assert_called_once()
                 fake_store.save.assert_called_once()
+
+    def test_store_path_uses_sqlite_attempt_store(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = f"{tmpdir}/retries.sqlite3"
+            retryer = PersistentRetrying(
+                store_path=path,
+                key="job-sqlite-path",
+                max_tries=1,
+                wait=lambda _: 0,  # pyright: ignore[reportUnknownLambdaType]
+            )
+
+            with self.assertRaises(RuntimeError):
+                _ = retryer(
+                    lambda task_id: (_ for _ in ()).throw(RuntimeError(task_id)),  # pyright: ignore[reportUnknownArgumentType, reportUnknownLambdaType]
+                    "job-sqlite-path",
+                )
+
+            store = SQLiteAttemptStore(path)
+            try:
+                self.assertIsNotNone(store.load("job-sqlite-path"))
+            finally:
+                store.close()
 
     def test_retry_with_max_tries_overrides_existing_stop(self) -> None:
         store = MemoryAttemptStore()
