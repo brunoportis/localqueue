@@ -3,25 +3,26 @@
 [![Tests](https://github.com/brunoportis/localqueue/actions/workflows/tests.yml/badge.svg)](https://github.com/brunoportis/localqueue/actions/workflows/tests.yml)
 ![Coverage](https://img.shields.io/badge/coverage-%E2%89%A595%25-brightgreen)
 
-Durable queues for Python, with persistent retry state powered by Tenacity.
+Durable local queues for Python workers, with persistent retry state powered by
+Tenacity.
 
-`localqueue` provides two small building blocks for reliable local job
-processing:
+`localqueue` provides two small building blocks for reliable job processing in
+scripts, CLIs, cron jobs, and small worker processes:
 
 - a SQLite-backed queue with at-least-once delivery, leases, delayed delivery,
   acknowledgements, release, and dead-letter records
 - `localqueue.retry`: a Tenacity-backed retry adapter that persists retry
   budgets across process restarts
 
-Use the queue when you have jobs to deliver and process. Use the retry layer
-directly when you already have a delivery mechanism and only need durable retry
-state.
+Use the queue when one machine needs to persist jobs and process them later. Use
+the retry layer directly when another system already delivers work and you only
+need durable retry state.
 
 ## Why this exists
 
 Python has good retry tools and in-memory queues, but many worker scripts need a
-small durable queue without bringing in a broker. This project focuses on that
-local worker shape:
+small durable local queue without bringing in Celery, Redis, RabbitMQ, SQS, or
+another broker. This project focuses on that local worker shape:
 
 ```text
 enqueue job -> lease message -> run handler with retry -> ack or dead-letter
@@ -36,6 +37,13 @@ Tenacity already provides the right retry model:
 
 This library keeps that model and uses it as the retry engine for queue workers
 and lower-level retry wrappers.
+
+`localqueue` is not distributed coordination. The default store is a local
+SQLite file, so it is best suited to workers running on the same host or against
+the same local filesystem. If the workload needs multi-host scheduling, high
+write throughput, broker-managed retention, stream processing, or hard
+cross-service ordering guarantees, use a broker or database designed for that
+operating model.
 
 ## Install
 
@@ -213,12 +221,40 @@ else:
 - `dead_letter()` moves a message out of normal delivery
 - `requeue_dead()` returns a dead-letter message to ready delivery
 
+Handlers must be safe to run more than once. A worker can crash after an
+external side effect succeeds but before `ack()` is persisted, and the message
+will be delivered again after the lease expires. Store an idempotency key in the
+payload, pass it to external APIs when possible, or check your own database
+before repeating non-idempotent side effects.
+
 When a worker fails, `last_error` and `failed_at` are stored on the message so
 CLI failures and redelivered messages show why processing failed.
 Use `queue stats` when you need ready, delayed, inflight, dead-letter, and total
 counts instead of only ready messages. Use `queue inspect` to inspect one
 message by id, `queue dead` to list dead-letter messages, and
 `queue requeue-dead` to retry one after the failure cause is fixed.
+
+## Operational boundaries
+
+The default SQLite backend is intentionally simple. It is practical for local
+worker processes, small teams, development tools, and operational scripts, but
+it is not a drop-in replacement for a distributed queue.
+
+- Run producers and consumers where they can safely share the same SQLite file.
+- Use small JSON payloads; store large files externally and enqueue references.
+- Treat ordering as best effort once multiple producers or consumers are active.
+- Keep handlers idempotent because delivery is at least once.
+- Monitor `queue stats`, `queue dead`, and store file growth for long-running
+  deployments.
+- Back up the SQLite files if queued work or retry state matters after host
+  loss.
+- Move to Postgres, Redis, SQS, RabbitMQ, Kafka, or a similar system when you
+  need multi-host coordination, high concurrency, retention controls, metrics,
+  or managed operations.
+
+The [Operational maturity](docs/operational-maturity.md) checklist tracks the
+remaining hardening work before describing this as a mature production queue
+system.
 
 ## Persistent retry layer
 
@@ -269,7 +305,7 @@ For tests, use `MemoryQueueStore` and `MemoryAttemptStore`.
 - [Persistent queues](docs/queues.md): message lifecycle, workers, leases, delay, and dead-letter behavior.
 - [Persistent retries](docs/retries.md): decorators, low-level retryers, keys, stores, and exhaustion behavior.
 - [API reference](docs/api.md): exported classes, functions, and protocols.
-- [Operational maturity](docs/operational-maturity.md): checklist for future production-hardening work.
+- [Operational maturity](docs/operational-maturity.md): documented limits and checklist for future production-hardening work.
 - [Release checklist](docs/release.md): manual versioning, build, smoke test, and publish steps.
 
 ## License

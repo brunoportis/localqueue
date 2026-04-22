@@ -8,6 +8,10 @@ icon: lucide/inbox
 abstraction backed by SQLite by default and designed for durable, at-least-once
 delivery of Python values.
 
+It is local infrastructure: producers and consumers should run where they can
+share the same queue store safely. It is not a distributed broker and does not
+provide multi-host coordination.
+
 ## Creating a queue
 
 ```python
@@ -93,8 +97,8 @@ queue.task_done()
 `put_nowait()` and `get_nowait()` are available too. Blocking behavior and
 timeouts follow Python's `queue.Queue` conventions.
 
-Blocking consumers wait on an in-process condition and poll the LMDB store with
-a short sleep. This keeps multiple processes compatible with the same store, but
+Blocking consumers wait on an in-process condition and poll the store with a
+short sleep. This keeps multiple processes compatible with the same store, but
 there is no cross-process wake-up notification.
 
 ## Message lifecycle
@@ -136,6 +140,17 @@ failure on the message. Worker decorators and `localqueue queue process`
 record this automatically. The next `QueueMessage` includes `last_error` with
 the exception type, module, and message, plus `failed_at`.
 
+`localqueue` provides at-least-once delivery. A message can be processed more
+than once when a worker crashes, when a lease expires, or when a message is
+released for retry. Make handlers idempotent: include a stable job id in the
+payload, store side-effect completion in your own database, or pass idempotency
+keys to external APIs when they support them.
+
+There is an unavoidable failure window between a successful side effect and
+`ack()`. If a process sends an email, charges a card, writes to another service,
+or performs another non-idempotent action and then exits before the ack is
+stored, the message can be delivered again.
+
 ## Leases
 
 Leases protect against worker crashes. If a process leases a message and never acknowledges it, the message becomes ready again after `lease_timeout`.
@@ -151,8 +166,9 @@ dead-lettered, requeued, or reclaimed after lease expiration. The CLI exposes
 this as `--worker-id` on `queue pop` and `queue process`.
 
 `get_message()` reclaims expired leases before checking available messages. `qsize()`
-uses a read-only transaction in the LMDB store, so it may be briefly stale until a
-consumer calls `get_message()`.
+counts ready messages at the time of the store read. Expired leases are reclaimed
+by `get_message()`, so a message whose lease has expired may not appear as ready
+until a consumer attempts to lease work.
 
 ## Delayed delivery
 
@@ -212,6 +228,35 @@ queue = PersistentQueue("jobs", store=MemoryQueueStore())
 
 Persistent queue stores serialize records as versioned JSON. Queue values must be
 JSON-serializable.
+
+Prefer small payloads. Store large files, blobs, or generated artifacts outside
+the queue and enqueue references such as paths, object keys, or database ids.
+
+## Operational boundaries
+
+The SQLite backend is the default because it keeps local workers easy to deploy:
+one file persists ready, delayed, inflight, and dead-letter messages. That
+simplicity also defines the operating limits.
+
+- Use one shared local SQLite file for producers and consumers on the same host
+  or storage boundary.
+- Expect SQLite writes to serialize. Multiple lightweight producers and
+  consumers are fine for local workloads, but busy workers can contend on the
+  same queue file.
+- Test your own producer and consumer concurrency before relying on a single
+  SQLite file for busy workloads.
+- Treat message ordering as best effort when multiple producers or consumers are
+  active.
+- Use `lease_timeout` values longer than the normal handler runtime, and prefer
+  explicit `release(..., delay=...)` for planned retry delays.
+- Monitor `stats()`, `dead_letters()`, and retry records for long-running
+  processes.
+- Back up the queue and retry SQLite files if losing them would lose important
+  work. Restore by stopping workers and replacing both files from the same
+  backup point.
+- Move to Postgres, Redis, SQS, RabbitMQ, Kafka, or another broker when you need
+  multi-host coordination, high throughput, retention controls, built-in
+  metrics, or mature operational tooling.
 
 ## Capacity and cleanup
 

@@ -11,7 +11,7 @@ a local worker library.
 
 ## Concurrency and locking
 
-- [ ] Document practical SQLite concurrency limits for producers and workers.
+- [x] Document practical SQLite concurrency limits for producers and workers.
 - [ ] Add stress tests for multiple producer and consumer processes sharing one
   SQLite queue file.
 - [ ] Measure throughput and lock contention under WAL mode.
@@ -21,7 +21,7 @@ a local worker library.
 ## Distributed operation
 
 - [ ] Decide whether multi-host operation is in scope.
-- [ ] Add explicit documentation that the default model is local-file storage,
+- [x] Add explicit documentation that the default model is local-file storage,
   not distributed coordination.
 - [ ] Evaluate worker heartbeats beyond lease expiration.
 - [ ] Evaluate worker identity, liveness inspection, and stale-worker reporting.
@@ -29,13 +29,13 @@ a local worker library.
 
 ## Delivery semantics
 
-- [ ] Document at-least-once delivery prominently in the README and queue docs.
-- [ ] Add idempotency guidance for handlers.
-- [ ] Provide examples for idempotent job keys and external side effects.
+- [x] Document at-least-once delivery prominently in the README and queue docs.
+- [x] Add idempotency guidance for handlers.
+- [x] Provide examples for idempotent job keys and external side effects.
 - [ ] Evaluate deduplication support for enqueue operations.
-- [ ] Evaluate stronger ordering guarantees, or document why ordering is best
+- [x] Evaluate stronger ordering guarantees, or document why ordering is best
   effort under concurrency.
-- [ ] Document the failure window between a successful handler side effect and
+- [x] Document the failure window between a successful handler side effect and
   `ack()`.
 
 ## Retry and worker policies
@@ -61,7 +61,7 @@ a local worker library.
 ## Storage operations
 
 - [ ] Define a schema migration strategy for SQLite stores.
-- [ ] Document backup and restore expectations.
+- [x] Document backup and restore expectations.
 - [ ] Add maintenance guidance for `VACUUM`, WAL files, and long-lived stores.
 - [ ] Add retention or cleanup controls for dead-letter records.
 - [ ] Add cleanup controls for old retry records.
@@ -78,19 +78,19 @@ a local worker library.
 
 ## Guardrails against misuse
 
-- [ ] Document recommended payload size limits.
-- [ ] Add clearer lease-timeout guidance for slow jobs.
+- [x] Document recommended payload size limits.
+- [x] Add clearer lease-timeout guidance for slow jobs.
 - [ ] Add examples for safe shutdown and long-running workers.
 - [ ] Add health-check examples for worker processes.
 - [ ] Add configuration validation for risky combinations where possible.
-- [ ] Add warnings or docs for unbounded queue growth.
+- [x] Add warnings or docs for unbounded queue growth.
 
 ## Positioning
 
-- [ ] Keep public wording focused on durable local queues for scripts and small
+- [x] Keep public wording focused on durable local queues for scripts and small
   workers.
-- [ ] Avoid presenting the project as a replacement for distributed brokers.
+- [x] Avoid presenting the project as a replacement for distributed brokers.
 - [ ] Add comparison docs explaining when to use this library versus Celery, RQ,
   Dramatiq, SQS, RabbitMQ, Redis Streams, or Kafka.
-- [ ] Add production-readiness notes that distinguish supported use cases from
+- [x] Add production-readiness notes that distinguish supported use cases from
   future work.

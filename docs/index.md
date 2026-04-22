@@ -12,6 +12,12 @@ at-least-once job delivery. The lower-level `localqueue.retry` subdomain remains
 available when you only need durable retry budgets around an existing delivery
 mechanism.
 
+The default model is local-file storage, not distributed coordination. Use it
+for scripts, CLIs, cron jobs, development tools, and small worker processes that
+can share one local store. Use a broker or external database when jobs need
+multi-host scheduling, high write concurrency, managed retention, or stronger
+cross-service delivery guarantees.
+
 ## Install
 
 ```bash
@@ -87,6 +93,9 @@ retry budget, and acknowledges the message on success. If the process exits, the
 message lease and retry state survive in storage. Worker handlers receive
 `message.value` as their first argument.
 
+Delivery is at least once. Handlers should be idempotent because a worker can
+finish an external side effect and then crash before `ack()` is stored.
+
 ## Manual queue control
 
 Use the explicit message API when the handler needs to decide between
@@ -154,6 +163,17 @@ API, `store_path=` selects an optional LMDB attempt-store directory; use
 LMDB queue storage is still available through `localqueue[lmdb]` and
 explicit `LMDBQueueStore` usage.
 
+## Operational boundaries
+
+The queue store is deliberately small and local. Keep payloads JSON-serializable
+and reasonably small, monitor ready/inflight/dead-letter counts, and back up the
+SQLite files if queued work is important. Ordering is best effort under
+concurrent producers or consumers, and there is no worker heartbeat beyond lease
+expiration.
+
+See [Operational maturity](operational-maturity.md) for the current production
+readiness checklist and the hardening work still outside the library's scope.
+
 ## Which API to use
 
 | Need | Use |
@@ -168,6 +188,7 @@ explicit `LMDBQueueStore` usage.
 - [Persistent queues](queues.md): message lifecycle, leases, delayed delivery, and workers.
 - [Persistent retries](retries.md): decorators, low-level retryers, keys, stores, and exhaustion behavior.
 - [API reference](api.md): exported classes, functions, and protocols.
+- [Operational maturity](operational-maturity.md): supported local-worker model and future hardening checklist.
 - [Release checklist](release.md): manual versioning, build, smoke test, and publish steps.
 
 ## License
