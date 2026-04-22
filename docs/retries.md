@@ -222,7 +222,9 @@ except PersistentRetryExhausted as exc:
 
 ## Stores
 
-The default attempt store is SQLite at `./localqueue_retries.sqlite3`.
+The default attempt store is SQLite at
+`$XDG_DATA_HOME/localqueue/retries.sqlite3`. When `XDG_DATA_HOME` is not set,
+the fallback is `~/.local/share/localqueue/retries.sqlite3`.
 
 `store_path=` creates a SQLite attempt-store file, matching the default backend.
 

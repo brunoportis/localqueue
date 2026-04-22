@@ -1136,7 +1136,14 @@ class QueueTests(unittest.TestCase):
                 _ = store.enqueue("bad:name", "item", available_at=time.time())
 
     def test_default_sqlite_store_is_opened_lazily(self) -> None:
-        with mock.patch("localqueue.queue.SQLiteQueueStore") as store_cls:
+        default_path = Path("/tmp/localqueue/queue.sqlite3")
+        with (
+            mock.patch(
+                "localqueue.queue.default_queue_store_path",
+                return_value=default_path,
+            ),
+            mock.patch("localqueue.queue.SQLiteQueueStore") as store_cls,
+        ):
             queue = PersistentQueue("test")
             store_cls.assert_not_called()
 
@@ -1145,7 +1152,25 @@ class QueueTests(unittest.TestCase):
             store_cls.return_value = fake_store
 
             self.assertTrue(queue.empty())
-            store_cls.assert_called_once_with("localqueue_queue.sqlite3")
+            store_cls.assert_called_once_with(default_path)
+
+    def test_default_sqlite_store_uses_xdg_data_home(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict("os.environ", {"XDG_DATA_HOME": tmpdir}, clear=False):
+                queue = PersistentQueue("test")
+                message = queue.put("item")
+                expected_path = Path(tmpdir) / "localqueue" / "queue.sqlite3"
+
+                self.assertTrue(expected_path.is_file())
+                self.assertEqual(queue.get_nowait(), "item")
+                queue.task_done()
+                self.assertTrue(queue.empty())
+                self.assertIsNotNone(message.id)
+
+                store = queue._get_store()
+                close = getattr(store, "close", None)
+                if close is not None:
+                    close()
 
     def test_lmdb_lock_error_is_reworded(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1379,6 +1404,40 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(attempts["count"], 2)
         with self.assertRaises(Empty):
             _ = queue.get_message(block=False)
+
+    def test_worker_e2e_with_sqlite_queue_and_retry_store(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            queue_path = Path(tmpdir) / "queue.sqlite3"
+            retry_path = Path(tmpdir) / "retries.sqlite3"
+            queue_store = SQLiteQueueStore(queue_path)
+            retry_store = SQLiteAttemptStore(retry_path)
+            try:
+                queue = PersistentQueue("jobs", store=queue_store)
+                queued = queue.put({"id": "job-1"})
+                attempts = {"count": 0}
+
+                @persistent_worker(
+                    queue,
+                    store=retry_store,
+                    max_tries=2,
+                    wait=lambda _: 0,  # pyright: ignore[reportUnknownLambdaType]
+                )
+                def handle(payload: dict[str, str]) -> str:
+                    attempts["count"] += 1
+                    if attempts["count"] == 1:
+                        raise ConnectionError("temporary failure")
+                    return payload["id"]
+
+                self.assertEqual(cast(Any, handle)(), "job-1")
+                self.assertEqual(attempts["count"], 2)
+                self.assertTrue(queue.empty())
+                self.assertIsNone(retry_store.load(queued.id))
+                self.assertEqual(queue_store.qsize("jobs", now=time.time()), 0)
+                self.assertTrue(queue_path.is_file())
+                self.assertTrue(retry_path.is_file())
+            finally:
+                retry_store.close()
+                queue_store.close()
 
     def test_async_worker_retries_and_acks_on_success(self) -> None:
         async def scenario() -> None:

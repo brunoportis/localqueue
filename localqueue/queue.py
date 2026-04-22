@@ -7,6 +7,7 @@ from queue import Empty, Full
 from threading import Condition
 from typing import Any
 
+from .paths import default_queue_store_path
 from .store import QueueMessage, QueueStats, QueueStore, SQLiteQueueStore
 
 
@@ -18,7 +19,7 @@ class PersistentQueue:
     _store_path: Path | None
     retry_defaults: dict[str, Any]
     _condition: Condition
-    _unfinished: list[QueueMessage]
+    _unfinished: dict[str, QueueMessage]
 
     def __init__(
         self,
@@ -47,7 +48,7 @@ class PersistentQueue:
         self._store_path = Path(store_path) if store_path is not None else None
         self.retry_defaults = dict(retry_defaults or {})
         self._condition = Condition()
-        self._unfinished = []
+        self._unfinished = {}
 
     def put(
         self,
@@ -92,7 +93,7 @@ class PersistentQueue:
     ) -> Any:
         message = self.get_message(block=block, timeout=timeout, leased_by=leased_by)
         with self._condition:
-            self._unfinished.append(message)
+            self._unfinished[message.id] = message
         return message.value
 
     def get_nowait(self) -> Any:
@@ -176,7 +177,8 @@ class PersistentQueue:
         with self._condition:
             if not self._unfinished:
                 raise ValueError("task_done() called too many times")
-            message = self._unfinished.pop(0)
+            message_id = next(iter(self._unfinished))
+            message = self._unfinished.pop(message_id)
             _ = self._get_store().ack(self.name, message.id)
             _ = self._condition.notify_all()
 
@@ -247,17 +249,16 @@ class PersistentQueue:
 
     def _get_store(self) -> QueueStore:
         if self._store is None:
-            self._store = SQLiteQueueStore(
+            path = (
                 self._store_path
                 if self._store_path is not None
-                else "localqueue_queue.sqlite3"
+                else default_queue_store_path()
             )
+            self._store = SQLiteQueueStore(path)
         return self._store
 
     def _remove_unfinished(self, message_id: str) -> None:
-        self._unfinished = [
-            message for message in self._unfinished if message.id != message_id
-        ]
+        _ = self._unfinished.pop(message_id, None)
 
 
 def _deadline(timeout: float | None) -> float | None:

@@ -164,6 +164,34 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(_resolve_retry_store_path(None, {}), DEFAULT_RETRY_STORE_PATH)
 
+    def test_default_data_paths_use_xdg_data_home(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict("os.environ", {"XDG_DATA_HOME": tmpdir}, clear=False):
+                self.assertEqual(
+                    _resolve_store_path(None, {}),
+                    str(Path(tmpdir) / "localqueue" / "queue.sqlite3"),
+                )
+                self.assertEqual(
+                    _resolve_retry_store_path(None, {}),
+                    str(Path(tmpdir) / "localqueue" / "retries.sqlite3"),
+                )
+
+    def test_config_init_defaults_to_xdg_queue_store(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(
+                "os.environ",
+                {"XDG_CONFIG_HOME": tmpdir, "XDG_DATA_HOME": tmpdir},
+                clear=False,
+            ):
+                result = self._invoke(["config", "init"])
+                self.assertEqual(result.exit_code, 0, result.output)
+
+                config_path = Path(tmpdir) / "localqueue" / CONFIG_FILENAME
+                self.assertEqual(
+                    _load_config(yaml, config_path),
+                    {"store_path": str(Path(tmpdir) / "localqueue" / "queue.sqlite3")},
+                )
+
     def test_config_commands_manage_xdg_config_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.dict(

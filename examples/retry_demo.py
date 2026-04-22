@@ -229,8 +229,8 @@ def parse_args() -> argparse.Namespace:
     )
     _ = parser.add_argument(
         "--db-path",
-        default="localqueue_retries",
-        help="LMDB directory for persisted retry state",
+        default="examples/localqueue_retry_demo.sqlite3",
+        help="SQLite file for this demo's persisted retry state",
     )
     _ = parser.add_argument(
         "--email-failure-rate",
@@ -267,8 +267,8 @@ def main() -> int:
     except (AttemptStoreLockedError, QueueStoreLockedError) as exc:
         print(exc)
         print(
-            "Tip: rerun with --db-path pointing at a different directory, "
-            + "for example './localqueue_retries_demo_2'."
+            "Tip: rerun with --db-path pointing at a different file, "
+            + "for example 'examples/localqueue_retry_demo_2.sqlite3'."
         )
         return 1
     return 0

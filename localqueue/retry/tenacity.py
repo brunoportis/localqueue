@@ -21,6 +21,7 @@ from tenacity.retry import retry_if_exception_type
 from tenacity.stop import stop_after_attempt
 from tenacity.wait import wait_exponential
 
+from ..paths import default_retry_store_path
 from .store import AttemptStore, RetryRecord, SQLiteAttemptStore
 
 WrappedFn = TypeVar("WrappedFn", bound=Callable[..., Any])
@@ -31,7 +32,7 @@ _default_owned_stores_lock = threading.Lock()
 
 
 def _sqlite_default_store_factory() -> AttemptStore:
-    return SQLiteAttemptStore("localqueue_retries.sqlite3")
+    return SQLiteAttemptStore(default_retry_store_path())
 
 
 _default_store_factory: Callable[[], AttemptStore] = _sqlite_default_store_factory

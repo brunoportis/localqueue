@@ -23,7 +23,6 @@ from localqueue import PersistentQueue
 
 queue = PersistentQueue(
     "emails",
-    store_path="./localqueue_queue.sqlite3",
     lease_timeout=30.0,
     retry_defaults={
         "max_tries": 3,
@@ -334,7 +333,12 @@ Negative delays raise `ValueError`.
 
 ## Stores
 
-The default queue store is SQLite at `./localqueue_queue.sqlite3`.
+The default queue store is SQLite at
+`$XDG_DATA_HOME/localqueue/queue.sqlite3`. When `XDG_DATA_HOME` is not set,
+the fallback is `~/.local/share/localqueue/queue.sqlite3`.
+
+Pass `store_path=` when the queue file must live somewhere explicit, such as a
+service data directory.
 
 ```python
 from localqueue import PersistentQueue, SQLiteQueueStore

@@ -21,7 +21,7 @@ Constructor options:
 | --- | --- |
 | `name` | queue name inside the store |
 | `store` | queue store instance |
-| `store_path` | path for the default SQLite queue store |
+| `store_path` | explicit path for the SQLite queue store |
 | `lease_timeout` | seconds before an inflight message is redelivered |
 | `maxsize` | maximum number of ready messages; `0` means unbounded |
 | `retry_defaults` | Tenacity retry keyword defaults inherited by workers |
@@ -237,7 +237,7 @@ Both decorators require `key=` or `key_fn=` and accept the persistent options be
 | Option | Meaning |
 | --- | --- |
 | `store` | attempt store instance |
-| `store_path` | path for a SQLite attempt-store file |
+| `store_path` | explicit path for a SQLite attempt-store file |
 | `key` | fixed retry key |
 | `key_fn` | function that derives a retry key from the call |
 | `clear_on_success` | delete the attempt record after success |

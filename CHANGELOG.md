@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Use XDG data directories for default SQLite queue and retry store files.
+- Move the exploratory retry demo from `main.py` to `examples/retry_demo.py`.
+- Make `PersistentQueue` unfinished-message tracking O(1) by message id.
+- Add an end-to-end SQLite worker test covering queue ack and retry cleanup.
+- Make `store_path=` for persistent retries open a SQLite attempt store.
+- Tighten permanent-failure classification to avoid dead-lettering common
+  transient application errors such as `ValueError` and `KeyError`.
+- Optimize SQLite queue stats and dead-letter retention queries with
+  materialized columns and schema migration support.
+- Add indexed SQLite retry-store retention for exhausted records.
+
 ## 0.3.0
 
 - Add a concurrent SQLite stress test for multiple producers and consumers.

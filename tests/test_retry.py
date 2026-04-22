@@ -6,6 +6,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from pathlib import Path
 from typing import Any, cast
 from unittest import mock
 
@@ -235,6 +236,18 @@ class RetryTests(unittest.TestCase):
         finally:
             configure_default_store_factory(_sqlite_default_store_factory)
             close_default_store(all_threads=True)
+
+    def test_default_sqlite_store_factory_uses_xdg_data_home(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict("os.environ", {"XDG_DATA_HOME": tmpdir}, clear=False):
+                store = cast(SQLiteAttemptStore, _sqlite_default_store_factory())
+                expected_path = Path(tmpdir) / "localqueue" / "retries.sqlite3"
+                try:
+                    self.assertIsInstance(store, SQLiteAttemptStore)
+                    self.assertEqual(store.path, expected_path)
+                    self.assertTrue(expected_path.is_file())
+                finally:
+                    store.close()
 
     def test_default_store_can_close_factory_stores_across_threads(self) -> None:
         stores: list[CloseTrackingStore] = []

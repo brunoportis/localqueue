@@ -19,6 +19,7 @@ from typing import Any, Iterator
 from tenacity import wait_none
 
 from .failure import is_permanent_failure
+from .paths import default_queue_store_path, default_retry_store_path
 from .queue import PersistentQueue
 from .retry import (
     PersistentRetryExhausted,
@@ -34,8 +35,8 @@ from .worker import (
     _sleep_for_policy,
 )
 
-DEFAULT_STORE_PATH = "localqueue_queue.sqlite3"
-DEFAULT_RETRY_STORE_PATH = "localqueue_retries.sqlite3"
+DEFAULT_STORE_PATH = str(default_queue_store_path())
+DEFAULT_RETRY_STORE_PATH = str(default_retry_store_path())
 CONFIG_FILENAME = "config.yaml"
 
 
@@ -124,7 +125,7 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
 
     @config_app.command("init")
     def config_init(
-        store_path: str = typer.Option(DEFAULT_STORE_PATH, "--store-path"),
+        store_path: str | None = typer.Option(None, "--store-path"),
         retry_store_path: str | None = typer.Option(None, "--retry-store-path"),
         dead_letter_ttl_seconds: float | None = typer.Option(
             None, "--dead-letter-ttl-seconds", min=0.0
@@ -141,7 +142,7 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
             )
             raise typer.Exit(1)
 
-        new_config: dict[str, Any] = {"store_path": store_path}
+        new_config: dict[str, Any] = {"store_path": _resolve_store_path(store_path, {})}
         if retry_store_path is not None:
             new_config["retry_store_path"] = retry_store_path
         if dead_letter_ttl_seconds is not None:
@@ -1133,13 +1134,13 @@ def _write_config(yaml: Any, config: dict[str, Any], path: Path | None = None) -
 
 
 def _resolve_store_path(explicit: str | None, config: dict[str, Any]) -> str:
-    return str(explicit or config.get("store_path") or DEFAULT_STORE_PATH)
+    return str(explicit or config.get("store_path") or default_queue_store_path())
 
 
 def _resolve_retry_store_path(explicit: str | None, config: dict[str, Any]) -> str:
     value = explicit if explicit is not None else config.get("retry_store_path")
     if value is None:
-        return DEFAULT_RETRY_STORE_PATH
+        return str(default_retry_store_path())
     return str(value)
 
 
