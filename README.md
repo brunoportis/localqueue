@@ -93,7 +93,9 @@ localqueue queue stats emails
 localqueue queue stats emails --watch --interval 1
 localqueue queue inspect emails <message-id>
 localqueue queue dead emails
+localqueue queue dead emails --watch --interval 1
 localqueue queue requeue-dead emails <message-id>
+localqueue queue requeue-dead emails --all
 localqueue queue pop emails --worker-id worker-1
 localqueue queue ack emails <message-id>
 localqueue queue exec emails -- python scripts/send_email.py
@@ -127,6 +129,7 @@ retry, release, and dead-letter rules as `queue process`.
 localqueue queue exec emails -- python scripts/send_email.py
 localqueue queue exec webhooks -- curl -X POST https://example.com/hook -d @-
 localqueue queue exec emails -- sh -c 'jq -r .to | xargs -I{} curl https://example.com/{}'
+localqueue queue exec webhooks -- sh examples/process_webhook.sh
 ```
 
 Command output is captured so the CLI can keep printing its own JSON status.
@@ -252,6 +255,8 @@ message by id, `queue dead` to list dead-letter messages, and
 `queue requeue-dead` to retry one after the failure cause is fixed.
 Use `queue stats --watch` to print those counts repeatedly while local workers
 are running.
+Use `queue dead --watch` to keep an eye on newly failed jobs, and
+`queue requeue-dead --all` once you have fixed the underlying issue.
 
 ## Operational boundaries
 

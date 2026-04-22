@@ -70,6 +70,21 @@ Watch queue counts while workers run:
 localqueue queue stats emails --watch --interval 1
 ```
 
+For shell workers, `examples/process_webhook.sh` shows the same pattern with
+`jq` and `curl`.
+
+Inspect dead letters while workers are running:
+
+```bash
+localqueue queue dead emails --watch --interval 2
+```
+
+After fixing a problem, requeue all dead letters with:
+
+```bash
+localqueue queue requeue-dead emails --all
+```
+
 For a local smoke test, enqueue one job and process it with the bundled example
 handler:
 

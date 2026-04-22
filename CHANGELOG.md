@@ -3,6 +3,10 @@
 ## Unreleased
 
 - Add `queue stats --watch` for monitoring queue counts while workers run.
+- Add `queue dead --watch` for repeatedly listing dead letters.
+- Add `queue requeue-dead --all` for bulk recovery after a fix.
+- Add structured `command not found` handling for `queue exec`.
+- Add `examples/process_webhook.sh` as a shell/curl worker example.
 
 ## 0.1.1
 

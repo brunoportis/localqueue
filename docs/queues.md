@@ -91,6 +91,7 @@ external command instead of an importable Python function.
 localqueue queue exec jobs -- python scripts/process_job.py
 localqueue queue exec webhooks -- curl -X POST https://example.com/hook -d @-
 localqueue queue exec jobs -- sh -c 'jq -r .id | xargs -I{} ./process-job {}'
+localqueue queue exec webhooks -- sh examples/process_webhook.sh
 ```
 
 The command receives `message.value` on stdin as JSON. `localqueue` captures the
@@ -111,6 +112,8 @@ Command failures are stored in `last_error` with structured fields:
 
 Commands are executed without an implicit shell. Use `sh -c` explicitly when you
 want pipes, redirects, shell expansion, or multiple commands.
+See `examples/process_webhook.sh` for a shell worker that reads JSON, extracts
+fields with `jq`, and posts them with `curl`.
 
 ## Queue-style usage
 
@@ -325,3 +328,16 @@ localqueue queue stats jobs --watch --interval 1
 
 Each sample is printed as JSON with `ready`, `delayed`, `inflight`, `dead`, and
 `total` counts. Stop the watch with `Ctrl-C`.
+
+Use `queue dead --watch` to keep an eye on recent failures:
+
+```bash
+localqueue queue dead jobs --watch --interval 2
+```
+
+When the underlying problem is fixed, `queue requeue-dead --all` moves every
+dead letter back to ready delivery:
+
+```bash
+localqueue queue requeue-dead jobs --all
+```

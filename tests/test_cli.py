@@ -28,6 +28,7 @@ from localqueue.cli import (
     _load_callable,
     _load_config,
     _parse_json,
+    _print_dead_letters,
     _print_queue_stats,
     _process_message,
     _process_queue_messages,
@@ -381,6 +382,30 @@ class CliTests(unittest.TestCase):
             self.assertEqual(missing_requeue.exit_code, 1)
             self.assertIn("dead-letter message not found", missing_requeue.output)
 
+    def test_print_dead_letters_watch_stops_on_shutdown(self) -> None:
+        queue = PersistentQueue("emails", store=MemoryQueueStore())
+        _ = queue.put({"to": "user@example.com"})
+        message = queue.get_message()
+        self.assertTrue(queue.dead_letter(message, error=RuntimeError("bad")))
+        console = _JsonConsole()
+        shutdown = _ShutdownState()
+
+        def request_shutdown(_interval: float) -> None:
+            shutdown.requested = True
+
+        with mock.patch("time.sleep", side_effect=request_shutdown):
+            _print_dead_letters(
+                queue,
+                console=console,
+                limit=None,
+                watch=True,
+                interval=0.001,
+                shutdown=shutdown,
+            )
+
+        self.assertEqual(len(console.values), 1)
+        self.assertEqual(console.values[0][0]["id"], message.id)
+
     def test_queue_process_command_acks_successful_handler(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
@@ -497,6 +522,40 @@ class CliTests(unittest.TestCase):
             self.assertEqual(result.exit_code, 1)
             self.assertIn("module:function", result.output)
 
+    def test_queue_exec_reports_missing_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_path = str(Path(tmpdir) / "queues")
+            retry_store_path = str(Path(tmpdir) / "retries.sqlite3")
+            queue = PersistentQueue("emails", store_path=store_path)
+            message = queue.put({"to": "user@example.com"})
+
+            result = self._invoke(
+                [
+                    "queue",
+                    "exec",
+                    "emails",
+                    "--store-path",
+                    store_path,
+                    "--retry-store-path",
+                    retry_store_path,
+                    "--max-tries",
+                    "1",
+                    "--",
+                    "definitely-not-a-real-command-123",
+                ]
+            )
+
+            self.assertEqual(result.exit_code, 1)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["id"], message.id)
+            self.assertEqual(payload["state"], "failed")
+            self.assertEqual(payload["last_error"]["type"], "_CommandNotFoundError")
+            self.assertEqual(payload["last_error"]["exit_code"], 127)
+            self.assertEqual(
+                payload["last_error"]["command"], ["definitely-not-a-real-command-123"]
+            )
+            self.assertIn("command not found", payload["last_error"]["message"])
+
     def test_command_handler_passes_message_value_as_json_stdin(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
@@ -610,6 +669,48 @@ class CliTests(unittest.TestCase):
             assert dead_letters[0].last_error is not None
             self.assertEqual(dead_letters[0].last_error["exit_code"], 7)
             self.assertEqual(dead_letters[0].last_error["stderr"], "cannot deliver")
+
+    def test_queue_requeue_dead_all_moves_every_dead_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_path = str(Path(tmpdir) / "queues")
+            persistent_queue = PersistentQueue("emails", store_path=store_path)
+            first = persistent_queue.put({"to": "one@example.com"})
+            second = persistent_queue.put({"to": "two@example.com"})
+            self.assertTrue(
+                persistent_queue.dead_letter(
+                    persistent_queue.get_message(), error=RuntimeError("bad 1")
+                )
+            )
+            self.assertTrue(
+                persistent_queue.dead_letter(
+                    persistent_queue.get_message(), error=RuntimeError("bad 2")
+                )
+            )
+
+            result = self._invoke(
+                [
+                    "queue",
+                    "requeue-dead",
+                    "emails",
+                    "--all",
+                    "--store-path",
+                    store_path,
+                ]
+            )
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertEqual(json.loads(result.stdout), {"requeued": 2})
+            fresh_queue = PersistentQueue("emails", store_path=store_path)
+            self.assertEqual(fresh_queue.dead_letters(), [])
+            self.assertEqual(fresh_queue.qsize(), 2)
+            first_message = fresh_queue.inspect(first.id)
+            second_message = fresh_queue.inspect(second.id)
+            self.assertIsNotNone(first_message)
+            self.assertIsNotNone(second_message)
+            assert first_message is not None
+            assert second_message is not None
+            self.assertEqual(first_message.state, "ready")
+            self.assertEqual(second_message.state, "ready")
 
     def test_process_message_acks_successful_handler(self) -> None:
         queue = PersistentQueue("emails", store=MemoryQueueStore())

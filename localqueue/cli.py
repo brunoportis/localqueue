@@ -67,6 +67,17 @@ class _CommandExecutionError(RuntimeError):
         )
 
 
+class _CommandNotFoundError(_CommandExecutionError):
+    def __init__(self, command: list[str]) -> None:
+        super().__init__(
+            command,
+            exit_code=127,
+            stdout="",
+            stderr="command not found",
+        )
+        self.args = (f"command not found: {_format_command(command)}",)
+
+
 def main(args: list[str] | None = None) -> None:
     try:
         from rich.console import Console
@@ -269,20 +280,47 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         queue: str,
         store_path: str | None = typer.Option(None, "--store-path"),
         limit: int | None = typer.Option(None, "--limit", min=0),
+        watch: bool = typer.Option(False, "--watch"),
+        interval: float = typer.Option(1.0, "--interval", min=0.001),
     ) -> None:
-        messages = _queue(queue, _resolve_store_path(store_path, config)).dead_letters(
-            limit=limit
-        )
-        _print_json(console, [_message_payload(message) for message in messages])
+        persistent_queue = _queue(queue, _resolve_store_path(store_path, config))
+        with _shutdown_state() as shutdown:
+            _print_dead_letters(
+                persistent_queue,
+                console=console,
+                limit=limit,
+                watch=watch,
+                interval=interval,
+                shutdown=shutdown,
+            )
 
     @queue_app.command("requeue-dead")
     def queue_requeue_dead(
         queue: str,
-        message_id: str,
+        message_id: str | None = typer.Argument(None),
         store_path: str | None = typer.Option(None, "--store-path"),
         delay: float = typer.Option(0.0, "--delay", min=0.0),
+        all_: bool = typer.Option(False, "--all"),
     ) -> None:
         persistent_queue = _queue(queue, _resolve_store_path(store_path, config))
+        if all_:
+            if message_id is not None:
+                err_console.print(
+                    "[red]pass either a message id or --all, not both[/red]"
+                )
+                raise typer.Exit(1)
+            messages = persistent_queue.dead_letters()
+            requeued = 0
+            for message in messages:
+                if persistent_queue.requeue_dead(message, delay=delay):
+                    requeued += 1
+            _print_json(console, {"requeued": requeued})
+            return
+        if message_id is None:
+            err_console.print(
+                "[red]pass a message id or use --all to requeue dead letters[/red]"
+            )
+            raise typer.Exit(1)
         message = QueueMessage(id=message_id, value=None, queue=queue)
         if not persistent_queue.requeue_dead(message, delay=delay):
             err_console.print(f"[red]dead-letter message not found:[/red] {message_id}")
@@ -559,6 +597,27 @@ def _process_queue_messages(
     return 0
 
 
+def _print_dead_letters(
+    queue: PersistentQueue,
+    *,
+    console: Any,
+    limit: int | None,
+    watch: bool,
+    interval: float,
+    shutdown: _ShutdownState,
+) -> None:
+    while True:
+        messages = queue.dead_letters(limit=limit)
+        _print_json(console, [_message_payload(message) for message in messages])
+        if not watch:
+            return
+        if shutdown.requested:
+            return
+        time.sleep(interval)
+        if shutdown.requested:
+            return
+
+
 def _print_queue_stats(
     queue: PersistentQueue,
     *,
@@ -720,13 +779,16 @@ def _command_handler(command: list[str]) -> Callable[[Any], None]:
         raise ValueError("command cannot be empty")
 
     def run_command(value: Any) -> None:
-        completed = subprocess.run(
-            command,
-            input=_json_dumps(value) + "\n",
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                input=_json_dumps(value) + "\n",
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise _CommandNotFoundError(command) from exc
         if completed.returncode != 0:
             raise _CommandExecutionError(
                 command,
