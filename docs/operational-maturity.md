@@ -103,9 +103,9 @@ That means measuring the current ceiling before promising more:
 
 ## API stability
 
-- [ ] Decide which APIs are stable before a `1.0` release.
-- [ ] Document compatibility aliases and their planned lifetime.
-- [ ] Add deprecation policy.
+- [x] Decide which APIs are stable before a `1.0` release.
+- [x] Document compatibility aliases and their planned lifetime.
+- [x] Add deprecation policy.
 - [ ] Increase coverage margin above the current 95% gate.
 - [ ] Keep docs aligned with defaults for SQLite, optional LMDB, and CLI extras.
 

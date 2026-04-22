@@ -67,6 +67,7 @@ See [Compare](compare.md) for a short decision guide.
 
 - [Persistent queues](queues.md)
 - [Persistent retries](retries.md)
+- [Stability](stability.md)
 - [Compare](compare.md)
 - [API reference](api.md)
 - [Operational maturity](operational-maturity.md)
