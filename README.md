@@ -80,6 +80,8 @@ used by `queue process` to persist retry attempts.
 The CLI starts with queue management commands. Values are JSON by default.
 For scripting, `queue inspect`, `queue stats`, and `queue dead` accept
 `--json` and print machine-readable output.
+`queue dead` also accepts filters such as `--min-attempts`, `--max-attempts`,
+`--error-contains`, `--failed-within`, and `--summary` for quick triage.
 
 ```bash
 localqueue queue add emails --value '{"to":"user@example.com"}'
@@ -89,6 +91,8 @@ localqueue queue stats emails
 localqueue queue stats emails --watch --interval 1
 localqueue queue inspect emails <message-id>
 localqueue queue dead emails
+localqueue queue dead emails --summary
+localqueue queue dead emails --min-attempts 3 --error-contains timeout
 localqueue queue dead emails --watch --interval 1
 localqueue queue requeue-dead emails <message-id>
 localqueue queue requeue-dead emails --all
@@ -275,6 +279,12 @@ it is not a drop-in replacement for a distributed queue.
 The [Operational maturity](docs/operational-maturity.md) checklist tracks the
 remaining hardening work before describing this as a mature production queue
 system.
+
+For a quick sense of the current ceiling, run
+`examples/sqlite_concurrency_benchmark.py` against your own host and storage.
+In a small local benchmark here, the queue stayed in the low thousands of
+messages per second and remained stable under a few producers and consumers,
+but that is a local measurement, not a guarantee.
 
 ## Persistent retry layer
 

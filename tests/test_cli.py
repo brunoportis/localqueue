@@ -311,6 +311,88 @@ class CliTests(unittest.TestCase):
             self.assertEqual(dead_list_result.exit_code, 0, dead_list_result.output)
             self.assertEqual(json.loads(dead_list_result.stdout)[0]["id"], added["id"])
 
+            filtered_result = self._invoke(
+                [
+                    "queue",
+                    "dead",
+                    "emails",
+                    "--store-path",
+                    store_path,
+                    "--min-attempts",
+                    "1",
+                ]
+            )
+            self.assertEqual(filtered_result.exit_code, 0, filtered_result.output)
+            self.assertEqual(json.loads(filtered_result.stdout)[0]["id"], added["id"])
+
+            summary_result = self._invoke(
+                [
+                    "queue",
+                    "dead",
+                    "emails",
+                    "--store-path",
+                    store_path,
+                    "--summary",
+                ]
+            )
+            self.assertEqual(summary_result.exit_code, 0, summary_result.output)
+            summary = json.loads(summary_result.stdout)
+            self.assertEqual(summary["count"], 1)
+            self.assertEqual(summary["by_error_type"]["None"], 1)
+
+    def test_queue_dead_filters_by_error_text_and_failed_age(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_path = str(Path(tmpdir) / "queues")
+            queue = PersistentQueue("emails", store_path=store_path)
+            _ = queue.put({"to": "user@example.com"})
+            message = queue.get_message()
+            self.assertTrue(queue.dead_letter(message, error=RuntimeError("mail timeout")))
+
+            result = self._invoke(
+                [
+                    "queue",
+                    "dead",
+                    "emails",
+                    "--store-path",
+                    store_path,
+                    "--error-contains",
+                    "timeout",
+                ]
+            )
+            self.assertEqual(result.exit_code, 0, result.output)
+            payload = json.loads(result.stdout)
+            self.assertEqual(len(payload), 1)
+            self.assertEqual(payload[0]["id"], message.id)
+
+            summary_result = self._invoke(
+                [
+                    "queue",
+                    "dead",
+                    "emails",
+                    "--store-path",
+                    store_path,
+                    "--summary",
+                ]
+            )
+            self.assertEqual(summary_result.exit_code, 0, summary_result.output)
+            summary = json.loads(summary_result.stdout)
+            self.assertEqual(summary["count"], 1)
+            self.assertEqual(summary["by_error_type"]["RuntimeError"], 1)
+
+            aged_result = self._invoke(
+                [
+                    "queue",
+                    "dead",
+                    "emails",
+                    "--store-path",
+                    store_path,
+                    "--failed-within",
+                    "0",
+                ]
+            )
+            self.assertEqual(aged_result.exit_code, 0, aged_result.output)
+            self.assertEqual(json.loads(aged_result.stdout), [])
+
             purge_result = self._invoke(
                 ["queue", "purge", "emails", "--store-path", store_path]
             )
@@ -410,6 +492,11 @@ class CliTests(unittest.TestCase):
                 watch=True,
                 interval=0.001,
                 shutdown=shutdown,
+                summary=False,
+                min_attempts=None,
+                max_attempts=None,
+                error_contains=None,
+                failed_within=None,
             )
 
         self.assertEqual(len(console.values), 1)

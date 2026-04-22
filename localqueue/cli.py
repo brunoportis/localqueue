@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections import Counter
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -285,6 +286,13 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         watch: bool = typer.Option(False, "--watch"),
         interval: float = typer.Option(1.0, "--interval", min=0.001),
         json_output: bool = typer.Option(False, "--json"),
+        summary: bool = typer.Option(False, "--summary"),
+        min_attempts: int | None = typer.Option(None, "--min-attempts", min=0),
+        max_attempts: int | None = typer.Option(None, "--max-attempts", min=0),
+        error_contains: str | None = typer.Option(None, "--error-contains"),
+        failed_within: float | None = typer.Option(
+            None, "--failed-within", min=0.0
+        ),
     ) -> None:
         persistent_queue = _queue(queue, _resolve_store_path(store_path, config))
         with _shutdown_state() as shutdown:
@@ -295,6 +303,11 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
                 watch=watch,
                 interval=interval,
                 shutdown=shutdown,
+                summary=summary,
+                min_attempts=min_attempts,
+                max_attempts=max_attempts,
+                error_contains=error_contains,
+                failed_within=failed_within,
             )
 
     @queue_app.command("requeue-dead")
@@ -608,10 +621,24 @@ def _print_dead_letters(
     watch: bool,
     interval: float,
     shutdown: _ShutdownState,
+    summary: bool,
+    min_attempts: int | None,
+    max_attempts: int | None,
+    error_contains: str | None,
+    failed_within: float | None,
 ) -> None:
     while True:
-        messages = queue.dead_letters(limit=limit)
-        _print_json(console, [_message_payload(message) for message in messages])
+        messages = _filter_dead_letters(
+            queue.dead_letters(limit=limit),
+            min_attempts=min_attempts,
+            max_attempts=max_attempts,
+            error_contains=error_contains,
+            failed_within=failed_within,
+        )
+        if summary:
+            _print_json(console, _dead_letter_summary(messages))
+        else:
+            _print_json(console, [_message_payload(message) for message in messages])
         if not watch:
             return
         if shutdown.requested:
@@ -821,6 +848,70 @@ def _message_payload(message: QueueMessage) -> dict[str, Any]:
 
 def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _filter_dead_letters(
+    messages: list[QueueMessage],
+    *,
+    min_attempts: int | None,
+    max_attempts: int | None,
+    error_contains: str | None,
+    failed_within: float | None,
+) -> list[QueueMessage]:
+    now = time.time()
+    error_filter = error_contains.lower() if error_contains is not None else None
+    cutoff = None if failed_within is None else now - failed_within
+    filtered: list[QueueMessage] = []
+    for message in messages:
+        if min_attempts is not None and message.attempts < min_attempts:
+            continue
+        if max_attempts is not None and message.attempts > max_attempts:
+            continue
+        if cutoff is not None:
+            failed_at = message.failed_at
+            if failed_at is None or failed_at < cutoff:
+                continue
+        if error_filter is not None:
+            last_error = message.last_error or {}
+            haystack = " ".join(
+                str(part)
+                for part in (
+                    last_error.get("type"),
+                    last_error.get("message"),
+                    last_error.get("command"),
+                    last_error.get("stderr"),
+                )
+                if part is not None
+            ).lower()
+            if error_filter not in haystack:
+                continue
+        filtered.append(message)
+    return filtered
+
+
+def _dead_letter_summary(messages: list[QueueMessage]) -> dict[str, Any]:
+    by_error_type = Counter[str]()
+    by_attempts = Counter[str]()
+    failed_ats: list[float] = []
+    for message in messages:
+        error_type = "None"
+        if message.last_error is not None:
+            error_type = str(message.last_error.get("type") or "None")
+        by_error_type[error_type] += 1
+        by_attempts[str(message.attempts)] += 1
+        if message.failed_at is not None:
+            failed_ats.append(message.failed_at)
+    summary: dict[str, Any] = {
+        "count": len(messages),
+        "by_error_type": dict(sorted(by_error_type.items())),
+        "by_attempts": dict(sorted(by_attempts.items(), key=lambda item: int(item[0]))),
+    }
+    if failed_ats:
+        summary["failed_at"] = {
+            "oldest": min(failed_ats),
+            "newest": max(failed_ats),
+        }
+    return summary
 
 
 def _format_command(command: list[str]) -> str:

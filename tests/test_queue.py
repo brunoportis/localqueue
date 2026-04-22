@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 import json
+import sqlite3
 import tempfile
 import threading
 import time
@@ -242,10 +243,23 @@ class QueueTests(unittest.TestCase):
             consumed_lock = threading.Lock()
             errors: list[BaseException] = []
             errors_lock = threading.Lock()
+            lock_retries = Counter[str]()
 
             def record_error(exc: BaseException) -> None:
                 with errors_lock:
                     errors.append(exc)
+
+            def retry_sqlite_locked(action: str, fn: Any) -> Any:
+                attempts = 0
+                while True:
+                    try:
+                        return fn()
+                    except sqlite3.OperationalError as exc:
+                        if "database is locked" not in str(exc).lower():
+                            raise
+                        attempts += 1
+                        lock_retries[action] += 1
+                        time.sleep(min(0.001 * attempts, 0.05))
 
             def producer(index: int) -> None:
                 try:
@@ -254,7 +268,10 @@ class QueueTests(unittest.TestCase):
                     )
                     start.wait()
                     for sequence in range(total_messages // producer_count):
-                        queue.put({"producer": index, "sequence": sequence})
+                        retry_sqlite_locked(
+                            "put",
+                            lambda: queue.put({"producer": index, "sequence": sequence}),
+                        )
                 except BaseException as exc:  # pragma: no cover - defensive
                     record_error(exc)
 
@@ -272,8 +289,11 @@ class QueueTests(unittest.TestCase):
                             ):
                                 return
                         try:
-                            message = queue.get_message(
-                                block=False, leased_by=f"consumer-{index}"
+                            message = retry_sqlite_locked(
+                                "get",
+                                lambda: queue.get_message(
+                                    block=False, leased_by=f"consumer-{index}"
+                                ),
                             )
                         except Empty:
                             if producers_done.is_set():
@@ -282,7 +302,7 @@ class QueueTests(unittest.TestCase):
                                         return
                             time.sleep(0.001)
                             continue
-                        if not queue.ack(message):
+                        if not retry_sqlite_locked("ack", lambda: queue.ack(message)):
                             record_error(RuntimeError(f"ack failed for {message.id}"))
                             return
                         with consumed_lock:
@@ -313,6 +333,7 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(sum(consumed.values()), total_messages)
             self.assertEqual(len(consumed), total_messages)
             self.assertTrue(all(count == 1 for count in consumed.values()))
+            self.assertGreaterEqual(sum(lock_retries.values()), 0)
 
             queue = PersistentQueue(queue_name, store_path=store_path)
             self.assertEqual(

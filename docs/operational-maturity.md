@@ -23,6 +23,10 @@ That means measuring the current ceiling before promising more:
 - benchmark WAL contention and queue throughput with concurrent processes
 - use `examples/sqlite_concurrency_benchmark.py` to get a repeatable local
   throughput snapshot
+- a quick local run on the development machine stayed in the low thousands of
+  messages per second and handled a few producers and consumers without failing
+  the queue, which is useful as a local ceiling check but not a production
+  guarantee
 - document the practical limits for a single host and a single SQLite file
 - keep ordering language explicit: best effort under concurrency, not strict
   global ordering

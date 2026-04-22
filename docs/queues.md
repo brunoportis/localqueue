@@ -335,6 +335,10 @@ Use `queue dead --watch` to keep an eye on recent failures:
 localqueue queue dead jobs --watch --interval 2
 ```
 
+Use `queue dead --summary` when you want a quick aggregate view, and combine it
+with `--min-attempts`, `--max-attempts`, `--error-contains`, or
+`--failed-within` when the dead-letter list is noisy.
+
 When the underlying problem is fixed, `queue requeue-dead --all` moves every
 dead letter back to ready delivery:
 
