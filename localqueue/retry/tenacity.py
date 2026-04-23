@@ -23,7 +23,7 @@ from tenacity.stop import stop_after_attempt
 from tenacity.wait import wait_exponential
 
 from ..paths import default_retry_store_path
-from .stores import AttemptStore, RetryRecord, SQLiteAttemptStore
+from .store import AttemptStore, RetryRecord, SQLiteAttemptStore
 
 WrappedFn = TypeVar("WrappedFn", bound=Callable[..., Any])
 _UNSET = object()
