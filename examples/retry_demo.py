@@ -1,7 +1,7 @@
 import argparse
-import random
 import time
 from queue import Empty
+from secrets import SystemRandom
 from typing import Callable
 from typing import Any
 
@@ -22,6 +22,7 @@ WorkerJobFn = Callable[[str, dict[str, str]], None]
 DEFAULT_EMAIL_FAILURE_RATE = 0.8
 DEFAULT_VIDEO_FAILURE_RATE = 0.7
 DEFAULT_WORKER_FAILURE_RATE = 0.65
+DEMO_RANDOM = SystemRandom()
 
 
 def build_fast_examples(
@@ -38,7 +39,7 @@ def build_fast_examples(
     )
     def send_email_fast(task_id: str, email_address: str) -> None:
         print(f"[send_email_fast] task={task_id} email={email_address}")
-        if random.random() < email_failure_rate:
+        if DEMO_RANDOM.random() < email_failure_rate:
             raise ConnectionError("mail server down")
         print(f"[send_email_fast] task={task_id} sent")
 
@@ -50,7 +51,7 @@ def build_fast_examples(
     )
     def process_video_fast(task_id: str, file_path: str) -> None:
         print(f"[process_video_fast] task={task_id} file={file_path}")
-        if random.random() < video_failure_rate:
+        if DEMO_RANDOM.random() < video_failure_rate:
             raise ValueError("transcoder busy")
         print(f"[process_video_fast] task={task_id} processed")
 
@@ -71,7 +72,7 @@ def build_slow_examples(
     )
     def send_email_slow(task_id: str, email_address: str) -> None:
         print(f"[send_email_slow] task={task_id} email={email_address}")
-        if random.random() < email_failure_rate:
+        if DEMO_RANDOM.random() < email_failure_rate:
             raise ConnectionError("mail server down")
         print(f"[send_email_slow] task={task_id} sent")
 
@@ -83,7 +84,7 @@ def build_slow_examples(
     )
     def process_video_slow(task_id: str, file_path: str) -> None:
         print(f"[process_video_slow] task={task_id} file={file_path}")
-        if random.random() < video_failure_rate:
+        if DEMO_RANDOM.random() < video_failure_rate:
             raise ValueError("transcoder busy")
         print(f"[process_video_slow] task={task_id} processed")
 
@@ -103,7 +104,7 @@ def build_worker_example(
         print(
             f"[worker] job={task_id} kind={payload['kind']} target={payload['target']}"
         )
-        if random.random() < worker_failure_rate:
+        if DEMO_RANDOM.random() < worker_failure_rate:
             raise RuntimeError("transient worker failure")
         print(f"[worker] job={task_id} completed")
 
@@ -183,7 +184,7 @@ def run_worker_demo(
             f"[worker] message={task_id} kind={payload['kind']} "
             + f"target={payload['target']}"
         )
-        if random.random() < worker_failure_rate:
+        if DEMO_RANDOM.random() < worker_failure_rate:
             raise RuntimeError("transient worker failure")
         print(f"[worker] message={task_id} completed")
 

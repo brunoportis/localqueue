@@ -1675,7 +1675,7 @@ class QueueTests(unittest.TestCase):
                 _ = store.enqueue("bad:name", "item", available_at=time.time())
 
     def test_default_sqlite_store_is_opened_lazily(self) -> None:
-        default_path = Path("/tmp/localqueue/queue.sqlite3")
+        default_path = Path("/home/example/.local/share/localqueue/queue.sqlite3")
         with (
             mock.patch(
                 "localqueue.queue.default_queue_store_path",

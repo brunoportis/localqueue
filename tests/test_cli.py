@@ -47,6 +47,7 @@ from localqueue.cli import (
     _process_queue_messages,
     _process_queue_iteration,
     _poll_timeout,
+    _queue_worker_command_signature,
     _last_attempt_worker_id,
     _read_value,
     _resolve_retry_store_path,
@@ -64,6 +65,12 @@ from localqueue.cli import (
 )
 import localqueue.cli as cli_module
 from localqueue.retry import configure_default_store
+
+EXAMPLE_CONFIG_HOME = "/home/example/.config"
+EXAMPLE_QUEUE_STORE_PATH = "/home/example/localqueue/queues"
+EXAMPLE_RETRY_STORE_PATH = "/home/example/localqueue/retries.sqlite3"
+EXAMPLE_EXPLICIT_QUEUE_STORE_PATH = "/home/example/localqueue/explicit-queues"
+EXAMPLE_EXPLICIT_RETRY_STORE_PATH = "/home/example/localqueue/explicit-retries.sqlite3"
 
 
 def handle_payload(payload: dict[str, str]) -> None:
@@ -226,11 +233,11 @@ class CliTests(unittest.TestCase):
 
     def test_config_path_uses_xdg_config_home(self) -> None:
         with mock.patch.dict(
-            "os.environ", {"XDG_CONFIG_HOME": "/tmp/config"}, clear=False
+            "os.environ", {"XDG_CONFIG_HOME": EXAMPLE_CONFIG_HOME}, clear=False
         ):
             self.assertEqual(
                 _config_path(),
-                Path("/tmp/config") / "localqueue" / CONFIG_FILENAME,
+                Path(EXAMPLE_CONFIG_HOME) / "localqueue" / CONFIG_FILENAME,
             )
 
     def test_load_and_write_config_use_yaml_mapping(self) -> None:
@@ -238,13 +245,19 @@ class CliTests(unittest.TestCase):
             path = Path(tmpdir) / "localqueue" / "config.yaml"
             _write_config(
                 yaml,
-                {"store_path": "/tmp/queues", "retry_store_path": "/tmp/retries"},
+                {
+                    "store_path": EXAMPLE_QUEUE_STORE_PATH,
+                    "retry_store_path": EXAMPLE_RETRY_STORE_PATH,
+                },
                 path=path,
             )
 
             self.assertEqual(
                 _load_config(yaml, path=path),
-                {"store_path": "/tmp/queues", "retry_store_path": "/tmp/retries"},
+                {
+                    "store_path": EXAMPLE_QUEUE_STORE_PATH,
+                    "retry_store_path": EXAMPLE_RETRY_STORE_PATH,
+                },
             )
 
     def test_load_config_accepts_empty_yaml_document(self) -> None:
@@ -256,16 +269,57 @@ class CliTests(unittest.TestCase):
             self.assertEqual(_load_config(yaml, path=path), {})
 
     def test_config_defaults_are_resolved_for_queue_paths(self) -> None:
-        config = {"store_path": "/tmp/queues", "retry_store_path": "/tmp/retries"}
+        config = {
+            "store_path": EXAMPLE_QUEUE_STORE_PATH,
+            "retry_store_path": EXAMPLE_RETRY_STORE_PATH,
+        }
 
-        self.assertEqual(_resolve_store_path(None, config), "/tmp/queues")
-        self.assertEqual(_resolve_store_path("/tmp/explicit", config), "/tmp/explicit")
-        self.assertEqual(_resolve_retry_store_path(None, config), "/tmp/retries")
+        self.assertEqual(_resolve_store_path(None, config), EXAMPLE_QUEUE_STORE_PATH)
         self.assertEqual(
-            _resolve_retry_store_path("/tmp/explicit-retries", config),
-            "/tmp/explicit-retries",
+            _resolve_store_path(EXAMPLE_EXPLICIT_QUEUE_STORE_PATH, config),
+            EXAMPLE_EXPLICIT_QUEUE_STORE_PATH,
+        )
+        self.assertEqual(
+            _resolve_retry_store_path(None, config), EXAMPLE_RETRY_STORE_PATH
+        )
+        self.assertEqual(
+            _resolve_retry_store_path(EXAMPLE_EXPLICIT_RETRY_STORE_PATH, config),
+            EXAMPLE_EXPLICIT_RETRY_STORE_PATH,
         )
         self.assertEqual(_resolve_retry_store_path(None, {}), DEFAULT_RETRY_STORE_PATH)
+
+    def test_queue_worker_command_signature_rejects_unexpected_values(self) -> None:
+        calls: list[Any] = []
+
+        def callback(*, cli_options: Any) -> None:
+            calls.append(cli_options)
+
+        wrapped = _queue_worker_command_signature(typer)(callback)
+
+        with self.assertRaisesRegex(
+            TypeError, "^unexpected CLI option values: unknown_option$"
+        ):
+            wrapped(
+                store_path=None,
+                retry_store_path=None,
+                max_jobs=1,
+                forever=False,
+                max_tries=3,
+                lease_timeout=30.0,
+                worker_id=None,
+                block=False,
+                timeout=None,
+                idle_sleep=1.0,
+                release_delay=0.0,
+                min_interval=0.0,
+                circuit_breaker_failures=0,
+                circuit_breaker_cooldown=0.0,
+                dead_letter_on_exhaustion=True,
+                log_events=False,
+                unknown_option=True,
+            )
+
+        self.assertEqual(calls, [])
 
     def test_default_data_paths_use_xdg_data_home(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -313,9 +367,9 @@ class CliTests(unittest.TestCase):
                         "config",
                         "init",
                         "--store-path",
-                        "/tmp/queues",
+                        EXAMPLE_QUEUE_STORE_PATH,
                         "--retry-store-path",
-                        "/tmp/retries.sqlite3",
+                        EXAMPLE_RETRY_STORE_PATH,
                         "--dead-letter-ttl-seconds",
                         "86400",
                         "--retry-record-ttl-seconds",
@@ -331,9 +385,9 @@ class CliTests(unittest.TestCase):
                     json.loads(show_result.stdout),
                     {
                         "dead_letter_ttl_seconds": 86400.0,
-                        "retry_store_path": "/tmp/retries.sqlite3",
+                        "retry_store_path": EXAMPLE_RETRY_STORE_PATH,
                         "retry_record_ttl_seconds": 604800.0,
-                        "store_path": "/tmp/queues",
+                        "store_path": EXAMPLE_QUEUE_STORE_PATH,
                     },
                 )
 

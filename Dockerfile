@@ -5,9 +5,15 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-COPY . .
+RUN addgroup --system localqueue \
+    && adduser --system --ingroup localqueue --home /app localqueue
+
+COPY pyproject.toml README.md LICENSE ./
+COPY localqueue ./localqueue
 
 RUN pip install --no-cache-dir ".[cli]"
+
+USER localqueue
 
 ENTRYPOINT ["localqueue"]
 CMD ["--help"]
