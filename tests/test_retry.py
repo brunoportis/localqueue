@@ -56,6 +56,18 @@ class CloseTrackingStore(MemoryAttemptStore):
         self.closed = True
 
 
+def _raise_runtime_error(message: str = "fail") -> None:
+    raise RuntimeError(message)
+
+
+def _raise_runtime_error_from_arg(task_id: str) -> None:
+    raise RuntimeError(task_id)
+
+
+def _raise_value_error_from_arg(task_id: str) -> None:
+    raise ValueError(task_id)
+
+
 def json_dumps_record(record: RetryRecord) -> str:
     return json.dumps(
         {
@@ -227,7 +239,7 @@ class RetryTests(unittest.TestCase):
             )
 
             with self.assertRaises(RuntimeError):
-                _ = retryer(lambda: (_ for _ in ()).throw(RuntimeError("fail")))
+                _ = retryer(_raise_runtime_error)
 
             self.assertIsNotNone(original.load("configured"))
             self.assertIsNone(replacement.load("configured"))
@@ -236,7 +248,7 @@ class RetryTests(unittest.TestCase):
             retryer = PersistentRetrying(key="factory", max_tries=1, wait=lambda _: 0)
 
             with self.assertRaises(RuntimeError):
-                _ = retryer(lambda: (_ for _ in ()).throw(RuntimeError("fail")))
+                _ = retryer(_raise_runtime_error)
 
             self.assertIsNotNone(replacement.load("factory"))
         finally:
@@ -252,7 +264,7 @@ class RetryTests(unittest.TestCase):
                 key="close-current", max_tries=1, wait=lambda _: 0
             )
             with self.assertRaises(RuntimeError):
-                _ = retryer(lambda: (_ for _ in ()).throw(RuntimeError("fail")))
+                _ = retryer(_raise_runtime_error)
 
             close_default_store()
 
@@ -273,7 +285,7 @@ class RetryTests(unittest.TestCase):
                 key="unhashable", max_tries=1, wait=lambda _: 0
             )
             with self.assertRaises(RuntimeError):
-                _ = retryer(lambda: (_ for _ in ()).throw(RuntimeError("fail")))
+                _ = retryer(_raise_runtime_error)
             self.assertIsNotNone(store.load("unhashable"))
         finally:
             configure_default_store_factory(_sqlite_default_store_factory)
@@ -391,7 +403,7 @@ class RetryTests(unittest.TestCase):
         def run_retry(key: str) -> None:
             retryer = PersistentRetrying(key=key, max_tries=1, wait=lambda _: 0)
             with self.assertRaises(RuntimeError):
-                _ = retryer(lambda: (_ for _ in ()).throw(RuntimeError("fail")))
+                _ = retryer(_raise_runtime_error)
 
         try:
             configure_default_store_factory(factory)
@@ -549,10 +561,12 @@ class RetryTests(unittest.TestCase):
             calls = {"count": 0}
 
             async def fail(task_id: str) -> None:
+                await asyncio.sleep(0)
                 calls["count"] += 1
                 raise ValueError(task_id)
 
             async def aborting_sleep(_: float) -> None:
+                await asyncio.sleep(0)
                 raise AbortRun()
 
             retryer = PersistentAsyncRetrying(
@@ -589,24 +603,30 @@ class RetryTests(unittest.TestCase):
             seen: dict[str, Any] = {}
 
             async def retry(state: Any) -> bool:
+                await asyncio.sleep(0)
                 seen["retry_attempt"] = state.attempt_number
                 return True
 
             async def wait(state: Any) -> float:
+                await asyncio.sleep(0)
                 seen["wait_attempt"] = state.attempt_number
                 return 0.0
 
             async def stop(state: Any) -> bool:
+                await asyncio.sleep(0)
                 seen["stop_attempt"] = state.attempt_number
                 return state.attempt_number >= 2
 
             async def before(state: Any) -> None:
+                await asyncio.sleep(0)
                 seen["before_attempt"] = state.attempt_number
 
             async def after(state: Any) -> None:
+                await asyncio.sleep(0)
                 seen["after_attempt"] = state.attempt_number
 
             async def before_sleep(state: Any) -> None:
+                await asyncio.sleep(0)
                 seen["before_sleep_attempt"] = state.attempt_number
 
             @persistent_async_retry(
@@ -620,6 +640,7 @@ class RetryTests(unittest.TestCase):
                 before_sleep=before_sleep,
             )
             async def fail() -> None:
+                await asyncio.sleep(0)
                 raise RuntimeError("async")
 
             with self.assertRaises(RuntimeError):
@@ -649,7 +670,7 @@ class RetryTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            retryer(lambda: (_ for _ in ()).throw(RuntimeError("fail"))),
+            retryer(_raise_runtime_error),
             "fallback-1",
         )
 
@@ -662,6 +683,7 @@ class RetryTests(unittest.TestCase):
             store = MemoryAttemptStore()
 
             async def on_error(state: Any) -> str:
+                await asyncio.sleep(0)
                 return f"fallback-{state.attempt_number}"
 
             retryer = PersistentAsyncRetrying(
@@ -673,6 +695,7 @@ class RetryTests(unittest.TestCase):
             )
 
             async def fail() -> None:
+                await asyncio.sleep(0)
                 raise RuntimeError("fail")
 
             self.assertEqual(await retryer(fail), "fallback-1")
@@ -712,10 +735,11 @@ class RetryTests(unittest.TestCase):
                 raise RuntimeError("fail")
 
             task = asyncio.create_task(retryer(fail))
-            asyncio.create_task(tick())
+            marker_task = asyncio.create_task(tick())
             await asyncio.sleep(0.05)
             self.assertTrue(marker.is_set())
             self.assertFalse(task.done())
+            await marker_task
             with self.assertRaises(RuntimeError):
                 await task
 
@@ -733,7 +757,7 @@ class RetryTests(unittest.TestCase):
 
             with self.assertRaises(ValueError):
                 _ = retryer(
-                    lambda task_id: (_ for _ in ()).throw(ValueError(task_id)),
+                    _raise_value_error_from_arg,
                     "job-4",  # pyright: ignore[reportUnknownArgumentType, reportUnknownLambdaType]
                 )
 
@@ -844,7 +868,7 @@ class RetryTests(unittest.TestCase):
 
             assert version_row is not None
             self.assertEqual(int(version_row[0]), 1)
-            self.assertTrue({"first_attempt_at", "exhausted"} <= columns)
+            self.assertLessEqual({"first_attempt_at", "exhausted"}, columns)
             self.assertIn("retry_records_exhausted_idx", indexes)
 
     def test_sqlite_store_migrates_legacy_records_for_retention(self) -> None:
@@ -918,7 +942,7 @@ class RetryTests(unittest.TestCase):
 
                 with self.assertRaises(RuntimeError):
                     _ = retryer(
-                        lambda task_id: (_ for _ in ()).throw(RuntimeError(task_id)),  # pyright: ignore[reportUnknownArgumentType, reportUnknownLambdaType]
+                        _raise_runtime_error_from_arg,
                         "job-lazy",
                     )
 
@@ -937,7 +961,7 @@ class RetryTests(unittest.TestCase):
 
             with self.assertRaises(RuntimeError):
                 _ = retryer(
-                    lambda task_id: (_ for _ in ()).throw(RuntimeError(task_id)),  # pyright: ignore[reportUnknownArgumentType, reportUnknownLambdaType]
+                    _raise_runtime_error_from_arg,
                     "job-sqlite-path",
                 )
 
@@ -1041,7 +1065,7 @@ class RetryTests(unittest.TestCase):
             "localqueue.retry.tenacity.sys.exc_info", return_value=(None, None, None)
         ):
             with self.assertRaises(RuntimeError):
-                _ = retryer(lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+                _ = retryer(lambda: _raise_runtime_error("boom"))
 
     def test_persistent_retrying_drops_context_after_completion(self) -> None:
         store = MemoryAttemptStore()
@@ -1063,6 +1087,7 @@ class RetryTests(unittest.TestCase):
         )
 
         async def fail() -> None:
+            await asyncio.sleep(0)
             raise RuntimeError("boom")
 
         with mock.patch(
@@ -1077,6 +1102,7 @@ class RetryTests(unittest.TestCase):
         )
 
         async def succeed() -> str:
+            await asyncio.sleep(0)
             return "ok"
 
         self.assertEqual(asyncio.run(retryer(succeed)), "ok")
@@ -1118,9 +1144,11 @@ class RetryTests(unittest.TestCase):
         self,
     ) -> None:
         async def scenario() -> None:
+            await asyncio.sleep(0)
             store = MemoryAttemptStore()
 
             async def on_error(state: Any) -> str:
+                await asyncio.sleep(0)
                 return "fallback"
 
             retryer = PersistentAsyncRetrying(
@@ -1223,9 +1251,7 @@ class RetryTests(unittest.TestCase):
                 return_value=(None, None, None),
             ):
                 with self.assertRaises(RuntimeError):
-                    _ = await retryer(
-                        lambda: (_ for _ in ()).throw(RuntimeError("boom"))
-                    )
+                    _ = await retryer(lambda: _raise_runtime_error("boom"))
 
         asyncio.run(scenario())
 

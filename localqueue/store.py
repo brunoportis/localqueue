@@ -9,7 +9,7 @@ from collections import Counter
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterator, Protocol
+from typing import TYPE_CHECKING, Any, Iterator, Protocol, cast
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -164,7 +164,7 @@ class _QueueRecord:
 
 
 def _replace_record(record: _QueueRecord, **changes: Any) -> _QueueRecord:
-    return replace(record, **changes)
+    return cast("_QueueRecord", replace(record, **changes))
 
 
 class QueueStore(Protocol):
@@ -1287,7 +1287,7 @@ class LMDBQueueStore:
                     _ = txn.delete(_dedupe_key_key(queue, dedupe_key))
             record = _QueueRecord.new(queue, value, available_at, dedupe_key=dedupe_key)
             seq = self._next_seq(txn, queue)
-            record = replace(
+            record = _replace_record(
                 record, index_key=_ready_key(queue, available_at, seq, record.id)
             )
             self._put_record(txn, record)
@@ -1326,7 +1326,7 @@ class LMDBQueueStore:
                 _ = txn.delete(key)
                 return None
             leased_until = now + lease_timeout
-            updated = replace(
+            updated = _replace_record(
                 record,
                 attempts=record.attempts + 1,
                 leased_until=leased_until,
@@ -1383,7 +1383,7 @@ class LMDBQueueStore:
                 return False
             self._delete_index(txn, record)
             seq = self._next_seq(txn, queue)
-            updated = replace(
+            updated = _replace_record(
                 record,
                 available_at=available_at,
                 leased_until=None,
@@ -1422,7 +1422,7 @@ class LMDBQueueStore:
             if record is None:
                 return False
             self._delete_index(txn, record)
-            updated = replace(
+            updated = _replace_record(
                 record,
                 leased_until=None,
                 leased_by=None,
@@ -1516,7 +1516,7 @@ class LMDBQueueStore:
                 return False
             self._delete_index(txn, record)
             seq = self._next_seq(txn, queue)
-            updated = replace(
+            updated = _replace_record(
                 record,
                 available_at=available_at,
                 leased_until=None,
@@ -1632,7 +1632,7 @@ class LMDBQueueStore:
             if record is None:
                 continue
             seq = self._next_seq(txn, queue)
-            updated = replace(
+            updated = _replace_record(
                 record,
                 available_at=now,
                 leased_until=None,
@@ -1925,6 +1925,53 @@ def _encode_worker_heartbeats(stats: dict[str, float]) -> bytes:
     )
 
 
+@dataclass(slots=True)
+class _QueueStatsAccumulator:
+    ready: int = 0
+    delayed: int = 0
+    inflight: int = 0
+    dead: int = 0
+    total: int = 0
+    by_worker_id: Counter[str] = field(default_factory=Counter)
+    ready_ages: list[float] = field(default_factory=list)
+    inflight_ages: list[float] = field(default_factory=list)
+
+
+def _accumulate_record_stats(
+    accumulator: _QueueStatsAccumulator, record: _QueueRecord, *, now: float
+) -> None:
+    accumulator.total += 1
+    if record.state == _READY:
+        _accumulate_ready_stats(accumulator, record, now=now)
+        return
+    if record.state == _INFLIGHT:
+        _accumulate_inflight_stats(accumulator, record, now=now)
+        return
+    if record.state == _DEAD:
+        accumulator.dead += 1
+
+
+def _accumulate_ready_stats(
+    accumulator: _QueueStatsAccumulator, record: _QueueRecord, *, now: float
+) -> None:
+    if record.available_at <= now:
+        accumulator.ready += 1
+        accumulator.ready_ages.append(max(now - record.available_at, 0.0))
+        return
+    accumulator.delayed += 1
+
+
+def _accumulate_inflight_stats(
+    accumulator: _QueueStatsAccumulator, record: _QueueRecord, *, now: float
+) -> None:
+    accumulator.inflight += 1
+    if record.leased_by:
+        accumulator.by_worker_id[record.leased_by] += 1
+    leased_at = _last_leased_at(record)
+    if leased_at is not None:
+        accumulator.inflight_ages.append(max(now - leased_at, 0.0))
+
+
 def _stats_from_records(
     records: Iterable[_QueueRecord],
     *,
@@ -1932,44 +1979,28 @@ def _stats_from_records(
     leases_by_worker_id: dict[str, int] | None = None,
     last_seen_by_worker_id: dict[str, float] | None = None,
 ) -> QueueStats:
-    ready = 0
-    delayed = 0
-    inflight = 0
-    dead = 0
-    total = 0
-    by_worker_id: Counter[str] = Counter()
-    ready_ages: list[float] = []
-    inflight_ages: list[float] = []
+    accumulator = _QueueStatsAccumulator()
     for record in records:
-        total += 1
-        if record.state == _READY:
-            if record.available_at <= now:
-                ready += 1
-                ready_ages.append(max(now - record.available_at, 0.0))
-            else:
-                delayed += 1
-        elif record.state == _INFLIGHT:
-            inflight += 1
-            if record.leased_by:
-                by_worker_id[record.leased_by] += 1
-            leased_at = _last_leased_at(record)
-            if leased_at is not None:
-                inflight_ages.append(max(now - leased_at, 0.0))
-        elif record.state == _DEAD:
-            dead += 1
+        _accumulate_record_stats(accumulator, record, now=now)
     return QueueStats(
-        ready=ready,
-        delayed=delayed,
-        inflight=inflight,
-        dead=dead,
-        total=total,
-        by_worker_id=dict(sorted(by_worker_id.items())),
+        ready=accumulator.ready,
+        delayed=accumulator.delayed,
+        inflight=accumulator.inflight,
+        dead=accumulator.dead,
+        total=accumulator.total,
+        by_worker_id=dict(sorted(accumulator.by_worker_id.items())),
         leases_by_worker_id=dict(sorted((leases_by_worker_id or {}).items())),
         last_seen_by_worker_id=dict(sorted((last_seen_by_worker_id or {}).items())),
-        oldest_ready_age_seconds=max(ready_ages) if ready_ages else None,
-        oldest_inflight_age_seconds=max(inflight_ages) if inflight_ages else None,
+        oldest_ready_age_seconds=max(accumulator.ready_ages)
+        if accumulator.ready_ages
+        else None,
+        oldest_inflight_age_seconds=max(accumulator.inflight_ages)
+        if accumulator.inflight_ages
+        else None,
         average_inflight_age_seconds=(
-            sum(inflight_ages) / len(inflight_ages) if inflight_ages else None
+            sum(accumulator.inflight_ages) / len(accumulator.inflight_ages)
+            if accumulator.inflight_ages
+            else None
         ),
     )
 

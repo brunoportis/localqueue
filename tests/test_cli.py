@@ -60,6 +60,7 @@ from localqueue.cli import (
     _worker_health_summary,
     _write_config,
     _QueueIterationContext,
+    _QueueWorkerOptions,
 )
 import localqueue.cli as cli_module
 from localqueue.retry import configure_default_store
@@ -79,6 +80,29 @@ class _JsonConsole:
 
     def print(self, message: str) -> None:
         self.messages.append(message)
+
+
+def _queue_worker_options(
+    *,
+    retry_store_path: str,
+    max_jobs: int,
+    forever: bool,
+    max_tries: int,
+    worker_id: str | None,
+    dead_letter_on_exhaustion: bool,
+) -> _QueueWorkerOptions:
+    return _QueueWorkerOptions(
+        retry_store_path=retry_store_path,
+        max_jobs=max_jobs,
+        forever=forever,
+        max_tries=max_tries,
+        worker_id=worker_id,
+        block=False,
+        timeout=None,
+        idle_sleep=0.001,
+        release_delay=0.0,
+        dead_letter_on_exhaustion=dead_letter_on_exhaustion,
+    )
 
 
 class CliTests(unittest.TestCase):
@@ -1649,16 +1673,14 @@ class CliTests(unittest.TestCase):
             console=console,
             err_console=err_console,
             shutdown=_ShutdownState(),
-            retry_store_path=self._retry_store_path(),
-            max_jobs=1,
-            forever=False,
-            max_tries=1,
-            worker_id="worker-a",
-            block=False,
-            timeout=None,
-            idle_sleep=0.001,
-            release_delay=0.0,
-            dead_letter_on_exhaustion=True,
+            options=_queue_worker_options(
+                retry_store_path=self._retry_store_path(),
+                max_jobs=1,
+                forever=False,
+                max_tries=1,
+                worker_id="worker-a",
+                dead_letter_on_exhaustion=True,
+            ),
         )
 
         self.assertEqual(result, 1)
@@ -1739,16 +1761,14 @@ class CliTests(unittest.TestCase):
                     console=console,
                     err_console=_JsonConsole(),
                     shutdown=_ShutdownState(),
-                    retry_store_path=retry_store_path,
-                    max_jobs=2,
-                    forever=False,
-                    max_tries=1,
-                    worker_id=None,
-                    block=False,
-                    timeout=None,
-                    idle_sleep=0.001,
-                    release_delay=0.0,
-                    dead_letter_on_exhaustion=True,
+                    options=_queue_worker_options(
+                        retry_store_path=retry_store_path,
+                        max_jobs=2,
+                        forever=False,
+                        max_tries=1,
+                        worker_id=None,
+                        dead_letter_on_exhaustion=True,
+                    ),
                 )
 
             self.assertEqual(result, 0)
@@ -1808,16 +1828,14 @@ class CliTests(unittest.TestCase):
             console=console,
             err_console=err_console,
             shutdown=shutdown,
-            retry_store_path=self._retry_store_path(),
-            max_jobs=1,
-            forever=True,
-            max_tries=1,
-            worker_id=None,
-            block=False,
-            timeout=None,
-            idle_sleep=0.001,
-            release_delay=0.0,
-            dead_letter_on_exhaustion=True,
+            options=_queue_worker_options(
+                retry_store_path=self._retry_store_path(),
+                max_jobs=1,
+                forever=True,
+                max_tries=1,
+                worker_id=None,
+                dead_letter_on_exhaustion=True,
+            ),
         )
 
         self.assertEqual(result, 0)
@@ -1845,16 +1863,14 @@ class CliTests(unittest.TestCase):
             console=console,
             err_console=err_console,
             shutdown=_ShutdownState(),
-            retry_store_path=self._retry_store_path(),
-            max_jobs=2,
-            forever=True,
-            max_tries=1,
-            worker_id=None,
-            block=False,
-            timeout=None,
-            idle_sleep=0.001,
-            release_delay=0.0,
-            dead_letter_on_exhaustion=True,
+            options=_queue_worker_options(
+                retry_store_path=self._retry_store_path(),
+                max_jobs=2,
+                forever=True,
+                max_tries=1,
+                worker_id=None,
+                dead_letter_on_exhaustion=True,
+            ),
         )
 
         self.assertEqual(result, 0)
@@ -1876,16 +1892,14 @@ class CliTests(unittest.TestCase):
             console=console,
             err_console=err_console,
             shutdown=_ShutdownState(),
-            retry_store_path=self._retry_store_path(),
-            max_jobs=1,
-            forever=False,
-            max_tries=2,
-            worker_id="worker-a",
-            block=False,
-            timeout=None,
-            idle_sleep=0.001,
-            release_delay=0.0,
-            dead_letter_on_exhaustion=False,
+            options=_queue_worker_options(
+                retry_store_path=self._retry_store_path(),
+                max_jobs=1,
+                forever=False,
+                max_tries=2,
+                worker_id="worker-a",
+                dead_letter_on_exhaustion=False,
+            ),
         )
 
         self.assertEqual(result, 1)
@@ -1939,16 +1953,14 @@ class CliTests(unittest.TestCase):
             console=console,
             err_console=err_console,
             shutdown=_ShutdownState(),
-            retry_store_path=self._retry_store_path(),
-            max_jobs=1,
-            forever=False,
-            max_tries=1,
-            worker_id=None,
-            block=False,
-            timeout=None,
-            idle_sleep=0.001,
-            release_delay=0.0,
-            dead_letter_on_exhaustion=True,
+            options=_queue_worker_options(
+                retry_store_path=self._retry_store_path(),
+                max_jobs=1,
+                forever=False,
+                max_tries=1,
+                worker_id=None,
+                dead_letter_on_exhaustion=True,
+            ),
         )
 
         self.assertEqual(result, 1)
@@ -1974,16 +1986,14 @@ class CliTests(unittest.TestCase):
             console=console,
             err_console=err_console,
             shutdown=shutdown,
-            retry_store_path=self._retry_store_path(),
-            max_jobs=1,
-            forever=True,
-            max_tries=1,
-            worker_id=None,
-            block=False,
-            timeout=None,
-            idle_sleep=0.001,
-            release_delay=0.0,
-            dead_letter_on_exhaustion=True,
+            options=_queue_worker_options(
+                retry_store_path=self._retry_store_path(),
+                max_jobs=1,
+                forever=True,
+                max_tries=1,
+                worker_id=None,
+                dead_letter_on_exhaustion=True,
+            ),
         )
 
         self.assertEqual(result, 0)
@@ -2123,12 +2133,10 @@ class CliTests(unittest.TestCase):
             _error_payload("oops"),
             {"type": None, "module": None, "message": "oops"},
         )
-        self.assertEqual(
-            _last_attempt_worker_id(
-                PersistentQueue("jobs", store=MemoryQueueStore()).put("value") or None
-            ),
-            None,
-        )
+        queue = PersistentQueue("jobs", store=MemoryQueueStore())
+        message = queue.put("value")
+        self.assertIsNotNone(message)
+        self.assertIsNone(_last_attempt_worker_id(message))
 
     def test_cli_helpers_cover_command_handler_paths(self) -> None:
         command = _command_handler(["sh", "-c", "printf ok"])
@@ -2177,7 +2185,7 @@ class CliTests(unittest.TestCase):
         )
 
         with self.assertRaises(ValueError):
-            _ = _validate_worker_loop_options(max_jobs=2, forever=True)
+            _validate_worker_loop_options(max_jobs=2, forever=True)
 
     def test_cli_helpers_cover_dead_letter_filter_and_health_summary(self) -> None:
         messages = [

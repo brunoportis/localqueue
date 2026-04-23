@@ -8,7 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
-from dataclasses import replace
+from dataclasses import dataclass
 from queue import Empty, Full
 from pathlib import Path
 from typing import Any, cast
@@ -53,11 +53,196 @@ from localqueue.store import (
     _message_key,
     _ready_key,
     _last_leased_at,
+    _replace_record,
     _sequence_from_index_key,
     _timestamp_from_inflight_key,
     _timestamp_from_ready_key,
 )
 from localqueue.queue import _deadline, _remaining, _wait_time, _validate_retry_defaults
+
+
+@dataclass(slots=True)
+class _ThreadedQueueScenarioResult:
+    errors: list[BaseException]
+    consumed: Counter[str]
+    lock_retries: Counter[str]
+    stats: dict[str, Any]
+
+
+def _run_sqlite_threaded_queue_scenario(
+    *, store_path: str, queue_name: str, total_messages: int
+) -> _ThreadedQueueScenarioResult:
+    producer_count = 4
+    consumer_count = 4
+    start = threading.Event()
+    producers_done = threading.Event()
+    consumed = Counter[str]()
+    consumed_lock = threading.Lock()
+    errors: list[BaseException] = []
+    errors_lock = threading.Lock()
+    lock_retries = Counter[str]()
+
+    threads = [
+        threading.Thread(
+            target=_threaded_sqlite_producer,
+            args=(
+                index,
+                queue_name,
+                store_path,
+                total_messages // producer_count,
+                start,
+                lock_retries,
+                errors,
+                errors_lock,
+            ),
+        )
+        for index in range(producer_count)
+    ] + [
+        threading.Thread(
+            target=_threaded_sqlite_consumer,
+            args=(
+                index,
+                queue_name,
+                store_path,
+                start,
+                producers_done,
+                consumed,
+                consumed_lock,
+                total_messages,
+                lock_retries,
+                errors,
+                errors_lock,
+            ),
+        )
+        for index in range(consumer_count)
+    ]
+    _start_threaded_scenario(threads, producer_count, start, producers_done)
+
+    queue = PersistentQueue(queue_name, store_path=store_path)
+    return _ThreadedQueueScenarioResult(
+        errors=errors,
+        consumed=consumed,
+        lock_retries=lock_retries,
+        stats=queue.stats().as_dict(),
+    )
+
+
+def _record_threaded_error(
+    exc: BaseException, errors: list[BaseException], errors_lock: threading.Lock
+) -> None:
+    with errors_lock:
+        errors.append(exc)
+
+
+def _retry_threaded_sqlite_locked(
+    action: str, fn: Any, lock_retries: Counter[str]
+) -> Any:
+    attempts = 0
+    while True:
+        try:
+            return fn()
+        except sqlite3.OperationalError as exc:
+            if "database is locked" not in str(exc).lower():
+                raise
+            attempts += 1
+            lock_retries[action] += 1
+            time.sleep(min(0.001 * attempts, 0.05))
+
+
+def _threaded_sqlite_producer(
+    index: int,
+    queue_name: str,
+    store_path: str,
+    message_count: int,
+    start: threading.Event,
+    lock_retries: Counter[str],
+    errors: list[BaseException],
+    errors_lock: threading.Lock,
+) -> None:
+    try:
+        queue = PersistentQueue(queue_name, store_path=store_path, lease_timeout=0.2)
+        start.wait()
+        for sequence in range(message_count):
+            _retry_threaded_sqlite_locked(
+                "put",
+                lambda sequence=sequence: queue.put(
+                    {"producer": index, "sequence": sequence}
+                ),
+                lock_retries,
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        _record_threaded_error(exc, errors, errors_lock)
+
+
+def _threaded_sqlite_consumer(
+    index: int,
+    queue_name: str,
+    store_path: str,
+    start: threading.Event,
+    producers_done: threading.Event,
+    consumed: Counter[str],
+    consumed_lock: threading.Lock,
+    total_messages: int,
+    lock_retries: Counter[str],
+    errors: list[BaseException],
+    errors_lock: threading.Lock,
+) -> None:
+    try:
+        queue = PersistentQueue(queue_name, store_path=store_path, lease_timeout=0.2)
+        start.wait()
+        while not _threaded_scenario_complete(
+            producers_done, consumed, consumed_lock, total_messages
+        ):
+            try:
+                message = _retry_threaded_sqlite_locked(
+                    "get",
+                    lambda: queue.get_message(
+                        block=False, leased_by=f"consumer-{index}"
+                    ),
+                    lock_retries,
+                )
+            except Empty:
+                time.sleep(0.001)
+                continue
+            if not _retry_threaded_sqlite_locked(
+                "ack", lambda message=message: queue.ack(message), lock_retries
+            ):
+                _record_threaded_error(
+                    RuntimeError(f"ack failed for {message.id}"), errors, errors_lock
+                )
+                return
+            with consumed_lock:
+                consumed[message.id] += 1
+    except Exception as exc:  # pragma: no cover - defensive
+        _record_threaded_error(exc, errors, errors_lock)
+
+
+def _threaded_scenario_complete(
+    producers_done: threading.Event,
+    consumed: Counter[str],
+    consumed_lock: threading.Lock,
+    total_messages: int,
+) -> bool:
+    with consumed_lock:
+        return producers_done.is_set() and sum(consumed.values()) >= total_messages
+
+
+def _start_threaded_scenario(
+    threads: list[threading.Thread],
+    producer_count: int,
+    start: threading.Event,
+    producers_done: threading.Event,
+) -> None:
+    for thread in threads:
+        thread.start()
+    start.set()
+
+    for thread in threads[:producer_count]:
+        thread.join()
+    producers_done.set()
+    for thread in threads[producer_count:]:
+        thread.join(timeout=5.0)
+        assert not thread.is_alive()
 
 
 class QueueTests(unittest.TestCase):
@@ -633,7 +818,7 @@ class QueueTests(unittest.TestCase):
             123.0,
             dedupe_key="dedupe-1",
         )
-        leased_record = replace(
+        leased_record = _replace_record(
             record,
             attempt_history=[
                 {
@@ -1003,110 +1188,18 @@ class QueueTests(unittest.TestCase):
             store_path = str(Path(tmpdir) / "queue.sqlite3")
             queue_name = "jobs"
             total_messages = 120
-            producer_count = 4
-            consumer_count = 4
-            start = threading.Event()
-            producers_done = threading.Event()
-            consumed = Counter[str]()
-            consumed_lock = threading.Lock()
-            errors: list[BaseException] = []
-            errors_lock = threading.Lock()
-            lock_retries = Counter[str]()
+            result = _run_sqlite_threaded_queue_scenario(
+                store_path=store_path,
+                queue_name=queue_name,
+                total_messages=total_messages,
+            )
 
-            def record_error(exc: BaseException) -> None:
-                with errors_lock:
-                    errors.append(exc)
-
-            def retry_sqlite_locked(action: str, fn: Any) -> Any:
-                attempts = 0
-                while True:
-                    try:
-                        return fn()
-                    except sqlite3.OperationalError as exc:
-                        if "database is locked" not in str(exc).lower():
-                            raise
-                        attempts += 1
-                        lock_retries[action] += 1
-                        time.sleep(min(0.001 * attempts, 0.05))
-
-            def producer(index: int) -> None:
-                try:
-                    queue = PersistentQueue(
-                        queue_name, store_path=store_path, lease_timeout=0.2
-                    )
-                    start.wait()
-                    for sequence in range(total_messages // producer_count):
-                        retry_sqlite_locked(
-                            "put",
-                            lambda: queue.put(
-                                {"producer": index, "sequence": sequence}
-                            ),
-                        )
-                except Exception as exc:  # pragma: no cover - defensive
-                    record_error(exc)
-
-            def consumer(index: int) -> None:
-                try:
-                    queue = PersistentQueue(
-                        queue_name, store_path=store_path, lease_timeout=0.2
-                    )
-                    start.wait()
-                    while True:
-                        with consumed_lock:
-                            if (
-                                producers_done.is_set()
-                                and sum(consumed.values()) >= total_messages
-                            ):
-                                return
-                        try:
-                            message = retry_sqlite_locked(
-                                "get",
-                                lambda: queue.get_message(
-                                    block=False, leased_by=f"consumer-{index}"
-                                ),
-                            )
-                        except Empty:
-                            if producers_done.is_set():
-                                with consumed_lock:
-                                    if sum(consumed.values()) >= total_messages:
-                                        return
-                            time.sleep(0.001)
-                            continue
-                        if not retry_sqlite_locked("ack", lambda: queue.ack(message)):
-                            record_error(RuntimeError(f"ack failed for {message.id}"))
-                            return
-                        with consumed_lock:
-                            consumed[message.id] += 1
-                except Exception as exc:  # pragma: no cover - defensive
-                    record_error(exc)
-
-            threads = [
-                threading.Thread(target=producer, args=(index,))
-                for index in range(producer_count)
-            ] + [
-                threading.Thread(target=consumer, args=(index,))
-                for index in range(consumer_count)
-            ]
-
-            for thread in threads:
-                thread.start()
-            start.set()
-
-            for thread in threads[:producer_count]:
-                thread.join()
-            producers_done.set()
-            for thread in threads[producer_count:]:
-                thread.join(timeout=5.0)
-                self.assertFalse(thread.is_alive())
-
-            self.assertEqual(errors, [])
-            self.assertEqual(sum(consumed.values()), total_messages)
-            self.assertEqual(len(consumed), total_messages)
-            self.assertTrue(all(count == 1 for count in consumed.values()))
-            self.assertGreaterEqual(sum(lock_retries.values()), 0)
-
-            queue = PersistentQueue(queue_name, store_path=store_path)
-            stats = queue.stats().as_dict()
+            self.assertEqual(result.errors, [])
+            self.assertEqual(sum(result.consumed.values()), total_messages)
+            self.assertEqual(len(result.consumed), total_messages)
+            self.assertTrue(all(count == 1 for count in result.consumed.values()))
+            self.assertGreaterEqual(sum(result.lock_retries.values()), 0)
+            stats = result.stats
             self.assertEqual(stats["ready"], 0)
             self.assertEqual(stats["delayed"], 0)
             self.assertEqual(stats["inflight"], 0)
@@ -1551,7 +1644,7 @@ class QueueTests(unittest.TestCase):
 
             assert version_row is not None
             self.assertEqual(int(version_row[0]), 2)
-            self.assertTrue({"created_at", "failed_at", "leased_by"} <= columns)
+            self.assertLessEqual({"created_at", "failed_at", "leased_by"}, columns)
             self.assertEqual(migrated_row, (100.0, 120.0, "worker-a"))
 
     def test_lmdb_store_reclaims_expired_leases(self) -> None:
@@ -1729,26 +1822,31 @@ class QueueTests(unittest.TestCase):
 
     def test_default_get_blocks_until_item_arrives(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())
+        produced = threading.Event()
 
         def producer() -> None:
             time.sleep(0.2)
             _ = queue.put("item")
+            produced.set()
 
         t = threading.Thread(target=producer)
         t.start()
 
         start = time.time()
-        self.assertEqual(queue.get(), "item")
+        self.assertEqual(queue.get(block=True), "item")
         self.assertGreaterEqual(time.time() - start, 0.2)
+        self.assertTrue(produced.is_set())
         queue.task_done()
         t.join()
 
     def test_default_get_message_blocks_until_item_arrives(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())
+        produced = threading.Event()
 
         def producer() -> None:
             time.sleep(0.2)
             _ = queue.put("item")
+            produced.set()
 
         t = threading.Thread(target=producer)
         t.start()
@@ -1757,6 +1855,8 @@ class QueueTests(unittest.TestCase):
         message = queue.get_message()
         self.assertGreaterEqual(time.time() - start, 0.2)
         self.assertEqual(message.value, "item")
+        self.assertTrue(produced.is_set())
+        self.assertEqual(queue.qsize(), 0)
         t.join()
 
     def test_put_and_get_timeout(self) -> None:
@@ -2219,10 +2319,11 @@ class QueueTests(unittest.TestCase):
                 marker.set()
 
             task = asyncio.create_task(_get_message_async(cast("Any", queue)))
-            asyncio.create_task(tick())
+            marker_task = asyncio.create_task(tick())
             await asyncio.sleep(0.05)
             self.assertTrue(marker.is_set())
             self.assertFalse(task.done())
+            await marker_task
             message = await task
             self.assertEqual(message.id, "job-1")
 

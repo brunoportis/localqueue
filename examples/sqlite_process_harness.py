@@ -285,7 +285,9 @@ def _producer_process(
     for sequence in range(message_count):
         _retry_sqlite_locked(
             "put",
-            lambda: queue.put({"producer": producer_index, "sequence": sequence}),
+            lambda sequence=sequence: queue.put(
+                {"producer": producer_index, "sequence": sequence}
+            ),
             lock_retries,
         )
     report_queue.put(
@@ -318,10 +320,7 @@ def _consumer_process(
     )
     start.wait()
     leased_once = False
-    while True:
-        with consumed_lock:
-            if stop.is_set() and consumed_count.value >= target_total:
-                break
+    while not _target_consumed(stop, consumed_count, consumed_lock, target_total):
         try:
             message = _retry_sqlite_locked(
                 "get",
@@ -329,18 +328,17 @@ def _consumer_process(
                 lock_retries,
             )
         except Empty:
-            if stop.is_set():
-                with consumed_lock:
-                    if consumed_count.value >= target_total:
-                        break
             time.sleep(0.001)
             continue
-        if crash_after_first and not leased_once:
-            if leased_event is not None:
-                leased_event.set()
-            os._exit(3)
+        _crash_after_first_lease(
+            crash_after_first=crash_after_first,
+            leased_once=leased_once,
+            leased_event=leased_event,
+        )
         leased_once = True
-        _retry_sqlite_locked("ack", lambda: queue.ack(message), lock_retries)
+        _retry_sqlite_locked(
+            "ack", lambda message=message: queue.ack(message), lock_retries
+        )
         with consumed_lock:
             consumed_count.value += 1
         report_queue.put(
@@ -358,6 +356,23 @@ def _consumer_process(
             "lock_retries": dict(lock_retries),
         }
     )
+
+
+def _target_consumed(
+    stop: Any, consumed_count: Any, consumed_lock: Any, target_total: int
+) -> bool:
+    with consumed_lock:
+        return stop.is_set() and consumed_count.value >= target_total
+
+
+def _crash_after_first_lease(
+    *, crash_after_first: bool, leased_once: bool, leased_event: Any | None
+) -> None:
+    if not crash_after_first or leased_once:
+        return
+    if leased_event is not None:
+        leased_event.set()
+    os._exit(3)
 
 
 def _retry_sqlite_locked(action: str, fn: Any, lock_retries: Counter[str]) -> Any:

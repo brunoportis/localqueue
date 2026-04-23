@@ -7,6 +7,7 @@ import sqlite3
 import threading
 import time
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 from queue import Empty
 from typing import Any
@@ -57,11 +58,7 @@ def _run_benchmark(
     if producers <= 0 or consumers <= 0 or messages <= 0:
         raise ValueError("producers, consumers, and messages must be greater than zero")
 
-    store_file = Path(store_path)
-    for suffix in ("", "-wal", "-shm"):
-        candidate = Path(f"{store_file}{suffix}")
-        if candidate.exists():
-            candidate.unlink()
+    _remove_sqlite_files(store_path)
 
     start = threading.Event()
     producers_done = threading.Event()
@@ -72,88 +69,223 @@ def _run_benchmark(
     lock_retries = Counter[str]()
     per_producer, remainder = divmod(messages, producers)
 
-    def record_error(exc: BaseException) -> None:
-        with errors_lock:
-            errors.append(exc)
-
-    def retry_sqlite_locked(action: str, fn: Any) -> Any:
-        attempts = 0
-        while True:
-            try:
-                return fn()
-            except sqlite3.OperationalError as exc:
-                if "database is locked" not in str(exc).lower():
-                    raise
-                attempts += 1
-                lock_retries[action] += 1
-                time.sleep(min(0.001 * attempts, 0.05))
-
-    def producer(index: int) -> None:
-        try:
-            queue: PersistentQueue[dict[str, Any]] = PersistentQueue(
-                queue_name, store_path=store_path, lease_timeout=lease_timeout
-            )
-            start.wait()
-            count = per_producer + (1 if index < remainder else 0)
-            for sequence in range(count):
-                retry_sqlite_locked(
-                    "put",
-                    lambda: queue.put({"producer": index, "sequence": sequence}),
-                )
-        except Exception as exc:  # pragma: no cover - defensive
-            record_error(exc)
-
-    def consumer(index: int) -> None:
-        try:
-            queue: PersistentQueue[dict[str, Any]] = PersistentQueue(
-                queue_name, store_path=store_path, lease_timeout=lease_timeout
-            )
-            start.wait()
-            while True:
-                with consumed_lock:
-                    if producers_done.is_set() and sum(consumed.values()) >= messages:
-                        return
-                try:
-                    message = retry_sqlite_locked(
-                        "get",
-                        lambda: queue.get_message(
-                            block=False, leased_by=f"consumer-{index}"
-                        ),
-                    )
-                except Empty:
-                    if producers_done.is_set():
-                        with consumed_lock:
-                            if sum(consumed.values()) >= messages:
-                                return
-                    time.sleep(0.001)
-                    continue
-                if not retry_sqlite_locked("ack", lambda: queue.ack(message)):
-                    record_error(RuntimeError(f"ack failed for {message.id}"))
-                    return
-                with consumed_lock:
-                    consumed[message.id] += 1
-        except Exception as exc:  # pragma: no cover - defensive
-            record_error(exc)
-
-    threads = [
-        threading.Thread(target=producer, args=(index,)) for index in range(producers)
-    ] + [threading.Thread(target=consumer, args=(index,)) for index in range(consumers)]
+    producer_threads = [
+        threading.Thread(
+            target=_producer_thread,
+            args=(
+                index,
+                queue_name,
+                store_path,
+                lease_timeout,
+                start,
+                per_producer + (1 if index < remainder else 0),
+                lock_retries,
+                errors,
+                errors_lock,
+            ),
+        )
+        for index in range(producers)
+    ]
+    consumer_threads = [
+        threading.Thread(
+            target=_consumer_thread,
+            args=(
+                index,
+                queue_name,
+                store_path,
+                lease_timeout,
+                start,
+                producers_done,
+                consumed,
+                consumed_lock,
+                messages,
+                lock_retries,
+                errors,
+                errors_lock,
+            ),
+        )
+        for index in range(consumers)
+    ]
+    threads = producer_threads + consumer_threads
 
     started_at = time.perf_counter()
-    for thread in threads:
-        thread.start()
+    _start_threads(threads)
     start.set()
 
-    for thread in threads[:producers]:
+    _join_benchmark_threads(
+        threads,
+        producer_count=producers,
+        producers_done=producers_done,
+        errors=errors,
+        errors_lock=errors_lock,
+    )
+    elapsed = time.perf_counter() - started_at
+    return _benchmark_summary(
+        queue_name=queue_name,
+        store_path=store_path,
+        lease_timeout=lease_timeout,
+        messages=messages,
+        producers=producers,
+        consumers=consumers,
+        consumed=consumed,
+        errors=errors,
+        lock_retries=lock_retries,
+        elapsed=elapsed,
+    )
+
+
+def _remove_sqlite_files(store_path: str) -> None:
+    store_file = Path(store_path)
+    for suffix in ("", "-wal", "-shm"):
+        candidate = Path(f"{store_file}{suffix}")
+        if candidate.exists():
+            candidate.unlink()
+
+
+def _record_error(
+    exc: BaseException, errors: list[BaseException], errors_lock: threading.Lock
+) -> None:
+    with errors_lock:
+        errors.append(exc)
+
+
+def _retry_sqlite_locked(
+    action: str, fn: Callable[[], Any], lock_retries: Counter[str]
+) -> Any:
+    attempts = 0
+    while True:
+        try:
+            return fn()
+        except sqlite3.OperationalError as exc:
+            if "database is locked" not in str(exc).lower():
+                raise
+            attempts += 1
+            lock_retries[action] += 1
+            time.sleep(min(0.001 * attempts, 0.05))
+
+
+def _producer_thread(
+    index: int,
+    queue_name: str,
+    store_path: str,
+    lease_timeout: float,
+    start: threading.Event,
+    message_count: int,
+    lock_retries: Counter[str],
+    errors: list[BaseException],
+    errors_lock: threading.Lock,
+) -> None:
+    try:
+        queue: PersistentQueue[dict[str, Any]] = PersistentQueue(
+            queue_name, store_path=store_path, lease_timeout=lease_timeout
+        )
+        start.wait()
+        for sequence in range(message_count):
+            _retry_sqlite_locked(
+                "put",
+                lambda sequence=sequence: queue.put(
+                    {"producer": index, "sequence": sequence}
+                ),
+                lock_retries,
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        _record_error(exc, errors, errors_lock)
+
+
+def _consumer_thread(
+    index: int,
+    queue_name: str,
+    store_path: str,
+    lease_timeout: float,
+    start: threading.Event,
+    producers_done: threading.Event,
+    consumed: Counter[str],
+    consumed_lock: threading.Lock,
+    messages: int,
+    lock_retries: Counter[str],
+    errors: list[BaseException],
+    errors_lock: threading.Lock,
+) -> None:
+    try:
+        queue: PersistentQueue[dict[str, Any]] = PersistentQueue(
+            queue_name, store_path=store_path, lease_timeout=lease_timeout
+        )
+        start.wait()
+        while not _all_messages_consumed(
+            producers_done, consumed, consumed_lock, messages
+        ):
+            try:
+                message = _retry_sqlite_locked(
+                    "get",
+                    lambda: queue.get_message(
+                        block=False, leased_by=f"consumer-{index}"
+                    ),
+                    lock_retries,
+                )
+            except Empty:
+                time.sleep(0.001)
+                continue
+            if not _retry_sqlite_locked(
+                "ack", lambda message=message: queue.ack(message), lock_retries
+            ):
+                _record_error(
+                    RuntimeError(f"ack failed for {message.id}"), errors, errors_lock
+                )
+                return
+            with consumed_lock:
+                consumed[message.id] += 1
+    except Exception as exc:  # pragma: no cover - defensive
+        _record_error(exc, errors, errors_lock)
+
+
+def _all_messages_consumed(
+    producers_done: threading.Event,
+    consumed: Counter[str],
+    consumed_lock: threading.Lock,
+    messages: int,
+) -> bool:
+    with consumed_lock:
+        return producers_done.is_set() and sum(consumed.values()) >= messages
+
+
+def _start_threads(threads: list[threading.Thread]) -> None:
+    for thread in threads:
+        thread.start()
+
+
+def _join_benchmark_threads(
+    threads: list[threading.Thread],
+    *,
+    producer_count: int,
+    producers_done: threading.Event,
+    errors: list[BaseException],
+    errors_lock: threading.Lock,
+) -> None:
+    for thread in threads[:producer_count]:
         thread.join()
     producers_done.set()
 
-    for thread in threads[producers:]:
+    for thread in threads[producer_count:]:
         thread.join(timeout=10.0)
         if thread.is_alive():
-            record_error(TimeoutError("consumer thread did not finish"))
+            _record_error(
+                TimeoutError("consumer thread did not finish"), errors, errors_lock
+            )
 
-    elapsed = time.perf_counter() - started_at
+
+def _benchmark_summary(
+    *,
+    queue_name: str,
+    store_path: str,
+    lease_timeout: float,
+    messages: int,
+    producers: int,
+    consumers: int,
+    consumed: Counter[str],
+    errors: list[BaseException],
+    lock_retries: Counter[str],
+    elapsed: float,
+) -> dict[str, Any]:
     queue: PersistentQueue[dict[str, Any]] = PersistentQueue(
         queue_name, store_path=store_path, lease_timeout=lease_timeout
     )

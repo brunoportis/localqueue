@@ -55,6 +55,22 @@ class _ShutdownState:
     requested: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class _QueueWorkerOptions:
+    retry_store_path: str | None
+    max_jobs: int
+    forever: bool
+    max_tries: int
+    worker_id: str | None
+    block: bool
+    timeout: float | None
+    idle_sleep: float
+    release_delay: float
+    dead_letter_on_exhaustion: bool
+    log_events: bool = False
+    mode: str = "process"
+
+
 class _CommandExecutionError(RuntimeError):
     command: list[str]
     exit_code: int
@@ -637,7 +653,7 @@ def _register_queue_admin_commands(
     config: dict[str, Any],
 ) -> None:
     @queue_app.command("process")
-    def queue_process(
+    def queue_process(  # NOSONAR - Typer commands declare CLI options as parameters.
         queue: str,
         handler: str,
         store_path: str | None = typer.Option(None, "--store-path"),
@@ -697,18 +713,22 @@ def _register_queue_admin_commands(
                 err_console=err_console,
                 shutdown=shutdown,
                 worker_policy=worker_policy,
-                retry_store_path=_resolve_retry_store_path(retry_store_path, config),
-                max_jobs=max_jobs,
-                forever=forever,
-                max_tries=max_tries,
-                worker_id=worker_id,
-                block=block,
-                timeout=timeout,
-                idle_sleep=idle_sleep,
-                release_delay=release_delay,
-                dead_letter_on_exhaustion=dead_letter_on_exhaustion,
-                log_events=log_events,
-                mode="process",
+                options=_QueueWorkerOptions(
+                    retry_store_path=_resolve_retry_store_path(
+                        retry_store_path, config
+                    ),
+                    max_jobs=max_jobs,
+                    forever=forever,
+                    max_tries=max_tries,
+                    worker_id=worker_id,
+                    block=block,
+                    timeout=timeout,
+                    idle_sleep=idle_sleep,
+                    release_delay=release_delay,
+                    dead_letter_on_exhaustion=dead_letter_on_exhaustion,
+                    log_events=log_events,
+                    mode="process",
+                ),
             )
         if exit_code:
             raise typer.Exit(exit_code)
@@ -722,7 +742,7 @@ def _register_queue_worker_commands(
     config: dict[str, Any],
 ) -> None:
     @queue_app.command("exec")
-    def queue_exec(
+    def queue_exec(  # NOSONAR - Typer commands declare CLI options as parameters.
         queue: str,
         command: list[str] = typer.Argument(
             ...,
@@ -780,18 +800,22 @@ def _register_queue_worker_commands(
                 err_console=err_console,
                 shutdown=shutdown,
                 worker_policy=worker_policy,
-                retry_store_path=_resolve_retry_store_path(retry_store_path, config),
-                max_jobs=max_jobs,
-                forever=forever,
-                max_tries=max_tries,
-                worker_id=worker_id,
-                block=block,
-                timeout=timeout,
-                idle_sleep=idle_sleep,
-                release_delay=release_delay,
-                dead_letter_on_exhaustion=dead_letter_on_exhaustion,
-                log_events=log_events,
-                mode="exec",
+                options=_QueueWorkerOptions(
+                    retry_store_path=_resolve_retry_store_path(
+                        retry_store_path, config
+                    ),
+                    max_jobs=max_jobs,
+                    forever=forever,
+                    max_tries=max_tries,
+                    worker_id=worker_id,
+                    block=block,
+                    timeout=timeout,
+                    idle_sleep=idle_sleep,
+                    release_delay=release_delay,
+                    dead_letter_on_exhaustion=dead_letter_on_exhaustion,
+                    log_events=log_events,
+                    mode="exec",
+                ),
             )
         if exit_code:
             raise typer.Exit(exit_code)
@@ -871,64 +895,27 @@ def _process_message(
         try:
             _ = retryer(handler, message.value)
         except PersistentRetryExhausted as exc:
-            last_error = _error_payload(exc)
-            _ = _finish_failed_message(
+            return _handle_exhausted_message(
                 queue,
                 message,
+                exc,
                 release_delay=release_delay,
                 dead_letter_on_exhaustion=dead_letter_on_exhaustion,
-                error=exc,
-            )
-            if log_events and err_console is not None:
-                _emit_event(
-                    err_console,
-                    f"{mode}.dead_letter",
-                    queue=message.queue,
-                    message_id=message.id,
-                    attempts=message.attempts,
-                    leased_by=message.leased_by,
-                    last_error=last_error,
-                )
-            return _ProcessResult(
-                processed=False,
-                last_error=last_error,
-                final_state="dead-letter",
-                permanent_failure=False,
+                log_events=log_events,
+                mode=mode,
+                err_console=err_console,
             )
         except Exception as exc:
-            last_error = _error_payload(exc)
-            record = retryer.get_record(message.id)
-            exhausted = record is not None and record.exhausted
-            permanent_failure = is_permanent_failure(exc)
-            if permanent_failure or exhausted:
-                _ = _finish_failed_message(
-                    queue,
-                    message,
-                    release_delay=release_delay,
-                    dead_letter_on_exhaustion=True
-                    if permanent_failure
-                    else dead_letter_on_exhaustion,
-                    error=exc,
-                )
-                final_state = "dead-letter"
-            else:
-                _ = queue.release(message, delay=release_delay, error=exc)
-                final_state = "release"
-            if log_events and err_console is not None:
-                _emit_event(
-                    err_console,
-                    f"{mode}.{final_state.replace('-', '_')}",
-                    queue=message.queue,
-                    message_id=message.id,
-                    attempts=message.attempts,
-                    leased_by=message.leased_by,
-                    last_error=last_error,
-                )
-            return _ProcessResult(
-                processed=False,
-                last_error=last_error,
-                final_state=final_state,
-                permanent_failure=permanent_failure,
+            return _handle_failed_message(
+                queue,
+                message,
+                exc,
+                retryer,
+                release_delay=release_delay,
+                dead_letter_on_exhaustion=dead_letter_on_exhaustion,
+                log_events=log_events,
+                mode=mode,
+                err_console=err_console,
             )
 
         acked = queue.ack(message)
@@ -947,6 +934,126 @@ def _process_message(
             owned_retry_store.close()
 
 
+def _handle_exhausted_message(
+    queue: PersistentQueue,
+    message: QueueMessage,
+    exc: PersistentRetryExhausted,
+    *,
+    release_delay: float,
+    dead_letter_on_exhaustion: bool,
+    log_events: bool,
+    mode: str,
+    err_console: Any | None,
+) -> _ProcessResult:
+    last_error = _error_payload(exc)
+    _ = _finish_failed_message(
+        queue,
+        message,
+        release_delay=release_delay,
+        dead_letter_on_exhaustion=dead_letter_on_exhaustion,
+        error=exc,
+    )
+    _emit_process_event(
+        err_console,
+        f"{mode}.dead_letter",
+        enabled=log_events,
+        message=message,
+        last_error=last_error,
+    )
+    return _ProcessResult(
+        processed=False,
+        last_error=last_error,
+        final_state="dead-letter",
+        permanent_failure=False,
+    )
+
+
+def _handle_failed_message(
+    queue: PersistentQueue,
+    message: QueueMessage,
+    exc: Exception,
+    retryer: PersistentRetrying,
+    *,
+    release_delay: float,
+    dead_letter_on_exhaustion: bool,
+    log_events: bool,
+    mode: str,
+    err_console: Any | None,
+) -> _ProcessResult:
+    last_error = _error_payload(exc)
+    record = retryer.get_record(message.id)
+    exhausted = record is not None and record.exhausted
+    permanent_failure = is_permanent_failure(exc)
+    final_state = _finish_retryable_failure(
+        queue,
+        message,
+        exc,
+        release_delay=release_delay,
+        dead_letter_on_exhaustion=dead_letter_on_exhaustion,
+        exhausted=exhausted,
+        permanent_failure=permanent_failure,
+    )
+    _emit_process_event(
+        err_console,
+        f"{mode}.{final_state.replace('-', '_')}",
+        enabled=log_events,
+        message=message,
+        last_error=last_error,
+    )
+    return _ProcessResult(
+        processed=False,
+        last_error=last_error,
+        final_state=final_state,
+        permanent_failure=permanent_failure,
+    )
+
+
+def _finish_retryable_failure(
+    queue: PersistentQueue,
+    message: QueueMessage,
+    exc: Exception,
+    *,
+    release_delay: float,
+    dead_letter_on_exhaustion: bool,
+    exhausted: bool,
+    permanent_failure: bool,
+) -> str:
+    if permanent_failure or exhausted:
+        _ = _finish_failed_message(
+            queue,
+            message,
+            release_delay=release_delay,
+            dead_letter_on_exhaustion=True
+            if permanent_failure
+            else dead_letter_on_exhaustion,
+            error=exc,
+        )
+        return "dead-letter"
+    _ = queue.release(message, delay=release_delay, error=exc)
+    return "release"
+
+
+def _emit_process_event(
+    err_console: Any | None,
+    event: str,
+    *,
+    enabled: bool,
+    message: QueueMessage,
+    last_error: dict[str, Any] | None,
+) -> None:
+    if not enabled or err_console is None:
+        return
+    _emit_event(
+        err_console,
+        event,
+        queue=message.queue,
+        message_id=message.id,
+        attempts=message.attempts,
+        leased_by=message.leased_by,
+        last_error=last_error,
+    )
+
+
 def _process_queue_messages(
     queue: PersistentQueue,
     handler: Callable[[Any], Any],
@@ -955,18 +1062,7 @@ def _process_queue_messages(
     err_console: Any,
     shutdown: _ShutdownState,
     worker_policy: PersistentWorkerConfig | None = None,
-    retry_store_path: str | None,
-    max_jobs: int,
-    forever: bool,
-    max_tries: int,
-    worker_id: str | None,
-    block: bool,
-    timeout: float | None,
-    idle_sleep: float,
-    release_delay: float,
-    dead_letter_on_exhaustion: bool,
-    log_events: bool = False,
-    mode: str = "process",
+    options: _QueueWorkerOptions,
 ) -> int:
     processed = 0
     policy_state = WorkerPolicyState()
@@ -974,9 +1070,9 @@ def _process_queue_messages(
     owned_retry_store: SQLiteAttemptStore | None = None
 
     try:
-        while forever or processed < max_jobs:
+        while options.forever or processed < options.max_jobs:
             if shutdown.requested:
-                return _stop_processing(console, processed, forever)
+                return _stop_processing(console, processed, options.forever)
 
             iteration, owned_retry_store, empty_queue = _process_queue_iteration(
                 _QueueIterationContext(
@@ -986,18 +1082,18 @@ def _process_queue_messages(
                     err_console=err_console,
                     policy_state=policy_state,
                     resolved_policy=resolved_policy,
-                    retry_store_path=retry_store_path,
+                    retry_store_path=options.retry_store_path,
                     owned_retry_store=owned_retry_store,
-                    max_tries=max_tries,
-                    worker_id=worker_id,
-                    block=block,
-                    timeout=timeout,
-                    idle_sleep=idle_sleep,
-                    release_delay=release_delay,
-                    dead_letter_on_exhaustion=dead_letter_on_exhaustion,
-                    log_events=log_events,
-                    mode=mode,
-                    forever=forever,
+                    max_tries=options.max_tries,
+                    worker_id=options.worker_id,
+                    block=options.block,
+                    timeout=options.timeout,
+                    idle_sleep=options.idle_sleep,
+                    release_delay=options.release_delay,
+                    dead_letter_on_exhaustion=options.dead_letter_on_exhaustion,
+                    log_events=options.log_events,
+                    mode=options.mode,
+                    forever=options.forever,
                 )
             )
             if empty_queue:
@@ -1008,7 +1104,7 @@ def _process_queue_messages(
                 iteration.message,
                 iteration.process_result,
                 console=console,
-                worker_id=worker_id,
+                worker_id=options.worker_id,
                 policy_state=policy_state,
             ):
                 processed += 1
@@ -1018,10 +1114,10 @@ def _process_queue_messages(
                 iteration.message,
                 iteration.process_result,
                 console=console,
-                worker_id=worker_id,
+                worker_id=options.worker_id,
                 policy_state=policy_state,
                 resolved_policy=resolved_policy,
-                forever=forever,
+                forever=options.forever,
             ):
                 continue
             return 1
