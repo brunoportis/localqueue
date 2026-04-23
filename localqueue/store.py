@@ -1,5 +1,7 @@
+from pathlib import Path
+
 from .stores import (
-    LMDBQueueStore,
+    LMDBQueueStore as _LMDBQueueStore,
     MemoryQueueStore,
     QueueMessage,
     QueueStats,
@@ -111,3 +113,25 @@ __all__ = [
     "_worker_heartbeats_key",
     "_worker_stats_key",
 ]
+
+
+class LMDBQueueStore(_LMDBQueueStore):
+    def __init__(self, path: str | Path, *, map_size: int = 10**8) -> None:
+        lmdb = _import_lmdb()
+        self.path = Path(path)
+        self.path.mkdir(parents=True, exist_ok=True)
+        key = (str(self.path.resolve()), map_size)
+        with _ENVS_LOCK:
+            env = _ENVS.get(key)
+            if env is None:
+                try:
+                    env = lmdb.open(
+                        str(self.path),
+                        map_size=map_size,
+                        subdir=True,
+                        lock=True,
+                    )
+                except lmdb.LockError as exc:
+                    raise QueueStoreLockedError(self.path) from exc
+                _ENVS[key] = env
+            self._env = env

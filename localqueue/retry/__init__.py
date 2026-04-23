@@ -1,4 +1,4 @@
-from .stores import (
+from .store import (
     AttemptStore,
     AttemptStoreLockedError,
     LMDBAttemptStore,

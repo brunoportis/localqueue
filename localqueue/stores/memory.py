@@ -254,7 +254,8 @@ class MemoryQueueStore:
             doomed = [
                 message_id
                 for message_id, record in records.items()
-                if record.state == _DEAD and dead_record_age(record, now=now) >= older_than
+                if record.state == _DEAD
+                and dead_record_age(record, now=now) >= older_than
             ]
             for message_id in doomed:
                 record = records.pop(message_id, None)
@@ -269,7 +270,8 @@ class MemoryQueueStore:
             return sum(
                 1
                 for record in self._records.get(queue, {}).values()
-                if record.state == _DEAD and dead_record_age(record, now=now) >= older_than
+                if record.state == _DEAD
+                and dead_record_age(record, now=now) >= older_than
             )
 
     def empty(self, queue: str, *, now: float) -> bool:

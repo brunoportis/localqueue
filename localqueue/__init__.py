@@ -25,7 +25,7 @@ from .retry import (
     persistent_async_retry,
     persistent_retry,
 )
-from .stores import (
+from .store import (
     LMDBQueueStore,
     MemoryQueueStore,
     QueueMessage,

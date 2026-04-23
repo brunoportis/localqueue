@@ -341,7 +341,10 @@ class LMDBQueueStore:
                 if not key.startswith(prefix):
                     break
                 record = self._get_record(txn, queue, bytes(raw_id).decode("utf-8"))
-                if record is not None and dead_record_age(record, now=now) >= older_than:
+                if (
+                    record is not None
+                    and dead_record_age(record, now=now) >= older_than
+                ):
                     doomed.append(bytes(raw_id))
             for raw_id in doomed:
                 message_id = raw_id.decode("utf-8")
@@ -367,7 +370,10 @@ class LMDBQueueStore:
                 if not key.startswith(prefix):
                     break
                 record = self._get_record(txn, queue, bytes(raw_id).decode("utf-8"))
-                if record is not None and dead_record_age(record, now=now) >= older_than:
+                if (
+                    record is not None
+                    and dead_record_age(record, now=now) >= older_than
+                ):
                     count += 1
             return count
 
