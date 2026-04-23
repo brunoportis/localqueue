@@ -108,4 +108,4 @@ Before `1.0.0`, use this convention:
 
 ## Current Release
 
-The current planned release is `0.3.2`.
+The current planned release is `0.3.3`.

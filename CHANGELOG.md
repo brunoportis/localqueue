@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.3
+
+- Split queue and retry store implementations into dedicated modules.
+- Refactor the CLI worker option wiring and centralize worker helpers.
+- Add a SonarCloud workflow and stabilize the SQLite concurrency queue test.
+
 ## 0.3.2
 
 - Add a CLI Docker image and publish it to GHCR on version tags.
