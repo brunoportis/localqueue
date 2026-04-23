@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.2
+
+- Add a CLI Docker image and publish it to GHCR on version tags.
+- Raise the coverage gate to 100% and align the README badge.
+
 ## 0.3.1
 
 - Use XDG data directories for default SQLite queue and retry store files.
