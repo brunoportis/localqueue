@@ -59,6 +59,7 @@ from localqueue.cli import (
     _shutdown_state,
     _worker_health_summary,
     _write_config,
+    _QueueIterationContext,
 )
 import localqueue.cli as cli_module
 from localqueue.retry import configure_default_store
@@ -1678,24 +1679,26 @@ class CliTests(unittest.TestCase):
             mock.patch("localqueue.cli.time.sleep") as sleep,
         ):
             iteration, owned_retry_store, should_continue = _process_queue_iteration(
-                queue,
-                lambda payload: payload,
-                console=console,
-                err_console=err_console,
-                policy_state=policy_state,
-                resolved_policy=resolved_policy,
-                retry_store_path=None,
-                owned_retry_store=None,
-                max_tries=1,
-                worker_id=None,
-                block=False,
-                timeout=None,
-                idle_sleep=0.001,
-                release_delay=0.0,
-                dead_letter_on_exhaustion=True,
-                log_events=False,
-                mode="process",
-                forever=True,
+                _QueueIterationContext(
+                    queue=queue,
+                    handler=lambda payload: payload,
+                    console=console,
+                    err_console=err_console,
+                    policy_state=policy_state,
+                    resolved_policy=resolved_policy,
+                    retry_store_path=None,
+                    owned_retry_store=None,
+                    max_tries=1,
+                    worker_id=None,
+                    block=False,
+                    timeout=None,
+                    idle_sleep=0.001,
+                    release_delay=0.0,
+                    dead_letter_on_exhaustion=True,
+                    log_events=False,
+                    mode="process",
+                    forever=True,
+                )
             )
 
         self.assertIsNone(iteration)

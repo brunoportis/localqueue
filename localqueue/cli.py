@@ -383,7 +383,7 @@ def _register_queue_stats_commands(
     queue_app: Any,
     typer: Any,
     console: Any,
-    err_console: Any,
+    _err_console: Any,
     config: dict[str, Any],
 ) -> None:
     @queue_app.command("stats")
@@ -979,24 +979,26 @@ def _process_queue_messages(
                 return _stop_processing(console, processed, forever)
 
             iteration, owned_retry_store, empty_queue = _process_queue_iteration(
-                queue,
-                handler,
-                console=console,
-                err_console=err_console,
-                policy_state=policy_state,
-                resolved_policy=resolved_policy,
-                retry_store_path=retry_store_path,
-                owned_retry_store=owned_retry_store,
-                max_tries=max_tries,
-                worker_id=worker_id,
-                block=block,
-                timeout=timeout,
-                idle_sleep=idle_sleep,
-                release_delay=release_delay,
-                dead_letter_on_exhaustion=dead_letter_on_exhaustion,
-                log_events=log_events,
-                mode=mode,
-                forever=forever,
+                _QueueIterationContext(
+                    queue=queue,
+                    handler=handler,
+                    console=console,
+                    err_console=err_console,
+                    policy_state=policy_state,
+                    resolved_policy=resolved_policy,
+                    retry_store_path=retry_store_path,
+                    owned_retry_store=owned_retry_store,
+                    max_tries=max_tries,
+                    worker_id=worker_id,
+                    block=block,
+                    timeout=timeout,
+                    idle_sleep=idle_sleep,
+                    release_delay=release_delay,
+                    dead_letter_on_exhaustion=dead_letter_on_exhaustion,
+                    log_events=log_events,
+                    mode=mode,
+                    forever=forever,
+                )
             )
             if empty_queue:
                 return _handle_empty_queue(err_console, processed)
@@ -1036,48 +1038,52 @@ class _QueueIterationResult:
     process_result: _ProcessResult
 
 
+@dataclass(slots=True)
+class _QueueIterationContext:
+    queue: PersistentQueue
+    handler: Callable[[Any], Any]
+    console: Any
+    err_console: Any
+    policy_state: WorkerPolicyState
+    resolved_policy: PersistentWorkerConfig
+    retry_store_path: str | None
+    owned_retry_store: SQLiteAttemptStore | None
+    max_tries: int
+    worker_id: str | None
+    block: bool
+    timeout: float | None
+    idle_sleep: float
+    release_delay: float
+    dead_letter_on_exhaustion: bool
+    log_events: bool
+    mode: str
+    forever: bool
+
+
 def _process_queue_iteration(
-    queue: PersistentQueue,
-    handler: Callable[[Any], Any],
-    *,
-    console: Any,
-    err_console: Any,
-    policy_state: WorkerPolicyState,
-    resolved_policy: PersistentWorkerConfig,
-    retry_store_path: str | None,
-    owned_retry_store: SQLiteAttemptStore | None,
-    max_tries: int,
-    worker_id: str | None,
-    block: bool,
-    timeout: float | None,
-    idle_sleep: float,
-    release_delay: float,
-    dead_letter_on_exhaustion: bool,
-    log_events: bool,
-    mode: str,
-    forever: bool,
+    context: _QueueIterationContext,
 ) -> tuple[_QueueIterationResult | None, SQLiteAttemptStore | None, bool]:
-    if worker_id is not None:
-        queue.record_worker_heartbeat(worker_id)
-    _sleep_for_policy(policy_state, resolved_policy)
+    if context.worker_id is not None:
+        context.queue.record_worker_heartbeat(context.worker_id)
+    _sleep_for_policy(context.policy_state, context.resolved_policy)
 
     try:
-        message = queue.get_message(
-            block=block,
-            timeout=_poll_timeout(forever, block, timeout),
-            leased_by=worker_id,
+        message = context.queue.get_message(
+            block=context.block,
+            timeout=_poll_timeout(context.forever, context.block, context.timeout),
+            leased_by=context.worker_id,
         )
     except Empty:
-        if forever:
-            if not block:
-                time.sleep(idle_sleep)
-            return None, owned_retry_store, True
-        return None, owned_retry_store, True
+        if context.forever:
+            if not context.block:
+                time.sleep(context.idle_sleep)
+            return None, context.owned_retry_store, True
+        return None, context.owned_retry_store, True
 
-    if log_events and err_console is not None:
+    if context.log_events and context.err_console is not None:
         _emit_event(
-            err_console,
-            f"{mode}.lease",
+            context.err_console,
+            f"{context.mode}.lease",
             queue=message.queue,
             message_id=message.id,
             leased_by=message.leased_by,
@@ -1085,21 +1091,23 @@ def _process_queue_iteration(
             leased_until=message.leased_until,
         )
 
-    if retry_store_path is not None and owned_retry_store is None:
-        owned_retry_store = SQLiteAttemptStore(retry_store_path)
+    if context.retry_store_path is not None and context.owned_retry_store is None:
+        owned_retry_store = SQLiteAttemptStore(context.retry_store_path)
+    else:
+        owned_retry_store = context.owned_retry_store
 
     result = _process_message(
-        queue,
+        context.queue,
         message,
-        handler,
+        context.handler,
         retry_store=owned_retry_store,
-        retry_store_path=None if owned_retry_store is not None else retry_store_path,
-        max_tries=max_tries,
-        release_delay=release_delay,
-        dead_letter_on_exhaustion=dead_letter_on_exhaustion,
-        log_events=log_events,
-        mode=mode,
-        err_console=err_console,
+        retry_store_path=None if owned_retry_store is not None else context.retry_store_path,
+        max_tries=context.max_tries,
+        release_delay=context.release_delay,
+        dead_letter_on_exhaustion=context.dead_letter_on_exhaustion,
+        log_events=context.log_events,
+        mode=context.mode,
+        err_console=context.err_console,
     )
     return (
         _QueueIterationResult(message=message, process_result=result),

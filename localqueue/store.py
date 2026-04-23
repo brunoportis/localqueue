@@ -1601,7 +1601,7 @@ class LMDBQueueStore:
                 if key.startswith(_message_prefix(queue)):
                     count += 1
                 _ = txn.delete(key)
-            for key in list(self._iter_dedupe_keys(txn, queue)):
+            for key in self._iter_dedupe_keys(txn, queue):
                 _ = txn.delete(key)
             _ = txn.delete(_worker_stats_key(queue))
             _ = txn.delete(_worker_heartbeats_key(queue))
@@ -1742,7 +1742,7 @@ class LMDBQueueStore:
             raise ValueError("queue worker stats are not valid JSON") from exc
         if not isinstance(payload, dict):
             raise ValueError("queue worker stats payload must be a JSON object")
-        return dict((str(key), int(value)) for key, value in payload.items())
+        return {str(key): int(value) for key, value in payload.items()}
 
     @staticmethod
     def _decode_worker_heartbeats(raw: bytes | None) -> dict[str, float]:
@@ -1756,7 +1756,7 @@ class LMDBQueueStore:
             ) from exc
         if not isinstance(payload, dict):
             raise ValueError("queue worker heartbeat payload must be a JSON object")
-        return dict((str(key), float(value)) for key, value in payload.items())
+        return {str(key): float(value) for key, value in payload.items()}
 
 
 def _safe_queue(queue: str) -> str:

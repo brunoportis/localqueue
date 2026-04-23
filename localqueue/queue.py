@@ -11,6 +11,7 @@ from .paths import default_queue_store_path
 from .store import QueueMessage, QueueStats, QueueStore, SQLiteQueueStore
 
 T = TypeVar("T")
+_NEGATIVE_DELAY_ERROR = "delay cannot be negative"
 
 
 class PersistentQueue(Generic[T]):
@@ -62,7 +63,7 @@ class PersistentQueue(Generic[T]):
         dedupe_key: str | None = None,
     ) -> QueueMessage:
         if delay < 0:
-            raise ValueError("delay cannot be negative")
+            raise ValueError(_NEGATIVE_DELAY_ERROR)
         if dedupe_key is not None and not dedupe_key:
             raise ValueError("dedupe_key cannot be empty")
         deadline = _deadline(timeout)
@@ -146,7 +147,7 @@ class PersistentQueue(Generic[T]):
         error: BaseException | str | None = None,
     ) -> bool:
         if delay < 0:
-            raise ValueError("delay cannot be negative")
+            raise ValueError(_NEGATIVE_DELAY_ERROR)
         failed_at = time.time() if error is not None else None
         with self._condition:
             released = self._get_store().release(
@@ -205,14 +206,14 @@ class PersistentQueue(Generic[T]):
 
     def requeue_dead(self, message: QueueMessage, *, delay: float = 0.0) -> bool:
         if delay < 0:
-            raise ValueError("delay cannot be negative")
+            raise ValueError(_NEGATIVE_DELAY_ERROR)
         with self._condition:
             requeued = self._get_store().requeue_dead(
                 self.name,
                 message.id,
                 available_at=time.time() + delay,
             )
-            _ = self._condition.notify_all()
+            self._condition.notify_all()
             return requeued
 
     def prune_dead_letters(self, *, older_than: float) -> int:
@@ -224,7 +225,7 @@ class PersistentQueue(Generic[T]):
                 older_than=older_than,
                 now=time.time(),
             )
-            _ = self._condition.notify_all()
+            self._condition.notify_all()
             return removed
 
     def count_dead_letters_older_than(self, *, older_than: float) -> int:

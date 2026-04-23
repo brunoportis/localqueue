@@ -364,7 +364,7 @@ def persistent_async_worker(
                         delay=worker_config.release_delay,
                         error=exc,
                     )
-                _ = _record_failure(
+                _record_failure(
                     policy_state,
                     worker_config,
                     permanent=is_permanent_failure(exc),
