@@ -384,7 +384,8 @@ class RetryTests(unittest.TestCase):
             connection.execute.side_effect = [None, None, RuntimeError("boom")]
             connection.close = mock.Mock()
             with mock.patch(
-                "localqueue.retry.store.sqlite3.connect", return_value=connection
+                "localqueue.retry.stores.sqlite.sqlite3.connect",
+                return_value=connection,
             ):
                 with self.assertRaises(RuntimeError):
                     _ = SQLiteAttemptStore(path)
@@ -1278,7 +1279,7 @@ class RetryTests(unittest.TestCase):
             fake_lmdb.LockError = lmdb.LockError
             fake_lmdb.open.side_effect = lmdb.LockError("busy")
             with mock.patch(
-                "localqueue.retry.store._import_lmdb", return_value=fake_lmdb
+                "localqueue.retry.stores.lmdb.import_lmdb", return_value=fake_lmdb
             ):
                 with self.assertRaises(AttemptStoreLockedError) as exc_info:
                     _ = LMDBAttemptStore(tmpdir)

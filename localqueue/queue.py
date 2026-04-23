@@ -8,7 +8,7 @@ from threading import Condition
 from typing import Any, Generic, TypeVar, cast
 
 from .paths import default_queue_store_path
-from .store import QueueMessage, QueueStats, QueueStore, SQLiteQueueStore
+from .stores import QueueMessage, QueueStats, QueueStore, SQLiteQueueStore
 
 T = TypeVar("T")
 _NEGATIVE_DELAY_ERROR = "delay cannot be negative"

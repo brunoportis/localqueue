@@ -13,7 +13,7 @@ from .failure import is_permanent_failure
 
 if TYPE_CHECKING:
     from .queue import PersistentQueue
-    from .store import QueueMessage
+    from .stores import QueueMessage
 
 WrappedFn = TypeVar("WrappedFn", bound=Callable[..., Any])
 _UNSET = object()
