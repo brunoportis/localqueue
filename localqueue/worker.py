@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import threading
 from dataclasses import dataclass
 from collections.abc import Callable
 from queue import Empty
@@ -17,6 +18,30 @@ if TYPE_CHECKING:
 
 WrappedFn = TypeVar("WrappedFn", bound=Callable[..., Any])
 _UNSET = object()
+
+
+async def _run_in_daemon_thread(
+    fn: Callable[..., Any], *args: Any, **kwargs: Any
+) -> Any:
+    result: dict[str, Any] = {}
+    error: dict[str, BaseException] = {}
+    done = threading.Event()
+
+    def runner() -> None:
+        try:
+            result["value"] = fn(*args, **kwargs)
+        except BaseException as exc:
+            error["value"] = exc
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    while not done.is_set():
+        await asyncio.sleep(0.001)
+    if "value" in error:
+        raise error["value"]
+    return result["value"]
 
 
 def _resolve_dead_letter_on_failure(
@@ -385,6 +410,6 @@ def persistent_async_worker(
 async def _get_message_async(queue: PersistentQueue) -> QueueMessage:
     while True:
         try:
-            return await asyncio.to_thread(queue.get_message, False)
+            return await _run_in_daemon_thread(queue.get_message, False)
         except Empty:
             await asyncio.sleep(0.05)
