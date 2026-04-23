@@ -6,12 +6,13 @@ import sys
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .paths import default_queue_store_path, default_retry_store_path
-from .services.queue_worker import message_payload as _message_payload
 from .services.queue_worker import print_json as _print_json
-from .stores import QueueMessage
+
+if TYPE_CHECKING:
+    from .stores import QueueMessage
 
 CONFIG_FILENAME = "config.yaml"
 
@@ -239,4 +240,3 @@ def emit_event(console: Any, event: str, **fields: Any) -> None:
         **{key: value for key, value in fields.items() if value is not None},
     }
     _print_json(console, payload)
-

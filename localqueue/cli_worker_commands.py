@@ -3,11 +3,13 @@ from __future__ import annotations
 import inspect
 from dataclasses import dataclass
 from functools import wraps
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
-from .queue import PersistentQueue
 from .services.queue_worker import QueueWorkerOptions
 from .worker import PersistentWorkerConfig
+
+if TYPE_CHECKING:
+    from .queue import PersistentQueue
 
 _EMPTY = inspect.Parameter.empty
 
@@ -85,7 +87,9 @@ def queue_worker_option_parameters(typer: Any) -> list[inspect.Parameter]:
         ),
         argument("worker_id", str | None, default=typer.Option(None, "--worker-id")),
         argument("block", bool, default=typer.Option(False, "--block")),
-        argument("timeout", float | None, default=typer.Option(None, "--timeout", min=0.0)),
+        argument(
+            "timeout", float | None, default=typer.Option(None, "--timeout", min=0.0)
+        ),
         argument(
             "idle_sleep",
             float,

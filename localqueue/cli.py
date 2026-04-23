@@ -15,15 +15,12 @@ from .cli_commands import (
     register_retry_commands,
 )
 from .cli_support import (
-    CONFIG_FILENAME,
     coerce_config_value as _coerce_config_value,
     config_path as _config_path,
     dead_letter_summary as _dead_letter_summary,
     emit_event as _emit_event,
     filter_dead_letters as _filter_dead_letters,
-    last_attempt_worker_id as _last_attempt_worker_id,
     load_config as _load_config,
-    matches_dead_letter_filters as _matches_dead_letter_filters,
     parse_json as _parse_json,
     read_value as _read_value,
     resolve_dead_letter_ttl as _resolve_dead_letter_ttl,
@@ -35,31 +32,17 @@ from .cli_support import (
     write_config as _write_config,
 )
 from .cli_worker_commands import (
-    QueueWorkerCliOptions as _QueueWorkerCliOptions,
-    argument as _argument,
-    queue_worker_command_signature as _queue_worker_command_signature,
     register_queue_exec_command,
     register_queue_process_command,
 )
 from .paths import default_queue_store_path, default_retry_store_path
 from .queue import PersistentQueue
 from .services.queue_worker import (
-    _CommandExecutionError,
-    _CommandNotFoundError,
-    QueueIterationContext as _QueueIterationContext,
-    QueueWorkerOptions as _QueueWorkerOptions,
     ShutdownState as _ShutdownState,
     command_handler as _command_handler,
-    error_payload as _error_payload,
-    finish_failed_message as _finish_failed_message,
-    format_command as _format_command,
     message_payload as _message_payload,
-    poll_timeout as _poll_timeout,
     print_json as _print_json,
-    process_message as _process_message,
-    process_queue_iteration as _process_queue_iteration,
     process_queue_messages as _process_queue_messages,
-    truncate_output as _truncate_output,
 )
 from .stores import QueueMessage
 
@@ -69,6 +52,7 @@ if TYPE_CHECKING:
 
 DEFAULT_STORE_PATH = str(default_queue_store_path())
 DEFAULT_RETRY_STORE_PATH = str(default_retry_store_path())
+
 
 def main(args: list[str] | None = None) -> None:
     try:
@@ -121,7 +105,9 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
     app.add_typer(retry_app, name="retry")
     app.add_typer(config_app, name="config")
     register_config_commands(config_app, yaml=yaml, context=command_context)
-    _register_queue_commands(queue_app, typer, console, err_console, config, command_context)
+    _register_queue_commands(
+        queue_app, typer, console, err_console, config, command_context
+    )
     register_retry_commands(retry_app, context=command_context)
     return app
 
@@ -206,7 +192,6 @@ def _complete_message(
             delay=delay if action == "release" else None,
         )
     _print_json(console, {"id": message_id, "state": action})
-
 
 
 def _print_dead_letters(

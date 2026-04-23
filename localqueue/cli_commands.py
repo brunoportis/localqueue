@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from queue import Empty
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
-from .queue import PersistentQueue
 from .retry import SQLiteAttemptStore
 from .stores import QueueMessage
+
+if TYPE_CHECKING:
+    from .queue import PersistentQueue
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,25 +17,25 @@ class CommandRegistryContext:
     console: Any
     err_console: Any
     config: dict[str, Any]
-    config_path: Callable[[], Any]
-    write_config: Callable[[Any, dict[str, Any], Any | None], None]
-    print_json: Callable[[Any, Any], None]
-    resolve_store_path: Callable[[str | None, dict[str, Any]], str]
-    resolve_retry_store_path: Callable[[str | None, dict[str, Any]], str]
-    resolve_dead_letter_ttl: Callable[[float | None, dict[str, Any]], float | None]
-    resolve_retry_record_ttl: Callable[[float | None, dict[str, Any]], float | None]
-    retention_settings: Callable[[dict[str, Any]], dict[str, Any]]
+    config_path: Callable[..., Any]
+    write_config: Callable[..., None]
+    print_json: Callable[..., None]
+    resolve_store_path: Callable[..., str]
+    resolve_retry_store_path: Callable[..., str]
+    resolve_dead_letter_ttl: Callable[..., float | None]
+    resolve_retry_record_ttl: Callable[..., float | None]
+    retention_settings: Callable[..., dict[str, Any]]
     coerce_config_value: Callable[[str, str], str | float]
     queue_factory: Callable[..., PersistentQueue]
     read_value: Callable[[str | None], str]
     parse_json: Callable[[str], Any]
-    emit_event: Callable[[Any, str], None]
-    message_payload: Callable[[QueueMessage], dict[str, Any]]
+    emit_event: Callable[..., None]
+    message_payload: Callable[..., dict[str, Any]]
     complete_message: Callable[..., None]
-    shutdown_state: Callable[[], Any]
+    shutdown_state: Callable[..., Any]
     print_queue_stats: Callable[..., None]
-    worker_health_summary: Callable[[dict[str, float]], dict[str, Any]]
-    dead_letter_summary: Callable[[list[QueueMessage]], dict[str, Any]]
+    worker_health_summary: Callable[..., dict[str, Any]]
+    dead_letter_summary: Callable[..., dict[str, Any]]
     print_dead_letters: Callable[..., None]
 
 
@@ -286,7 +288,9 @@ def _register_queue_message_commands(
         store_path: str | None = typer.Option(None, "--store-path"),
     ) -> None:
         console.print(
-            context.queue_factory(queue, context.resolve_store_path(store_path, config)).qsize()
+            context.queue_factory(
+                queue, context.resolve_store_path(store_path, config)
+            ).qsize()
         )
 
 

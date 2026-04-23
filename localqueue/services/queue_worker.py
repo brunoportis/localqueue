@@ -10,9 +10,7 @@ from typing import TYPE_CHECKING, Any
 from tenacity import wait_none
 
 from ..failure import is_permanent_failure
-from ..queue import PersistentQueue
 from ..retry import PersistentRetryExhausted, PersistentRetrying, SQLiteAttemptStore
-from ..stores import QueueMessage
 from ..worker import (
     PersistentWorkerConfig,
     WorkerPolicyState,
@@ -23,6 +21,8 @@ from ..worker import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from ..queue import PersistentQueue
+    from ..stores import QueueMessage
 
 
 @dataclass(frozen=True, slots=True)
