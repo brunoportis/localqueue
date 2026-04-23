@@ -58,6 +58,7 @@ from localqueue.cli_worker_commands import (
 )
 from localqueue.services.queue_worker import (
     QueueIterationContext as _QueueIterationContext,
+    QueueIterationResult as _QueueIterationResult,
     QueueWorkerOptions as _QueueWorkerOptions,
     _CommandExecutionError,
     _CommandNotFoundError,
@@ -1746,6 +1747,55 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertEqual(console.values, [])
         self.assertEqual(err_console.messages, ["[yellow]queue is empty[/yellow]"])
+
+    def test_process_queue_messages_keeps_waiting_when_forever_blocking_is_empty(
+        self,
+    ) -> None:
+        queue = PersistentQueue("emails", store=MemoryQueueStore())
+        console = _JsonConsole()
+        err_console = _JsonConsole()
+        shutdown = _ShutdownState()
+
+        def stop_after_second_poll(
+            context: _QueueIterationContext,
+        ) -> tuple[_QueueIterationResult | None, SQLiteAttemptStore | None, bool]:
+            if shutdown.requested:
+                return None, None, True
+            shutdown.requested = True
+            self.assertTrue(context.forever)
+            self.assertTrue(context.block)
+            return None, None, True
+
+        with mock.patch(
+            "localqueue.services.queue_worker.process_queue_iteration",
+            side_effect=stop_after_second_poll,
+        ) as process_iteration:
+            result = _process_queue_messages(
+                queue,
+                lambda payload: payload,
+                console=console,
+                err_console=err_console,
+                shutdown=shutdown,
+                options=_QueueWorkerOptions(
+                    retry_store_path=self._retry_store_path(),
+                    max_jobs=1,
+                    forever=True,
+                    max_tries=1,
+                    worker_id="worker-a",
+                    block=True,
+                    timeout=None,
+                    idle_sleep=0.001,
+                    release_delay=0.0,
+                    dead_letter_on_exhaustion=True,
+                    log_events=False,
+                    mode="process",
+                ),
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(console.values, [{"state": "stopped", "processed": 0}])
+        self.assertEqual(err_console.messages, [])
+        self.assertEqual(process_iteration.call_count, 1)
 
     def test_process_queue_iteration_handles_forever_empty_queue_without_blocking(
         self,
