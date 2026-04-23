@@ -8,13 +8,11 @@ import subprocess
 import sys
 import time
 from collections import Counter
-from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty
-from types import FrameType
-from typing import Any, Iterator
+from typing import Any, Iterator, TYPE_CHECKING
 
 from tenacity import wait_none
 
@@ -34,6 +32,10 @@ from .worker import (
     _record_success,
     _sleep_for_policy,
 )
+
+if TYPE_CHECKING:
+    from types import FrameType
+    from collections.abc import Callable
 
 DEFAULT_STORE_PATH = str(default_queue_store_path())
 DEFAULT_RETRY_STORE_PATH = str(default_retry_store_path())
@@ -114,7 +116,20 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
     app.add_typer(queue_app, name="queue")
     app.add_typer(retry_app, name="retry")
     app.add_typer(config_app, name="config")
+    _register_config_commands(config_app, typer, yaml, console, err_console, config)
+    _register_queue_commands(queue_app, typer, console, err_console, config)
+    _register_retry_commands(retry_app, typer, console, err_console, config)
+    return app
 
+
+def _register_config_commands(
+    config_app: Any,
+    typer: Any,
+    yaml: Any,
+    console: Any,
+    err_console: Any,
+    config: dict[str, Any],
+) -> None:
     @config_app.command("path")
     def config_path() -> None:
         console.print(str(_config_path()))
@@ -181,6 +196,26 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         config.update(updated)
         _print_json(console, config)
 
+
+def _register_queue_commands(
+    queue_app: Any,
+    typer: Any,
+    console: Any,
+    err_console: Any,
+    config: dict[str, Any],
+) -> None:
+    _register_queue_basic_commands(queue_app, typer, console, err_console, config)
+    _register_queue_admin_commands(queue_app, typer, console, err_console, config)
+    _register_queue_worker_commands(queue_app, typer, console, err_console, config)
+
+
+def _register_queue_basic_commands(
+    queue_app: Any,
+    typer: Any,
+    console: Any,
+    err_console: Any,
+    config: dict[str, Any],
+) -> None:
     @queue_app.command("add")
     def queue_add(
         queue: str,
@@ -210,6 +245,17 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
             )
         _print_json(console, _message_payload(message))
 
+    _register_queue_message_commands(queue_app, typer, console, err_console, config)
+    _register_queue_maintenance_commands(queue_app, typer, console, err_console, config)
+
+
+def _register_queue_message_commands(
+    queue_app: Any,
+    typer: Any,
+    console: Any,
+    err_console: Any,
+    config: dict[str, Any],
+) -> None:
     @queue_app.command("pop")
     def queue_pop(
         queue: str,
@@ -319,6 +365,27 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
     ) -> None:
         console.print(_queue(queue, _resolve_store_path(store_path, config)).qsize())
 
+
+def _register_queue_maintenance_commands(
+    queue_app: Any,
+    typer: Any,
+    console: Any,
+    err_console: Any,
+    config: dict[str, Any],
+) -> None:
+    _register_queue_stats_commands(queue_app, typer, console, err_console, config)
+    _register_queue_dead_commands(queue_app, typer, console, err_console, config)
+    _register_queue_requeue_commands(queue_app, typer, console, err_console, config)
+    _register_queue_purge_commands(queue_app, typer, console, err_console, config)
+
+
+def _register_queue_stats_commands(
+    queue_app: Any,
+    typer: Any,
+    console: Any,
+    err_console: Any,
+    config: dict[str, Any],
+) -> None:
     @queue_app.command("stats")
     def queue_stats(
         queue: str,
@@ -362,6 +429,14 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
             },
         )
 
+
+def _register_queue_dead_commands(
+    queue_app: Any,
+    typer: Any,
+    console: Any,
+    err_console: Any,
+    config: dict[str, Any],
+) -> None:
     @queue_app.command("dead")
     def queue_dead(
         queue: str,
@@ -434,39 +509,14 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
                 failed_within=failed_within,
             )
 
-    @retry_app.command("prune")
-    def retry_prune(
-        older_than: float | None = typer.Option(None, "--older-than", min=0.0),
-        retry_store_path: str | None = typer.Option(None, "--retry-store-path"),
-        dry_run: bool = typer.Option(False, "--dry-run"),
-    ) -> None:
-        store = SQLiteAttemptStore(_resolve_retry_store_path(retry_store_path, config))
-        try:
-            resolved_older_than = _resolve_retry_record_ttl(older_than, config)
-            if resolved_older_than is None:
-                err_console.print(
-                    "[red]pass --older-than or configure retry_record_ttl_seconds[/red]"
-                )
-                raise typer.Exit(1)
-            now = time.time()
-            deleted = (
-                store.count_exhausted_older_than(
-                    older_than=resolved_older_than, now=now
-                )
-                if dry_run
-                else store.prune_exhausted(older_than=resolved_older_than, now=now)
-            )
-        finally:
-            store.close()
-        _print_json(
-            console,
-            {
-                "dry_run": dry_run,
-                "older_than": resolved_older_than,
-                "would_delete" if dry_run else "deleted": deleted,
-            },
-        )
 
+def _register_queue_requeue_commands(
+    queue_app: Any,
+    typer: Any,
+    console: Any,
+    err_console: Any,
+    config: dict[str, Any],
+) -> None:
     @queue_app.command("requeue-dead")
     def queue_requeue_dead(
         queue: str,
@@ -518,6 +568,14 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
             )
         _print_json(console, {"id": message_id, "state": "requeued"})
 
+
+def _register_queue_purge_commands(
+    queue_app: Any,
+    typer: Any,
+    console: Any,
+    err_console: Any,
+    config: dict[str, Any],
+) -> None:
     @queue_app.command("purge")
     def queue_purge(
         queue: str,
@@ -529,6 +587,55 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
             _emit_event(err_console, "queue.purge", queue=queue, deleted=deleted)
         console.print(deleted)
 
+
+def _register_retry_commands(
+    retry_app: Any,
+    typer: Any,
+    console: Any,
+    err_console: Any,
+    config: dict[str, Any],
+) -> None:
+    @retry_app.command("prune")
+    def retry_prune(
+        older_than: float | None = typer.Option(None, "--older-than", min=0.0),
+        retry_store_path: str | None = typer.Option(None, "--retry-store-path"),
+        dry_run: bool = typer.Option(False, "--dry-run"),
+    ) -> None:
+        store = SQLiteAttemptStore(_resolve_retry_store_path(retry_store_path, config))
+        try:
+            resolved_older_than = _resolve_retry_record_ttl(older_than, config)
+            if resolved_older_than is None:
+                err_console.print(
+                    "[red]pass --older-than or configure retry_record_ttl_seconds[/red]"
+                )
+                raise typer.Exit(1)
+            now = time.time()
+            deleted = (
+                store.count_exhausted_older_than(
+                    older_than=resolved_older_than, now=now
+                )
+                if dry_run
+                else store.prune_exhausted(older_than=resolved_older_than, now=now)
+            )
+        finally:
+            store.close()
+        _print_json(
+            console,
+            {
+                "dry_run": dry_run,
+                "older_than": resolved_older_than,
+                "would_delete" if dry_run else "deleted": deleted,
+            },
+        )
+
+
+def _register_queue_admin_commands(
+    queue_app: Any,
+    typer: Any,
+    console: Any,
+    err_console: Any,
+    config: dict[str, Any],
+) -> None:
     @queue_app.command("process")
     def queue_process(
         queue: str,
@@ -606,6 +713,14 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
         if exit_code:
             raise typer.Exit(exit_code)
 
+
+def _register_queue_worker_commands(
+    queue_app: Any,
+    typer: Any,
+    console: Any,
+    err_console: Any,
+    config: dict[str, Any],
+) -> None:
     @queue_app.command("exec")
     def queue_exec(
         queue: str,
@@ -680,8 +795,6 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
             )
         if exit_code:
             raise typer.Exit(exit_code)
-
-    return app
 
 
 def _queue(
@@ -869,86 +982,53 @@ def _process_queue_messages(
                     _print_json(console, {"state": "stopped", "processed": processed})
                 return 0
 
-            if worker_id is not None:
-                queue.record_worker_heartbeat(worker_id)
-            _sleep_for_policy(policy_state, resolved_policy)
-
-            try:
-                message = queue.get_message(
-                    block=block,
-                    timeout=_poll_timeout(forever, block, timeout),
-                    leased_by=worker_id,
-                )
-            except Empty:
-                if forever:
-                    if not block:
-                        time.sleep(idle_sleep)
-                    continue
-                if processed == 0:
-                    if err_console is not None:
-                        err_console.print("[yellow]queue is empty[/yellow]")
-                    return 1
-                break
-
-            if log_events and err_console is not None:
-                _emit_event(
-                    err_console,
-                    f"{mode}.lease",
-                    queue=message.queue,
-                    message_id=message.id,
-                    leased_by=message.leased_by,
-                    attempts=message.attempts,
-                    leased_until=message.leased_until,
-                )
-
-            if retry_store_path is not None and owned_retry_store is None:
-                owned_retry_store = SQLiteAttemptStore(retry_store_path)
-
-            result = _process_message(
+            iteration, owned_retry_store, empty_queue = _process_queue_iteration(
                 queue,
-                message,
                 handler,
-                retry_store=owned_retry_store,
-                retry_store_path=None
-                if owned_retry_store is not None
-                else retry_store_path,
+                console=console,
+                err_console=err_console,
+                policy_state=policy_state,
+                resolved_policy=resolved_policy,
+                retry_store_path=retry_store_path,
+                owned_retry_store=owned_retry_store,
                 max_tries=max_tries,
+                worker_id=worker_id,
+                block=block,
+                timeout=timeout,
+                idle_sleep=idle_sleep,
                 release_delay=release_delay,
                 dead_letter_on_exhaustion=dead_letter_on_exhaustion,
                 log_events=log_events,
                 mode=mode,
-                err_console=err_console,
+                forever=forever,
             )
-            if result.processed:
+            if empty_queue:
+                if processed == 0 and err_console is not None:
+                    err_console.print("[yellow]queue is empty[/yellow]")
+                if processed == 0:
+                    return 1
+                break
+            assert iteration is not None
+            if _handle_processed_queue_result(
+                queue,
+                iteration.message,
+                iteration.process_result,
+                console=console,
+                worker_id=worker_id,
+                policy_state=policy_state,
+            ):
                 processed += 1
-                _record_success(policy_state)
-                if worker_id is not None:
-                    queue.record_worker_heartbeat(worker_id)
-                _print_json(console, {"id": message.id, "state": "acked"})
                 continue
-
-            _record_failure(
-                policy_state,
-                resolved_policy,
-                permanent=result.permanent_failure,
-            )
-
-            payload = (
-                _message_payload(current_message)
-                if (current_message := queue.inspect(message.id)) is not None
-                else {"id": message.id, "queue": message.queue}
-            )
-            _print_json(
-                console,
-                {
-                    **payload,
-                    "state": "failed",
-                    "last_error": result.last_error,
-                },
-            )
-            if worker_id is not None:
-                queue.record_worker_heartbeat(worker_id)
-            if forever:
+            if _handle_failed_queue_result(
+                queue,
+                iteration.message,
+                iteration.process_result,
+                console=console,
+                worker_id=worker_id,
+                policy_state=policy_state,
+                resolved_policy=resolved_policy,
+                forever=forever,
+            ):
                 continue
             return 1
 
@@ -956,6 +1036,137 @@ def _process_queue_messages(
     finally:
         if owned_retry_store is not None:
             owned_retry_store.close()
+
+
+@dataclass(slots=True)
+class _QueueIterationResult:
+    message: QueueMessage
+    process_result: _ProcessResult
+
+
+def _process_queue_iteration(
+    queue: PersistentQueue,
+    handler: Callable[[Any], Any],
+    *,
+    console: Any,
+    err_console: Any,
+    policy_state: WorkerPolicyState,
+    resolved_policy: PersistentWorkerConfig,
+    retry_store_path: str | None,
+    owned_retry_store: SQLiteAttemptStore | None,
+    max_tries: int,
+    worker_id: str | None,
+    block: bool,
+    timeout: float | None,
+    idle_sleep: float,
+    release_delay: float,
+    dead_letter_on_exhaustion: bool,
+    log_events: bool,
+    mode: str,
+    forever: bool,
+) -> tuple[_QueueIterationResult | None, SQLiteAttemptStore | None, bool]:
+    if worker_id is not None:
+        queue.record_worker_heartbeat(worker_id)
+    _sleep_for_policy(policy_state, resolved_policy)
+
+    try:
+        message = queue.get_message(
+            block=block,
+            timeout=_poll_timeout(forever, block, timeout),
+            leased_by=worker_id,
+        )
+    except Empty:
+        if forever:
+            if not block:
+                time.sleep(idle_sleep)
+            return None, owned_retry_store, True
+        return None, owned_retry_store, True
+
+    if log_events and err_console is not None:
+        _emit_event(
+            err_console,
+            f"{mode}.lease",
+            queue=message.queue,
+            message_id=message.id,
+            leased_by=message.leased_by,
+            attempts=message.attempts,
+            leased_until=message.leased_until,
+        )
+
+    if retry_store_path is not None and owned_retry_store is None:
+        owned_retry_store = SQLiteAttemptStore(retry_store_path)
+
+    result = _process_message(
+        queue,
+        message,
+        handler,
+        retry_store=owned_retry_store,
+        retry_store_path=None if owned_retry_store is not None else retry_store_path,
+        max_tries=max_tries,
+        release_delay=release_delay,
+        dead_letter_on_exhaustion=dead_letter_on_exhaustion,
+        log_events=log_events,
+        mode=mode,
+        err_console=err_console,
+    )
+    return (
+        _QueueIterationResult(message=message, process_result=result),
+        owned_retry_store,
+        False,
+    )
+
+
+def _handle_processed_queue_result(
+    queue: PersistentQueue,
+    message: QueueMessage,
+    result: _ProcessResult,
+    *,
+    console: Any,
+    worker_id: str | None,
+    policy_state: WorkerPolicyState,
+) -> bool:
+    if not result.processed:
+        return False
+    _record_success(policy_state)
+    if worker_id is not None:
+        queue.record_worker_heartbeat(worker_id)
+    _print_json(console, {"id": message.id, "state": "acked"})
+    return True
+
+
+def _handle_failed_queue_result(
+    queue: PersistentQueue,
+    message: QueueMessage,
+    result: _ProcessResult,
+    *,
+    console: Any,
+    worker_id: str | None,
+    policy_state: WorkerPolicyState,
+    resolved_policy: PersistentWorkerConfig,
+    forever: bool,
+) -> bool:
+    _record_failure(
+        policy_state,
+        resolved_policy,
+        permanent=result.permanent_failure,
+    )
+
+    payload = (
+        _message_payload(current_message)
+        if (current_message := queue.inspect(message.id)) is not None
+        else {"id": message.id, "queue": message.queue}
+    )
+    _print_json(
+        console,
+        {
+            **payload,
+            "state": "failed",
+            "last_error": result.last_error,
+        },
+    )
+    if worker_id is not None:
+        queue.record_worker_heartbeat(worker_id)
+    return forever
 
 
 def _print_dead_letters(

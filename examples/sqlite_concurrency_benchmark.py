@@ -90,7 +90,7 @@ def _run_benchmark(
 
     def producer(index: int) -> None:
         try:
-            queue = PersistentQueue(
+            queue: PersistentQueue[dict[str, Any]] = PersistentQueue(
                 queue_name, store_path=store_path, lease_timeout=lease_timeout
             )
             start.wait()
@@ -105,7 +105,7 @@ def _run_benchmark(
 
     def consumer(index: int) -> None:
         try:
-            queue = PersistentQueue(
+            queue: PersistentQueue[dict[str, Any]] = PersistentQueue(
                 queue_name, store_path=store_path, lease_timeout=lease_timeout
             )
             start.wait()
@@ -154,7 +154,7 @@ def _run_benchmark(
             record_error(TimeoutError("consumer thread did not finish"))
 
     elapsed = time.perf_counter() - started_at
-    queue = PersistentQueue(
+    queue: PersistentQueue[dict[str, Any]] = PersistentQueue(
         queue_name, store_path=store_path, lease_timeout=lease_timeout
     )
     stats = queue.stats().as_dict()

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
+    from types import ModuleType
     import lmdb
 
 _ENVS: dict[tuple[str, int], Any] = {}
@@ -17,7 +18,7 @@ _ENVS_LOCK = threading.Lock()
 _SQLITE_RETRY_SCHEMA_VERSION = 1
 
 
-def _import_lmdb() -> Any:
+def _import_lmdb() -> ModuleType:
     try:
         import lmdb
     except ModuleNotFoundError as exc:

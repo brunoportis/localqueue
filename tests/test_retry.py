@@ -5,6 +5,7 @@ import json
 import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from typing import Any, cast
@@ -240,7 +241,7 @@ class RetryTests(unittest.TestCase):
     def test_default_sqlite_store_factory_uses_xdg_data_home(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.dict("os.environ", {"XDG_DATA_HOME": tmpdir}, clear=False):
-                store = cast(SQLiteAttemptStore, _sqlite_default_store_factory())
+                store = cast("SQLiteAttemptStore", _sqlite_default_store_factory())
                 expected_path = Path(tmpdir) / "localqueue" / "retries.sqlite3"
                 try:
                     self.assertIsInstance(store, SQLiteAttemptStore)
@@ -554,6 +555,44 @@ class RetryTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_async_retrying_persists_without_blocking_event_loop(self) -> None:
+        class SlowMemoryStore(MemoryAttemptStore):
+            def load(self, key: str) -> RetryRecord | None:
+                time.sleep(0.2)
+                return super().load(key)
+
+            def save(self, key: str, record: RetryRecord) -> None:
+                time.sleep(0.2)
+                super().save(key, record)
+
+        async def scenario() -> None:
+            store = SlowMemoryStore()
+            marker = asyncio.Event()
+
+            async def tick() -> None:
+                await asyncio.sleep(0)
+                marker.set()
+
+            retryer = PersistentAsyncRetrying(
+                store=store,
+                key="async-slow",
+                max_tries=1,
+                wait=lambda _: 0,  # pyright: ignore[reportUnknownLambdaType]
+            )
+
+            async def fail() -> None:
+                raise RuntimeError("fail")
+
+            task = asyncio.create_task(retryer(fail))
+            asyncio.create_task(tick())
+            await asyncio.sleep(0.05)
+            self.assertTrue(marker.is_set())
+            self.assertFalse(task.done())
+            with self.assertRaises(RuntimeError):
+                await task
+
+        asyncio.run(scenario())
+
     def test_lmdb_store_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store = LMDBAttemptStore(tmpdir)
@@ -793,7 +832,7 @@ class RetryTests(unittest.TestCase):
             raise RuntimeError(task_id)
 
         with self.assertRaises(RuntimeError):
-            _ = cast(Any, fail).retry_with(max_tries=1)("job-5")
+            _ = cast("Any", fail).retry_with(max_tries=1)("job-5")
 
         record = store.load("job-5")
         assert record is not None

@@ -5,13 +5,15 @@ from pathlib import Path
 from collections.abc import Mapping
 from queue import Empty, Full
 from threading import Condition
-from typing import Any
+from typing import Any, Generic, TypeVar, cast
 
 from .paths import default_queue_store_path
 from .store import QueueMessage, QueueStats, QueueStore, SQLiteQueueStore
 
+T = TypeVar("T")
 
-class PersistentQueue:
+
+class PersistentQueue(Generic[T]):
     name: str
     lease_timeout: float
     maxsize: int
@@ -52,7 +54,7 @@ class PersistentQueue:
 
     def put(
         self,
-        item: Any,
+        item: T,
         block: bool = True,
         timeout: float | None = None,
         *,
@@ -81,7 +83,7 @@ class PersistentQueue:
             _ = self._condition.notify_all()
             return message
 
-    def put_nowait(self, item: Any) -> QueueMessage:
+    def put_nowait(self, item: T) -> QueueMessage:
         return self.put(item, block=False)
 
     def get(
@@ -90,13 +92,13 @@ class PersistentQueue:
         timeout: float | None = None,
         *,
         leased_by: str | None = None,
-    ) -> Any:
+    ) -> T:
         message = self.get_message(block=block, timeout=timeout, leased_by=leased_by)
         with self._condition:
             self._unfinished[message.id] = message
-        return message.value
+        return cast("T", message.value)
 
-    def get_nowait(self) -> Any:
+    def get_nowait(self) -> T:
         return self.get(block=False)
 
     def get_message(

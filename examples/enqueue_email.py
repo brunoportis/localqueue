@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from typing import Any
 
 from localqueue import PersistentQueue
 
@@ -12,7 +13,7 @@ def main() -> None:
     parser.add_argument("--fail", action="store_true")
     args = parser.parse_args()
 
-    queue = (
+    queue: PersistentQueue[dict[str, Any]] = (
         PersistentQueue("emails", store_path=args.store_path)
         if args.store_path is not None
         else PersistentQueue("emails")

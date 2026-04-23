@@ -5,13 +5,15 @@ import time
 from dataclasses import dataclass
 from collections.abc import Callable
 from queue import Empty
-from typing import Any, TypeVar, cast
+from typing import Any, TypeVar, cast, TYPE_CHECKING
 
 from .retry import PersistentAsyncRetrying, PersistentRetrying
 
 from .failure import is_permanent_failure
-from .queue import PersistentQueue
-from .store import QueueMessage
+
+if TYPE_CHECKING:
+    from .queue import PersistentQueue
+    from .store import QueueMessage
 
 WrappedFn = TypeVar("WrappedFn", bound=Callable[..., Any])
 _UNSET = object()
@@ -32,9 +34,9 @@ def _resolve_dead_letter_on_failure(
             "dead_letter_on_exhaustion=, not conflicting values"
         )
     if dead_letter_on_failure is not _UNSET:
-        return cast(bool, dead_letter_on_failure)
+        return cast("bool", dead_letter_on_failure)
     if dead_letter_on_exhaustion is not _UNSET:
-        return cast(bool, dead_letter_on_exhaustion)
+        return cast("bool", dead_letter_on_exhaustion)
     return True
 
 
@@ -130,9 +132,9 @@ class PersistentWorkerConfig:
             dead_letter_on_exhaustion=dead_letter_on_exhaustion,
         )
         if release_delay is not _UNSET:
-            _validate_release_delay(cast(float, release_delay))
+            _validate_release_delay(cast("float", release_delay))
         if min_interval is not _UNSET:
-            _validate_min_interval(cast(float, min_interval))
+            _validate_min_interval(cast("float", min_interval))
         if (
             circuit_breaker_failures is not _UNSET
             or circuit_breaker_cooldown is not _UNSET
@@ -140,12 +142,12 @@ class PersistentWorkerConfig:
             resolved_breaker_failures = (
                 self.circuit_breaker_failures
                 if circuit_breaker_failures is _UNSET
-                else cast(int, circuit_breaker_failures)
+                else cast("int", circuit_breaker_failures)
             )
             resolved_breaker_cooldown = (
                 self.circuit_breaker_cooldown
                 if circuit_breaker_cooldown is _UNSET
-                else cast(float, circuit_breaker_cooldown)
+                else cast("float", circuit_breaker_cooldown)
             )
             _validate_circuit_breaker(
                 resolved_breaker_failures, resolved_breaker_cooldown
@@ -160,22 +162,22 @@ class PersistentWorkerConfig:
             release_delay=(
                 self.release_delay
                 if release_delay is _UNSET
-                else cast(float, release_delay)
+                else cast("float", release_delay)
             ),
             min_interval=(
                 self.min_interval
                 if min_interval is _UNSET
-                else cast(float, min_interval)
+                else cast("float", min_interval)
             ),
             circuit_breaker_failures=(
                 self.circuit_breaker_failures
                 if circuit_breaker_failures is _UNSET
-                else cast(int, circuit_breaker_failures)
+                else cast("int", circuit_breaker_failures)
             ),
             circuit_breaker_cooldown=(
                 self.circuit_breaker_cooldown
                 if circuit_breaker_cooldown is _UNSET
-                else cast(float, circuit_breaker_cooldown)
+                else cast("float", circuit_breaker_cooldown)
             ),
             **merged_retry_kwargs,
         )
@@ -313,7 +315,10 @@ def persistent_worker(
                 if worker_id is not None:
                     queue.record_worker_heartbeat(worker_id)
             _record_success(policy_state)
-            queue.ack(message)
+            try:
+                queue.ack(message)
+            except Exception:
+                raise
             return result
 
         return wrapped
@@ -372,7 +377,10 @@ def persistent_async_worker(
                 if worker_id is not None:
                     queue.record_worker_heartbeat(worker_id)
             _record_success(policy_state)
-            queue.ack(message)
+            try:
+                queue.ack(message)
+            except Exception:
+                raise
             return result
 
         return wrapped
@@ -383,6 +391,6 @@ def persistent_async_worker(
 async def _get_message_async(queue: PersistentQueue) -> QueueMessage:
     while True:
         try:
-            return queue.get_message(block=False)
+            return await asyncio.to_thread(queue.get_message, False)
         except Empty:
             await asyncio.sleep(0.05)

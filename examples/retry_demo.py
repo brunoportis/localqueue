@@ -3,6 +3,7 @@ import random
 import time
 from queue import Empty
 from typing import Callable
+from typing import Any
 
 from localqueue.retry import (
     AttemptStoreLockedError,
@@ -156,7 +157,7 @@ def run_worker_demo(
     db_path: str, *, worker_failure_rate: float = DEFAULT_WORKER_FAILURE_RATE
 ) -> None:
     print("\n=== persistent queue worker ===")
-    queue = PersistentQueue(
+    queue: PersistentQueue[dict[str, Any]] = PersistentQueue(
         "worker-jobs",
         store_path=f"{db_path}_queue",
         lease_timeout=2,

@@ -28,6 +28,7 @@ from localqueue import (
     persistent_async_worker,
     persistent_worker,
 )
+from localqueue.worker import _get_message_async
 from localqueue.store import (
     _QueueRecord,
     _decode_record,
@@ -59,7 +60,7 @@ class QueueTests(unittest.TestCase):
             _ = PersistentQueue("test", store=store, maxsize=-1)
 
         with self.assertRaises(TypeError):
-            _ = PersistentQueue("test", store=store, retry_defaults=cast(Any, []))
+            _ = PersistentQueue("test", store=store, retry_defaults=cast("Any", []))
 
         with self.assertRaises(ValueError):
             _ = PersistentQueue(
@@ -76,7 +77,7 @@ class QueueTests(unittest.TestCase):
             )
 
     def test_memory_store_basic_ops(self) -> None:
-        queue = PersistentQueue("test", store=MemoryQueueStore())
+        queue: PersistentQueue[str] = PersistentQueue("test", store=MemoryQueueStore())
         self.assertTrue(queue.empty())
         _ = queue.put("item1")
         self.assertEqual(queue.qsize(), 1)
@@ -86,7 +87,7 @@ class QueueTests(unittest.TestCase):
         self.assertTrue(queue.empty())
 
     def test_memory_store_deduplicates_enqueued_messages(self) -> None:
-        queue = PersistentQueue("test", store=MemoryQueueStore())
+        queue: PersistentQueue[str] = PersistentQueue("test", store=MemoryQueueStore())
 
         first = queue.put("item1", dedupe_key="job-1")
         second = queue.put("item2", dedupe_key="job-1")
@@ -108,7 +109,7 @@ class QueueTests(unittest.TestCase):
             _ = queue.put("item", dedupe_key="")
 
     def test_stats_counts_messages_by_state(self) -> None:
-        queue = PersistentQueue("test", store=MemoryQueueStore())
+        queue: PersistentQueue[str] = PersistentQueue("test", store=MemoryQueueStore())
         _ = queue.put("inflight")
         _ = queue.put("dead")
         _ = queue.put("delayed", delay=10)
@@ -1405,6 +1406,26 @@ class QueueTests(unittest.TestCase):
         with self.assertRaises(Empty):
             _ = queue.get_message(block=False)
 
+    def test_worker_propagates_ack_failures_after_success(self) -> None:
+        class AckFailingQueue(PersistentQueue):
+            def ack(self, message: QueueMessage) -> bool:
+                raise RuntimeError("ack failed")
+
+        queue = AckFailingQueue("test", store=MemoryQueueStore())
+        queued = queue.put("a")
+
+        @persistent_worker(
+            queue, store=MemoryAttemptStore(), max_tries=1, wait=lambda _: 0
+        )
+        def handle(value: str) -> str:
+            return value.upper()
+
+        with self.assertRaises(RuntimeError):
+            cast("Any", handle)()
+
+        self.assertEqual(queue.qsize(), 0)
+        self.assertIsNotNone(queue.inspect(queued.id))
+
     def test_worker_e2e_with_sqlite_queue_and_retry_store(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             queue_path = Path(tmpdir) / "queue.sqlite3"
@@ -1428,7 +1449,7 @@ class QueueTests(unittest.TestCase):
                         raise ConnectionError("temporary failure")
                     return payload["id"]
 
-                self.assertEqual(cast(Any, handle)(), "job-1")
+                self.assertEqual(cast("Any", handle)(), "job-1")
                 self.assertEqual(attempts["count"], 2)
                 self.assertTrue(queue.empty())
                 self.assertIsNone(retry_store.load(queued.id))
@@ -1454,10 +1475,67 @@ class QueueTests(unittest.TestCase):
                     raise RuntimeError("try again")
                 return value.upper()
 
-            self.assertEqual(await cast(Any, handle)(), "A")
+            self.assertEqual(await cast("Any", handle)(), "A")
             self.assertEqual(attempts["count"], 2)
             with self.assertRaises(Empty):
                 _ = queue.get_message(block=False)
+
+        asyncio.run(scenario())
+
+    def test_async_worker_propagates_ack_failures_after_success(self) -> None:
+        class AckFailingQueue(PersistentQueue):
+            def ack(self, message: QueueMessage) -> bool:
+                raise RuntimeError("ack failed")
+
+        async def scenario() -> None:
+            queue = AckFailingQueue("test", store=MemoryQueueStore())
+            queued = queue.put("a")
+
+            @persistent_async_worker(
+                queue, store=MemoryAttemptStore(), max_tries=1, wait=lambda _: 0
+            )
+            async def handle(value: str) -> str:
+                return value.upper()
+
+            with self.assertRaises(RuntimeError):
+                await cast("Any", handle)()
+
+            self.assertEqual(queue.qsize(), 0)
+            self.assertIsNotNone(queue.inspect(queued.id))
+
+        asyncio.run(scenario())
+
+    def test_async_queue_polling_does_not_block_event_loop(self) -> None:
+        class SlowQueue:
+            def get_message(
+                self,
+                block: bool = True,
+                timeout: float | None = None,
+                *,
+                leased_by: str | None = None,
+            ) -> QueueMessage:
+                time.sleep(0.2)
+                return QueueMessage(
+                    id="job-1",
+                    queue="test",
+                    value="payload",
+                )
+
+        async def scenario() -> None:
+            queue = SlowQueue()
+            marker = asyncio.Event()
+
+            async def tick() -> None:
+                await asyncio.sleep(0)
+                marker.set()
+
+            task = asyncio.create_task(_get_message_async(cast("Any", queue)))
+            asyncio.create_task(tick())
+            await asyncio.sleep(0.05)
+            self.assertTrue(marker.is_set())
+            self.assertFalse(task.done())
+            message = await task
+            self.assertEqual(message.id, "job-1")
 
         asyncio.run(scenario())
 
@@ -1473,7 +1551,7 @@ class QueueTests(unittest.TestCase):
                 raise RuntimeError(value)
 
             with self.assertRaises(RuntimeError):
-                await cast(Any, fail)()
+                await cast("Any", fail)()
 
             self.assertTrue(queue.empty())
 
@@ -1492,7 +1570,7 @@ class QueueTests(unittest.TestCase):
                 raise RuntimeError(value)
 
             with self.assertRaises(RuntimeError):
-                await cast(Any, fail)()
+                await cast("Any", fail)()
 
             self.assertEqual(queue.qsize(), 1)
 
@@ -1510,7 +1588,7 @@ class QueueTests(unittest.TestCase):
             raise RuntimeError(value)
 
         with self.assertRaises(RuntimeError):
-            cast(Any, fail)()
+            cast("Any", fail)()
 
         self.assertTrue(queue.empty())
 
@@ -1528,7 +1606,7 @@ class QueueTests(unittest.TestCase):
             raise RuntimeError(value)
 
         with self.assertRaises(RuntimeError):
-            cast(Any, release)()
+            cast("Any", release)()
 
         self.assertEqual(queue.qsize(), 1)
         message = queue.get_message()
@@ -1547,7 +1625,7 @@ class QueueTests(unittest.TestCase):
         def handle(payload: dict[str, str]) -> str:
             return payload["name"].upper()
 
-        self.assertEqual(cast(Any, handle)(), "ALICE")
+        self.assertEqual(cast("Any", handle)(), "ALICE")
 
     def test_worker_config_can_be_shared_and_overridden(self) -> None:
         config = PersistentWorkerConfig(
@@ -1565,7 +1643,7 @@ class QueueTests(unittest.TestCase):
             raise RuntimeError(value)
 
         with self.assertRaises(RuntimeError):
-            cast(Any, release)()
+            cast("Any", release)()
 
         self.assertEqual(queue.qsize(), 1)
 
@@ -1577,7 +1655,7 @@ class QueueTests(unittest.TestCase):
             raise RuntimeError(value)
 
         with self.assertRaises(RuntimeError):
-            cast(Any, dead_letter)()
+            cast("Any", dead_letter)()
 
         self.assertTrue(queue.empty())
 
@@ -1594,7 +1672,7 @@ class QueueTests(unittest.TestCase):
             raise RuntimeError(value)
 
         with self.assertRaises(RuntimeError):
-            cast(Any, release)()
+            cast("Any", release)()
 
         self.assertTrue(queue.empty())
         dead_letters = queue.dead_letters()
@@ -1619,7 +1697,7 @@ class QueueTests(unittest.TestCase):
                 raise RuntimeError(value)
             return value.upper()
 
-        self.assertEqual(cast(Any, release)(), "RETRY")
+        self.assertEqual(cast("Any", release)(), "RETRY")
         self.assertEqual(attempts["count"], 2)
 
     def test_worker_prefers_dead_letter_on_failure_name(self) -> None:
@@ -1637,7 +1715,7 @@ class QueueTests(unittest.TestCase):
             raise RuntimeError(value)
 
         with self.assertRaises(RuntimeError):
-            cast(Any, release)()
+            cast("Any", release)()
 
         self.assertEqual(queue.qsize(), 1)
 
@@ -1658,7 +1736,7 @@ class QueueTests(unittest.TestCase):
             raise ValueError(value)
 
         with self.assertRaises(ValueError):
-            cast(Any, fail)()
+            cast("Any", fail)()
 
         self.assertEqual(queue.qsize(), 1)
         message = queue.get_message()
@@ -1683,7 +1761,7 @@ class QueueTests(unittest.TestCase):
             raise ImportError(value)
 
         with self.assertRaises(ImportError):
-            cast(Any, fail)()
+            cast("Any", fail)()
 
         self.assertTrue(queue.empty())
         dead_letters = queue.dead_letters()
@@ -1709,7 +1787,7 @@ class QueueTests(unittest.TestCase):
                 raise ValueError(value)
 
             with self.assertRaises(ValueError):
-                await cast(Any, fail)()
+                await cast("Any", fail)()
 
             self.assertEqual(queue.qsize(), 1)
             message = queue.get_message()
@@ -1777,12 +1855,12 @@ class QueueTests(unittest.TestCase):
             def handle(value: str) -> str:
                 return value.upper()
 
-            self.assertEqual(cast(Any, handle)(), "FIRST")
-            self.assertEqual(cast(Any, handle)(), "SECOND")
+            self.assertEqual(cast("Any", handle)(), "FIRST")
+            self.assertEqual(cast("Any", handle)(), "SECOND")
 
         self.assertTrue(worker_time.sleep.called)
         self.assertAlmostEqual(
-            cast(Any, worker_time.sleep.call_args.args[0]), 0.6, places=1
+            cast("Any", worker_time.sleep.call_args.args[0]), 0.6, places=1
         )
 
     def test_worker_opens_circuit_breaker_after_recoverable_failures(self) -> None:
@@ -1814,12 +1892,12 @@ class QueueTests(unittest.TestCase):
                 raise RuntimeError(value)
 
             with self.assertRaises(RuntimeError):
-                cast(Any, handle)()
+                cast("Any", handle)()
             with self.assertRaises(RuntimeError):
-                cast(Any, handle)()
+                cast("Any", handle)()
 
         self.assertTrue(worker_time.sleep.called)
-        self.assertGreater(cast(Any, worker_time.sleep.call_args.args[0]), 0.0)
+        self.assertGreater(cast("Any", worker_time.sleep.call_args.args[0]), 0.0)
 
     def test_async_worker_accepts_config(self) -> None:
         async def scenario() -> None:
@@ -1839,7 +1917,7 @@ class QueueTests(unittest.TestCase):
                     raise RuntimeError("try again")
                 return value.upper()
 
-            self.assertEqual(await cast(Any, handle)(), "A")
+            self.assertEqual(await cast("Any", handle)(), "A")
             self.assertEqual(attempts["count"], 2)
 
         asyncio.run(scenario())
@@ -1861,7 +1939,7 @@ class QueueTests(unittest.TestCase):
                     raise RuntimeError("try again")
                 return value.upper()
 
-            self.assertEqual(await cast(Any, handle)(), "A")
+            self.assertEqual(await cast("Any", handle)(), "A")
             self.assertEqual(attempts["count"], 2)
 
         asyncio.run(scenario())

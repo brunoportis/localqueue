@@ -8,12 +8,14 @@ import os
 import sqlite3
 import time
 from collections import Counter
-from collections.abc import Sequence
 from pathlib import Path
 from queue import Empty
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from localqueue import PersistentQueue
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 def main() -> int:

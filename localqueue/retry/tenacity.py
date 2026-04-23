@@ -9,6 +9,7 @@ import weakref
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, TypeVar, cast
+import asyncio
 
 from tenacity import DoAttempt, DoSleep
 from tenacity import AsyncRetrying, RetryCallState, Retrying
@@ -100,7 +101,7 @@ def _get_default_store() -> AttemptStore:
                 _default_owned_stores.add(store)
             except TypeError:
                 pass
-    return cast(AttemptStore, store)
+    return cast("AttemptStore", store)
 
 
 def configure_default_store(store: AttemptStore | None = None) -> None:
@@ -321,7 +322,7 @@ class _PersistentMixin:
         context = getattr(self._local, "persistent_context", None)
         if context is None:
             raise RuntimeError("persistent retry context not initialized")
-        return cast(PersistentCallContext, context)
+        return cast("PersistentCallContext", context)
 
     def _translate_state(self, retry_state: RetryCallState) -> PersistentRetryState:
         context = self._current_context()
@@ -411,7 +412,7 @@ class _PersistentMixin:
 
     @property
     def statistics(self) -> dict[str, Any]:
-        return cast(dict[str, Any], self._retrying.statistics)
+        return cast("dict[str, Any]", self._retrying.statistics)
 
     def begin(self) -> None:
         self._retrying.begin()
@@ -426,7 +427,7 @@ class _PersistentMixin:
         def wrapped_f(*args: Any, **kwargs: Any) -> Any:
             copy = self.copy()
             wrapped_f.statistics = copy.statistics  # type: ignore[attr-defined]
-            return cast(Any, copy)(f, *args, **kwargs)
+            return cast("Any", copy)(f, *args, **kwargs)
 
         def retry_with(*args: Any, **kwargs: Any) -> WrappedFn:
             return self.copy(*args, **kwargs).wraps(f)
@@ -434,7 +435,7 @@ class _PersistentMixin:
         wrapped_f.retry = self  # type: ignore[attr-defined]
         wrapped_f.retry_with = retry_with  # type: ignore[attr-defined]
         wrapped_f.statistics = {}  # type: ignore[attr-defined]
-        return cast(WrappedFn, wrapped_f)
+        return cast("WrappedFn", wrapped_f)
 
     def copy(self, **kwargs: Any) -> "_PersistentMixin":
         store = kwargs.pop("store", self._store)
@@ -449,17 +450,16 @@ class _PersistentMixin:
             _ = tenacity_kwargs.pop("stop", None)
 
         return self.__class__(
-            store=cast(AttemptStore | None, store),
+            store=cast("AttemptStore | None", store),
             store_path=self._store_path
             if store_path is _UNSET
-            else cast(str | Path | None, store_path),
-            key=cast(str | None, key),
+            else cast("str | Path | None", store_path),
+            key=cast("str | None", key),
             key_fn=cast(
-                Callable[[Callable[..., Any], tuple[Any, ...], dict[str, Any]], str]
-                | None,
+                "Callable[[Callable[..., Any], tuple[Any, ...], dict[str, Any]], str] | None",
                 key_fn,
             ),
-            clear_on_success=cast(bool, clear_on_success),
+            clear_on_success=cast("bool", clear_on_success),
             **({} if max_tries is _UNSET else {"max_tries": max_tries}),
             **tenacity_kwargs,
         )
@@ -506,7 +506,10 @@ class PersistentRetrying(_PersistentMixin):
         self._local.persistent_context = context
         try:
             retry_state = RetryCallState(
-                retry_object=cast(Any, self._retrying), fn=fn, args=args, kwargs=kwargs
+                retry_object=cast("Any", self._retrying),
+                fn=fn,
+                args=args,
+                kwargs=kwargs,
             )
             while True:
                 do = self.iter(retry_state=retry_state)
@@ -527,7 +530,7 @@ class PersistentRetrying(_PersistentMixin):
                         retry_state.set_result(result)
                 elif isinstance(do, DoSleep):
                     retry_state.prepare_for_next_attempt()
-                    cast(Any, self._retrying).sleep(do)
+                    cast("Any", self._retrying).sleep(do)
                 else:
                     self._clear_if_success(retry_state)
                     return do
@@ -605,10 +608,13 @@ class PersistentAsyncRetrying(_PersistentMixin):
         if _utils.is_coroutine_callable(self._user_stop):
 
             async def async_wrapped_stop(retry_state: RetryCallState) -> bool:
+                context = self._current_context()
                 should_stop = bool(
                     await self._user_stop(self._translate_state(retry_state))
                 )
-                self._persist_attempt(retry_state, exhausted=should_stop)
+                await self._persist_attempt_async(
+                    context, retry_state, exhausted=should_stop
+                )
                 return should_stop
 
             return async_wrapped_stop
@@ -645,7 +651,8 @@ class PersistentAsyncRetrying(_PersistentMixin):
             async def async_wrapped_retry_error_callback(
                 retry_state: RetryCallState,
             ) -> Any:
-                self._persist_attempt(retry_state, exhausted=True)
+                context = self._current_context()
+                await self._persist_attempt_async(context, retry_state, exhausted=True)
                 return await self._user_retry_error_callback(
                     self._translate_state(retry_state)
                 )
@@ -658,19 +665,66 @@ class PersistentAsyncRetrying(_PersistentMixin):
 
         return wrapped_retry_error_callback
 
+    async def _load_context_async(
+        self, fn: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> PersistentCallContext:
+        return await asyncio.to_thread(self._load_context, fn, args, kwargs)
+
+    async def _persist_attempt_async(
+        self,
+        context: PersistentCallContext,
+        retry_state: RetryCallState,
+        *,
+        exhausted: bool,
+    ) -> None:
+        await asyncio.to_thread(
+            self._persist_attempt_for_context,
+            context,
+            retry_state,
+            exhausted=exhausted,
+        )
+
+    def _persist_attempt_for_context(
+        self,
+        context: PersistentCallContext,
+        retry_state: RetryCallState,
+        *,
+        exhausted: bool,
+    ) -> None:
+        context.record.attempts = context.starting_attempts + retry_state.attempt_number
+        context.record.exhausted = exhausted
+        self._get_store().save(context.key, context.record)
+
+    async def _clear_if_success_async(
+        self, context: PersistentCallContext, retry_state: RetryCallState
+    ) -> None:
+        await asyncio.to_thread(
+            self._clear_if_success_for_context, context, retry_state
+        )
+
+    def _clear_if_success_for_context(
+        self, context: PersistentCallContext, retry_state: RetryCallState
+    ) -> None:
+        outcome = retry_state.outcome
+        if outcome is not None and not outcome.failed:
+            self._get_store().delete(context.key)
+
     async def __call__(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         self.begin()
-        context = self._load_context(fn, args, kwargs)
+        context = await self._load_context_async(fn, args, kwargs)
         if context.record.exhausted:
             raise PersistentRetryExhausted(context.key, context.record.attempts)
 
         self._local.persistent_context = context
         try:
             retry_state = RetryCallState(
-                retry_object=cast(Any, self._retrying), fn=fn, args=args, kwargs=kwargs
+                retry_object=cast("Any", self._retrying),
+                fn=fn,
+                args=args,
+                kwargs=kwargs,
             )
             while True:
-                do = await cast(AsyncRetrying, self._retrying).iter(
+                do = await cast("AsyncRetrying", self._retrying).iter(
                     retry_state=retry_state
                 )
                 if isinstance(do, DoAttempt):
@@ -692,9 +746,9 @@ class PersistentAsyncRetrying(_PersistentMixin):
                         retry_state.set_result(result)
                 elif isinstance(do, DoSleep):
                     retry_state.prepare_for_next_attempt()
-                    await cast(Any, self._retrying).sleep(do)
+                    await cast("Any", self._retrying).sleep(do)
                 else:
-                    self._clear_if_success(retry_state)
+                    await self._clear_if_success_async(context, retry_state)
                     return do
         finally:
             if hasattr(self._local, "persistent_context"):
@@ -702,10 +756,10 @@ class PersistentAsyncRetrying(_PersistentMixin):
 
 
 def persistent_retry(**kwargs: Any) -> Callable[[WrappedFn], WrappedFn]:
-    return cast(Callable[[WrappedFn], WrappedFn], PersistentRetrying(**kwargs).wraps)
+    return cast("Callable[[WrappedFn], WrappedFn]", PersistentRetrying(**kwargs).wraps)
 
 
 def persistent_async_retry(**kwargs: Any) -> Callable[[WrappedFn], WrappedFn]:
     return cast(
-        Callable[[WrappedFn], WrappedFn], PersistentAsyncRetrying(**kwargs).wraps
+        "Callable[[WrappedFn], WrappedFn]", PersistentAsyncRetrying(**kwargs).wraps
     )

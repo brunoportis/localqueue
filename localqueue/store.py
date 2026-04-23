@@ -9,10 +9,11 @@ from collections import Counter
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, Iterator, Protocol
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from types import ModuleType
     import lmdb
 
 _ENVS: dict[tuple[str, int], Any] = {}
@@ -24,7 +25,7 @@ _QUEUE_RECORD_VERSION = 4
 _SQLITE_SCHEMA_VERSION = 2
 
 
-def _import_lmdb() -> Any:
+def _import_lmdb() -> ModuleType:
     try:
         import lmdb
     except ModuleNotFoundError as exc:
