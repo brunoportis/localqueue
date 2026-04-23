@@ -80,7 +80,7 @@ class PersistentQueue(Generic[T]):
                 available_at=time.time() + delay,
                 dedupe_key=dedupe_key,
             )
-            _ = self._condition.notify_all()
+            self._condition.notify_all()
             return message
 
     def put_nowait(self, item: T) -> QueueMessage:
@@ -118,7 +118,7 @@ class PersistentQueue(Generic[T]):
                     leased_by=leased_by,
                 )
                 if message is not None:
-                    _ = self._condition.notify_all()
+                    self._condition.notify_all()
                     return message
                 if not block:
                     raise Empty
@@ -135,7 +135,7 @@ class PersistentQueue(Generic[T]):
         with self._condition:
             removed = self._get_store().ack(self.name, message.id)
             self._remove_unfinished(message.id)
-            _ = self._condition.notify_all()
+            self._condition.notify_all()
             return removed
 
     def release(
@@ -157,7 +157,7 @@ class PersistentQueue(Generic[T]):
                 failed_at=failed_at,
             )
             self._remove_unfinished(message.id)
-            _ = self._condition.notify_all()
+            self._condition.notify_all()
             return released
 
     def dead_letter(
@@ -172,7 +172,7 @@ class PersistentQueue(Generic[T]):
                 failed_at=failed_at,
             )
             self._remove_unfinished(message.id)
-            _ = self._condition.notify_all()
+            self._condition.notify_all()
             return moved
 
     def task_done(self) -> None:
@@ -181,8 +181,8 @@ class PersistentQueue(Generic[T]):
                 raise ValueError("task_done() called too many times")
             message_id = next(iter(self._unfinished))
             message = self._unfinished.pop(message_id)
-            _ = self._get_store().ack(self.name, message.id)
-            _ = self._condition.notify_all()
+            self._get_store().ack(self.name, message.id)
+            self._condition.notify_all()
 
     def join(self) -> None:
         with self._condition:
@@ -246,7 +246,7 @@ class PersistentQueue(Generic[T]):
         with self._condition:
             self._unfinished.clear()
             count = self._get_store().purge(self.name)
-            _ = self._condition.notify_all()
+            self._condition.notify_all()
             return count
 
     def _get_store(self) -> QueueStore:

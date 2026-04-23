@@ -315,10 +315,7 @@ def persistent_worker(
                 if worker_id is not None:
                     queue.record_worker_heartbeat(worker_id)
             _record_success(policy_state)
-            try:
-                queue.ack(message)
-            except Exception:
-                raise
+            queue.ack(message)
             return result
 
         return wrapped
@@ -377,10 +374,7 @@ def persistent_async_worker(
                 if worker_id is not None:
                     queue.record_worker_heartbeat(worker_id)
             _record_success(policy_state)
-            try:
-                queue.ack(message)
-            except Exception:
-                raise
+            queue.ack(message)
             return result
 
         return wrapped

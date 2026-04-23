@@ -587,7 +587,7 @@ class PersistentAsyncRetrying(_PersistentMixin):
     def _wrap_wait(self) -> Callable[[RetryCallState], Any]:
         if self._user_wait is None:
 
-            async def empty_wait(retry_state: RetryCallState) -> float:
+            def empty_wait(retry_state: RetryCallState) -> float:
                 return 0.0
 
             return empty_wait

@@ -970,17 +970,13 @@ def _process_queue_messages(
 ) -> int:
     processed = 0
     policy_state = WorkerPolicyState()
-    resolved_policy = (
-        worker_policy if worker_policy is not None else PersistentWorkerConfig()
-    )
+    resolved_policy = worker_policy or PersistentWorkerConfig()
     owned_retry_store: SQLiteAttemptStore | None = None
 
     try:
         while forever or processed < max_jobs:
             if shutdown.requested:
-                if forever:
-                    _print_json(console, {"state": "stopped", "processed": processed})
-                return 0
+                return _stop_processing(console, processed, forever)
 
             iteration, owned_retry_store, empty_queue = _process_queue_iteration(
                 queue,
@@ -1003,11 +999,7 @@ def _process_queue_messages(
                 forever=forever,
             )
             if empty_queue:
-                if processed == 0 and err_console is not None:
-                    err_console.print("[yellow]queue is empty[/yellow]")
-                if processed == 0:
-                    return 1
-                break
+                return _handle_empty_queue(err_console, processed)
             assert iteration is not None
             if _handle_processed_queue_result(
                 queue,
@@ -1114,6 +1106,18 @@ def _process_queue_iteration(
         owned_retry_store,
         False,
     )
+
+
+def _stop_processing(console: Any, processed: int, forever: bool) -> int:
+    if forever:
+        _print_json(console, {"state": "stopped", "processed": processed})
+    return 0
+
+
+def _handle_empty_queue(err_console: Any, processed: int) -> int:
+    if processed == 0 and err_console is not None:
+        err_console.print("[yellow]queue is empty[/yellow]")
+    return 1 if processed == 0 else 0
 
 
 def _handle_processed_queue_result(
@@ -1465,32 +1469,49 @@ def _filter_dead_letters(
     now = time.time()
     error_filter = error_contains.lower() if error_contains is not None else None
     cutoff = None if failed_within is None else now - failed_within
-    filtered: list[QueueMessage] = []
-    for message in messages:
-        if min_attempts is not None and message.attempts < min_attempts:
-            continue
-        if max_attempts is not None and message.attempts > max_attempts:
-            continue
-        if cutoff is not None:
-            failed_at = message.failed_at
-            if failed_at is None or failed_at < cutoff:
-                continue
-        if error_filter is not None:
-            last_error = message.last_error or {}
-            haystack = " ".join(
-                str(part)
-                for part in (
-                    last_error.get("type"),
-                    last_error.get("message"),
-                    last_error.get("command"),
-                    last_error.get("stderr"),
-                )
-                if part is not None
-            ).lower()
-            if error_filter not in haystack:
-                continue
-        filtered.append(message)
-    return filtered
+    return [
+        message
+        for message in messages
+        if _matches_dead_letter_filters(
+            message,
+            min_attempts=min_attempts,
+            max_attempts=max_attempts,
+            cutoff=cutoff,
+            error_filter=error_filter,
+        )
+    ]
+
+
+def _matches_dead_letter_filters(
+    message: QueueMessage,
+    *,
+    min_attempts: int | None,
+    max_attempts: int | None,
+    cutoff: float | None,
+    error_filter: str | None,
+) -> bool:
+    if min_attempts is not None and message.attempts < min_attempts:
+        return False
+    if max_attempts is not None and message.attempts > max_attempts:
+        return False
+    if cutoff is not None:
+        failed_at = message.failed_at
+        if failed_at is None or failed_at < cutoff:
+            return False
+    if error_filter is None:
+        return True
+    last_error = message.last_error or {}
+    haystack = " ".join(
+        str(part)
+        for part in (
+            last_error.get("type"),
+            last_error.get("message"),
+            last_error.get("command"),
+            last_error.get("stderr"),
+        )
+        if part is not None
+    ).lower()
+    return error_filter in haystack
 
 
 def _dead_letter_summary(messages: list[QueueMessage]) -> dict[str, Any]:

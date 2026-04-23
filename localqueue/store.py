@@ -1112,6 +1112,7 @@ class SQLiteQueueStore:
     def _upsert_record(
         self, connection: sqlite3.Connection, record: _QueueRecord, *, sequence: int
     ) -> None:
+        record_json = _encode_record(record).decode("utf-8")
         connection.execute(
             "INSERT INTO queue_messages("
             "queue, id, record_json, state, created_at, available_at, "
@@ -1130,7 +1131,7 @@ class SQLiteQueueStore:
             (
                 record.queue,
                 record.id,
-                _encode_record(record).decode("utf-8"),
+                record_json,
                 record.state,
                 record.created_at,
                 record.available_at,
@@ -1664,7 +1665,8 @@ class LMDBQueueStore:
         return _decode_record(bytes(raw))
 
     def _put_record(self, txn: lmdb.Transaction, record: _QueueRecord) -> None:
-        _ = txn.put(_message_key(record.queue, record.id), _encode_record(record))
+        payload = _encode_record(record)
+        _ = txn.put(_message_key(record.queue, record.id), payload)
 
     def _delete_index(self, txn: lmdb.Transaction, record: _QueueRecord) -> None:
         if record.index_key is not None:
@@ -1740,7 +1742,7 @@ class LMDBQueueStore:
             raise ValueError("queue worker stats are not valid JSON") from exc
         if not isinstance(payload, dict):
             raise ValueError("queue worker stats payload must be a JSON object")
-        return {str(key): int(value) for key, value in payload.items()}
+        return dict((str(key), int(value)) for key, value in payload.items())
 
     @staticmethod
     def _decode_worker_heartbeats(raw: bytes | None) -> dict[str, float]:
@@ -1754,7 +1756,7 @@ class LMDBQueueStore:
             ) from exc
         if not isinstance(payload, dict):
             raise ValueError("queue worker heartbeat payload must be a JSON object")
-        return {str(key): float(value) for key, value in payload.items()}
+        return dict((str(key), float(value)) for key, value in payload.items())
 
 
 def _safe_queue(queue: str) -> str:
