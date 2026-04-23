@@ -17,7 +17,12 @@ from typer.testing import CliRunner
 import yaml
 
 from localqueue import MemoryQueueStore, PersistentQueue, QueueMessage
-from localqueue.retry import MemoryAttemptStore, RetryRecord, SQLiteAttemptStore
+from localqueue.retry import (
+    MemoryAttemptStore,
+    PersistentRetryExhausted,
+    RetryRecord,
+    SQLiteAttemptStore,
+)
 from localqueue.cli import (
     _CommandExecutionError,
     _CommandNotFoundError,
@@ -25,6 +30,7 @@ from localqueue.cli import (
     DEFAULT_RETRY_STORE_PATH,
     _ShutdownState,
     _build_app,
+    _complete_message,
     _command_handler,
     _dead_letter_summary,
     _error_payload,
@@ -39,6 +45,7 @@ from localqueue.cli import (
     _print_queue_stats,
     _process_message,
     _process_queue_messages,
+    _process_queue_iteration,
     _poll_timeout,
     _last_attempt_worker_id,
     _read_value,
@@ -49,9 +56,11 @@ from localqueue.cli import (
     _coerce_config_value,
     _truncate_output,
     _validate_worker_loop_options,
+    _shutdown_state,
     _worker_health_summary,
     _write_config,
 )
+import localqueue.cli as cli_module
 from localqueue.retry import configure_default_store
 
 
@@ -138,6 +147,35 @@ class CliTests(unittest.TestCase):
                 os.chdir(previous)
                 _ = sys.modules.pop("main", None)
 
+    def test_complete_message_rejects_unsupported_action(self) -> None:
+        with self.assertRaisesRegex(ValueError, "^unsupported queue action: nope$"):
+            _complete_message(
+                typer,
+                _JsonConsole(),
+                _JsonConsole(),
+                "emails",
+                str(Path("queues.sqlite3")),
+                "message-id",
+                "nope",
+            )
+
+    def test_main_rejects_missing_optional_dependencies(self) -> None:
+        with mock.patch.dict(
+            "sys.modules", {"rich.console": None, "typer": None, "yaml": None}
+        ):
+            with self.assertRaises(SystemExit) as exc_info:
+                cli_module.main()
+
+        self.assertIn("localqueue[cli]", str(exc_info.exception))
+
+    def test_main_invokes_built_app(self) -> None:
+        app = mock.Mock()
+        with mock.patch("localqueue.cli._build_app", return_value=app) as build_app:
+            cli_module.main(["--help"])
+
+        build_app.assert_called_once()
+        app.assert_called_once_with(args=["--help"])
+
     def test_read_value_uses_argument_before_stdin(self) -> None:
         self.assertEqual(_read_value("{}"), "{}")
 
@@ -150,6 +188,15 @@ class CliTests(unittest.TestCase):
         stdin = StringIO("")
         with mock.patch("sys.stdin", stdin):
             with self.assertRaisesRegex(ValueError, "^stdin did not contain a value$"):
+                _ = _read_value(None)
+
+    def test_read_value_rejects_tty_without_argument(self) -> None:
+        stdin = mock.Mock()
+        stdin.isatty.return_value = True
+        with mock.patch("sys.stdin", stdin):
+            with self.assertRaisesRegex(
+                ValueError, "^missing value; pass an argument or pipe data on stdin$"
+            ):
                 _ = _read_value(None)
 
     def test_config_path_uses_xdg_config_home(self) -> None:
@@ -174,6 +221,14 @@ class CliTests(unittest.TestCase):
                 _load_config(yaml, path=path),
                 {"store_path": "/tmp/queues", "retry_store_path": "/tmp/retries"},
             )
+
+    def test_load_config_accepts_empty_yaml_document(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "localqueue" / "config.yaml"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("null\n", encoding="utf-8")
+
+            self.assertEqual(_load_config(yaml, path=path), {})
 
     def test_config_defaults_are_resolved_for_queue_paths(self) -> None:
         config = {"store_path": "/tmp/queues", "retry_store_path": "/tmp/retries"}
@@ -1076,6 +1131,48 @@ class CliTests(unittest.TestCase):
             self.assertEqual(len(dead_letters), 1)
             self.assertEqual(dead_letters[0].id, message.id)
 
+    def test_queue_process_command_releases_when_retry_is_not_exhausted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            store_path = str(tmp_path / "queues")
+            retry_store_path = str(tmp_path / "retries.sqlite3")
+            handler_path = tmp_path / "worker.py"
+            handler_path.write_text(
+                "def handle(payload):\n    raise ConnectionError('mail server down')\n",
+                encoding="utf-8",
+            )
+            _ = PersistentQueue("emails", store_path=store_path).put(
+                {"to": "user@example.com"}
+            )
+
+            previous = Path.cwd()
+            _ = sys.modules.pop("worker", None)
+            try:
+                os.chdir(tmp_path)
+                result = self._invoke(
+                    [
+                        "queue",
+                        "process",
+                        "emails",
+                        "worker:handle",
+                        "--store-path",
+                        store_path,
+                        "--retry-store-path",
+                        retry_store_path,
+                        "--max-tries",
+                        "2",
+                    ]
+                )
+            finally:
+                os.chdir(previous)
+                _ = sys.modules.pop("worker", None)
+
+            self.assertEqual(result.exit_code, 1)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["state"], "failed")
+            self.assertEqual(payload["last_error"]["type"], "ConnectionError")
+            self.assertTrue(PersistentQueue("emails", store_path=store_path).empty())
+
     def test_queue_process_reports_bad_handler_spec(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             result = self._invoke(
@@ -1091,6 +1188,45 @@ class CliTests(unittest.TestCase):
 
             self.assertEqual(result.exit_code, 1)
             self.assertIn("module:function", result.output)
+
+    def test_queue_process_command_dead_letters_when_handler_is_permanent_failure(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            store_path = str(tmp_path / "queues")
+            retry_store_path = str(tmp_path / "retries.sqlite3")
+            handler_path = tmp_path / "worker.py"
+            handler_path.write_text(
+                "def handle(payload):\n    raise SystemExit(127)\n",
+                encoding="utf-8",
+            )
+            queue = PersistentQueue("emails", store_path=store_path)
+            queue.put({"to": "user@example.com"})
+
+            previous = Path.cwd()
+            _ = sys.modules.pop("worker", None)
+            try:
+                os.chdir(tmp_path)
+                result = self._invoke(
+                    [
+                        "queue",
+                        "process",
+                        "emails",
+                        "worker:handle",
+                        "--store-path",
+                        store_path,
+                        "--retry-store-path",
+                        retry_store_path,
+                        "--max-tries",
+                        "1",
+                    ]
+                )
+            finally:
+                os.chdir(previous)
+                _ = sys.modules.pop("worker", None)
+
+            self.assertEqual(result.exit_code, 127)
 
     def test_queue_exec_reports_missing_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1309,6 +1445,44 @@ class CliTests(unittest.TestCase):
             assert dead_letters[0].last_error is not None
             self.assertEqual(dead_letters[0].last_error["exit_code"], 127)
 
+    def test_queue_exec_command_releases_when_command_is_not_exhausted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            store_path = str(tmp_path / "queues")
+            retry_store_path = str(tmp_path / "retries.sqlite3")
+            script_path = tmp_path / "fail.py"
+            script_path.write_text(
+                "import sys\n"
+                "sys.stderr.write('cannot deliver\\n')\n"
+                "raise SystemExit(7)\n",
+                encoding="utf-8",
+            )
+            queue = PersistentQueue("emails", store_path=store_path)
+            _ = queue.put({"to": "user@example.com"})
+
+            result = self._invoke(
+                [
+                    "queue",
+                    "exec",
+                    "emails",
+                    "--store-path",
+                    store_path,
+                    "--retry-store-path",
+                    retry_store_path,
+                    "--max-tries",
+                    "2",
+                    "--",
+                    sys.executable,
+                    str(script_path),
+                ]
+            )
+
+            self.assertEqual(result.exit_code, 1)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["state"], "failed")
+            self.assertEqual(payload["last_error"]["type"], "_CommandExecutionError")
+            self.assertTrue(PersistentQueue("emails", store_path=store_path).empty())
+
     def test_queue_requeue_dead_all_moves_every_dead_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store_path = str(Path(tmpdir) / "queues")
@@ -1350,6 +1524,31 @@ class CliTests(unittest.TestCase):
             assert second_message is not None
             self.assertEqual(first_message.state, "ready")
             self.assertEqual(second_message.state, "ready")
+
+    def test_queue_requeue_dead_all_logs_event_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_path = str(Path(tmpdir) / "queues")
+            persistent_queue = PersistentQueue("emails", store_path=store_path)
+            _ = persistent_queue.put({"to": "one@example.com"})
+            message = persistent_queue.get_message()
+            self.assertTrue(
+                persistent_queue.dead_letter(message, error=RuntimeError("bad"))
+            )
+
+            result = self._invoke(
+                [
+                    "queue",
+                    "requeue-dead",
+                    "emails",
+                    "--all",
+                    "--log-events",
+                    "--store-path",
+                    store_path,
+                ]
+            )
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertIn('"event": "queue.requeue"', result.stderr)
 
     def test_process_message_acks_successful_handler(self) -> None:
         queue = PersistentQueue("emails", store=MemoryQueueStore())
@@ -1464,6 +1663,46 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertEqual(console.values, [])
         self.assertEqual(err_console.messages, ["[yellow]queue is empty[/yellow]"])
+
+    def test_process_queue_iteration_handles_forever_empty_queue_without_blocking(
+        self,
+    ) -> None:
+        queue = PersistentQueue("emails", store=MemoryQueueStore())
+        console = _JsonConsole()
+        err_console = _JsonConsole()
+        policy_state = mock.Mock()
+        resolved_policy = mock.Mock()
+
+        with (
+            mock.patch("localqueue.cli._sleep_for_policy") as sleep_for_policy,
+            mock.patch("localqueue.cli.time.sleep") as sleep,
+        ):
+            iteration, owned_retry_store, should_continue = _process_queue_iteration(
+                queue,
+                lambda payload: payload,
+                console=console,
+                err_console=err_console,
+                policy_state=policy_state,
+                resolved_policy=resolved_policy,
+                retry_store_path=None,
+                owned_retry_store=None,
+                max_tries=1,
+                worker_id=None,
+                block=False,
+                timeout=None,
+                idle_sleep=0.001,
+                release_delay=0.0,
+                dead_letter_on_exhaustion=True,
+                log_events=False,
+                mode="process",
+                forever=True,
+            )
+
+        self.assertIsNone(iteration)
+        self.assertIsNone(owned_retry_store)
+        self.assertTrue(should_continue)
+        sleep_for_policy.assert_called_once()
+        sleep.assert_called_once()
 
     def test_process_queue_messages_reuses_retry_store_for_batch(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1589,6 +1828,36 @@ class CliTests(unittest.TestCase):
         self.assertEqual(queue.qsize(), 1)
         self.assertEqual(err_console.messages, [])
 
+    def test_process_queue_messages_forever_breaks_after_processing_then_empty(
+        self,
+    ) -> None:
+        queue = PersistentQueue("emails", store=MemoryQueueStore())
+        _ = queue.put({"to": "first@example.com"})
+        console = _JsonConsole()
+        err_console = _JsonConsole()
+
+        result = _process_queue_messages(
+            queue,
+            lambda payload: payload,
+            console=console,
+            err_console=err_console,
+            shutdown=_ShutdownState(),
+            retry_store_path=self._retry_store_path(),
+            max_jobs=2,
+            forever=True,
+            max_tries=1,
+            worker_id=None,
+            block=False,
+            timeout=None,
+            idle_sleep=0.001,
+            release_delay=0.0,
+            dead_letter_on_exhaustion=True,
+        )
+
+        self.assertEqual(result, 0)
+        self.assertEqual([value["state"] for value in console.values], ["acked"])
+        self.assertEqual(err_console.messages, [])
+
     def test_process_queue_messages_records_worker_id_on_failure(self) -> None:
         queue = PersistentQueue("emails", store=MemoryQueueStore())
         _ = queue.put({"to": "user@example.com"})
@@ -1620,6 +1889,37 @@ class CliTests(unittest.TestCase):
         self.assertEqual(console.values[0]["state"], "failed")
         redelivered = queue.get_message()
         self.assertIsNone(redelivered.leased_by)
+
+    def test_queue_exec_command_records_worker_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_path = str(Path(tmpdir) / "queues")
+            queue = PersistentQueue("emails", store_path=store_path)
+            _ = queue.put({"to": "user@example.com"})
+
+            result = self._invoke(
+                [
+                    "queue",
+                    "exec",
+                    "emails",
+                    "--worker-id",
+                    "worker-a",
+                    "--store-path",
+                    store_path,
+                    "--",
+                    sys.executable,
+                    "-c",
+                    "import sys; sys.stdout.write(sys.stdin.read())",
+                ]
+            )
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertEqual(json.loads(result.stdout)["state"], "acked")
+            self.assertGreater(
+                PersistentQueue("emails", store_path=store_path)
+                .stats()
+                .last_seen_by_worker_id["worker-a"],
+                0,
+            )
 
     def test_process_queue_messages_batch_exits_on_failed_message(self) -> None:
         queue = PersistentQueue("emails", store=MemoryQueueStore())
@@ -1869,6 +2169,9 @@ class CliTests(unittest.TestCase):
         self.assertEqual(_coerce_config_value("dead_letter_ttl_seconds", "12.5"), 12.5)
         with self.assertRaises(ValueError):
             _ = _coerce_config_value("retry_record_ttl_seconds", "-1")
+        self.assertEqual(
+            _coerce_config_value("store_path", "queues.sqlite3"), "queues.sqlite3"
+        )
 
         with self.assertRaises(ValueError):
             _ = _validate_worker_loop_options(max_jobs=2, forever=True)
@@ -1917,6 +2220,141 @@ class CliTests(unittest.TestCase):
         self.assertEqual(health["active"]["count"], 1)
         self.assertEqual(health["stale"]["count"], 1)
         self.assertIn("worker-b", health["stale"]["by_worker_id"])
+
+    def test_cli_helpers_cover_dead_letter_filter_max_attempts_and_error_miss(
+        self,
+    ) -> None:
+        messages = [
+            QueueMessage(
+                id="1",
+                queue="jobs",
+                value="a",
+                attempts=1,
+                last_error={"type": "RuntimeError", "message": "boom"},
+                failed_at=100.0,
+            ),
+            QueueMessage(
+                id="2",
+                queue="jobs",
+                value="b",
+                attempts=4,
+                last_error={"type": "ValueError", "message": "other"},
+                failed_at=100.0,
+            ),
+        ]
+        with mock.patch("localqueue.cli.time.time", return_value=200.0):
+            filtered = _filter_dead_letters(
+                messages,
+                min_attempts=None,
+                max_attempts=2,
+                error_contains="missing",
+                failed_within=None,
+            )
+
+        self.assertEqual(filtered, [])
+
+    def test_cli_helpers_cover_empty_summary_and_filter_edge_cases(self) -> None:
+        empty_summary = _dead_letter_summary([])
+        self.assertEqual(empty_summary["count"], 0)
+        self.assertNotIn("failed_at", empty_summary)
+
+        filtered = _filter_dead_letters(
+            [
+                QueueMessage(
+                    id="1",
+                    queue="jobs",
+                    value="a",
+                    attempts=1,
+                    failed_at=None,
+                )
+            ],
+            min_attempts=2,
+            max_attempts=3,
+            error_contains=None,
+            failed_within=None,
+        )
+        self.assertEqual(filtered, [])
+
+    def test_process_message_handles_persistent_retry_exhausted(self) -> None:
+        queue = PersistentQueue("emails", store=MemoryQueueStore())
+        _ = queue.put({"to": "user@example.com"})
+        message = queue.get_message()
+        err_console = _JsonConsole()
+
+        class FakeRetryer:
+            def __call__(self, handler: Any, value: Any) -> None:
+                raise PersistentRetryExhausted(message.id, 3)
+
+        with (
+            mock.patch("localqueue.cli.PersistentRetrying", return_value=FakeRetryer()),
+            mock.patch.object(
+                queue, "dead_letter", wraps=queue.dead_letter
+            ) as dead_letter,
+            mock.patch.object(queue, "release", wraps=queue.release) as release,
+        ):
+            result = _process_message(
+                queue,
+                message,
+                lambda payload: payload,
+                retry_store=MemoryAttemptStore(),
+                retry_store_path=None,
+                max_tries=1,
+                release_delay=0.0,
+                dead_letter_on_exhaustion=True,
+                log_events=True,
+                err_console=err_console,
+            )
+
+        self.assertFalse(result.processed)
+        self.assertEqual(result.final_state, "dead-letter")
+        self.assertIsNotNone(result.last_error)
+        dead_letter.assert_called_once()
+        release.assert_not_called()
+        self.assertTrue(
+            any(item["event"] == "process.dead_letter" for item in err_console.values)
+        )
+
+    def test_process_message_releases_on_unhandled_exception(self) -> None:
+        queue = PersistentQueue("emails", store=MemoryQueueStore())
+        _ = queue.put({"to": "user@example.com"})
+        message = queue.get_message()
+        err_console = _JsonConsole()
+
+        class FakeRetryer:
+            def __call__(self, handler: Any, value: Any) -> None:
+                raise ConnectionError("mail server down")
+
+            def get_record(self, key: str) -> Any:
+                return None
+
+        with (
+            mock.patch("localqueue.cli.PersistentRetrying", return_value=FakeRetryer()),
+            mock.patch("localqueue.cli.is_permanent_failure", return_value=False),
+            mock.patch.object(queue, "release", wraps=queue.release) as release,
+            mock.patch.object(
+                queue, "dead_letter", wraps=queue.dead_letter
+            ) as dead_letter,
+        ):
+            result = _process_message(
+                queue,
+                message,
+                lambda payload: payload,
+                retry_store=MemoryAttemptStore(),
+                retry_store_path=None,
+                max_tries=2,
+                release_delay=0.0,
+                dead_letter_on_exhaustion=False,
+                log_events=True,
+                err_console=err_console,
+            )
+
+        self.assertFalse(result.processed)
+        self.assertEqual(result.final_state, "release")
+        release.assert_called_once()
+        dead_letter.assert_not_called()
+        self.assertTrue(
+            any(item["event"] == "process.release" for item in err_console.values)
+        )
 
     def test_cli_helpers_cover_queue_summary_and_shutdown_paths(self) -> None:
         queue = PersistentQueue("jobs", store=MemoryQueueStore())
@@ -1987,6 +2425,20 @@ class CliTests(unittest.TestCase):
         self.assertGreaterEqual(len(dead_console.values), 1)
         self.assertGreaterEqual(len(stats_console.values), 1)
         self.assertIn("worker_health", stats_console.values[0])
+
+    def test_shutdown_state_request_callback_sets_requested(self) -> None:
+        import signal
+
+        callbacks: dict[int, Any] = {}
+
+        def capture_signal(sig: int, handler: Any) -> Any:
+            callbacks[sig] = handler
+            return signal.SIG_DFL
+
+        with mock.patch("localqueue.cli.signal.signal", side_effect=capture_signal):
+            with _shutdown_state() as state:
+                callbacks[signal.SIGINT](signal.SIGINT, None)
+                self.assertTrue(state.requested)
 
     def test_queue_health_reports_worker_liveness(self) -> None:
         from rich.console import Console
