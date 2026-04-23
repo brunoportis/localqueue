@@ -85,6 +85,9 @@ venvPath = "."
 venv = ".venv"
 typeCheckingMode = "standard"
 
+[tool.ruff]
+line-length = 88
+
 [tool.ruff.lint]
 extend-select = ["TC", "C901"]
 
@@ -94,3 +97,6 @@ max-complexity = 10
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["TC", "C901"]
 "examples/**" = ["TC", "C901"]
+
+[tool.ruff.format]
+quote-style = "double"
