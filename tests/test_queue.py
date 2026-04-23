@@ -41,22 +41,22 @@ from localqueue.worker import (
     _sleep_for_policy,
     _sleep_for_policy_async,
 )
-from localqueue.store import (
-    _QueueRecord,
-    _decode_record,
-    _encode_worker_heartbeats,
-    _dead_key,
-    _dedupe_key_key,
-    _dedupe_token,
-    _encode_record,
-    _inflight_key,
-    _message_key,
-    _ready_key,
-    _last_leased_at,
-    _replace_record,
-    _sequence_from_index_key,
-    _timestamp_from_inflight_key,
-    _timestamp_from_ready_key,
+from localqueue.stores._shared import (
+    QueueRecord as _QueueRecord,
+    decode_record as _decode_record,
+    encode_worker_heartbeats as _encode_worker_heartbeats,
+    dead_key as _dead_key,
+    dedupe_key_key as _dedupe_key_key,
+    dedupe_token as _dedupe_token,
+    encode_record as _encode_record,
+    inflight_key as _inflight_key,
+    message_key as _message_key,
+    ready_key as _ready_key,
+    last_leased_at as _last_leased_at,
+    replace_record as _replace_record,
+    sequence_from_index_key as _sequence_from_index_key,
+    timestamp_from_inflight_key as _timestamp_from_inflight_key,
+    timestamp_from_ready_key as _timestamp_from_ready_key,
 )
 from localqueue.queue import _deadline, _remaining, _wait_time, _validate_retry_defaults
 
@@ -1716,7 +1716,9 @@ class QueueTests(unittest.TestCase):
             fake_lmdb = mock.Mock()
             fake_lmdb.LockError = lmdb.LockError
             fake_lmdb.open.side_effect = lmdb.LockError("busy")
-            with mock.patch("localqueue.store._import_lmdb", return_value=fake_lmdb):
+            with mock.patch(
+                "localqueue.stores.lmdb.import_lmdb", return_value=fake_lmdb
+            ):
                 with self.assertRaises(QueueStoreLockedError) as exc_info:
                     _ = LMDBQueueStore(tmpdir)
 

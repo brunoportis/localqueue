@@ -26,7 +26,7 @@ from .retry import (
     PersistentRetrying,
     SQLiteAttemptStore,
 )
-from .store import QueueMessage
+from .stores import QueueMessage
 from .worker import (
     PersistentWorkerConfig,
     WorkerPolicyState,

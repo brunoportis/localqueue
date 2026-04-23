@@ -16,7 +16,7 @@ class SQLiteAttemptStore:
     _connection: sqlite3.Connection
     _lock: threading.Lock
 
-    def __init__(self, path: str | Path, timeout: float = 15.0) -> None:  # pragma: no cover
+    def __init__(self, path: str | Path, timeout: float = 15.0) -> None:
         self.path = Path(path)
         if self.path.parent != Path("."):
             self.path.parent.mkdir(parents=True, exist_ok=True)

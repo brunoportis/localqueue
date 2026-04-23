@@ -16,7 +16,7 @@ class LMDBAttemptStore:
     path: Path
     _env: lmdb.Environment
 
-    def __init__(self, path: str | Path, *, map_size: int = 10**7) -> None:  # pragma: no cover
+    def __init__(self, path: str | Path, *, map_size: int = 10**7) -> None:
         lmdb = import_lmdb()
         self.path = Path(path)
         self.path.mkdir(parents=True, exist_ok=True)
