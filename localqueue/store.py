@@ -9,7 +9,7 @@ from collections import Counter
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterator, Protocol, cast
+from typing import TYPE_CHECKING, Any, Iterator, Protocol
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -161,6 +161,10 @@ class _QueueRecord:
             attempt_history=list(self.attempt_history),
             dedupe_key=self.dedupe_key,
         )
+
+
+def _replace_record(record: _QueueRecord, **changes: Any) -> _QueueRecord:
+    return replace(record, **changes)
 
 
 class QueueStore(Protocol):
@@ -667,11 +671,8 @@ class SQLiteQueueStore:
                     self._delete_dedupe_key(connection, queue, dedupe_key)
             record = _QueueRecord.new(queue, value, available_at, dedupe_key=dedupe_key)
             seq = self._next_seq(connection, queue)
-            record = cast(
-                "_QueueRecord",
-                replace(
-                    record, index_key=_ready_key(queue, available_at, seq, record.id)
-                ),
+            record = _replace_record(
+                record, index_key=_ready_key(queue, available_at, seq, record.id)
             )
             self._upsert_record(connection, record, sequence=seq)
             if dedupe_key is not None:
@@ -699,25 +700,22 @@ class SQLiteQueueStore:
                 return None
             record = _decode_record(row[1])
             leased_until = now + lease_timeout
-            updated = cast(
-                "_QueueRecord",
-                replace(
-                    record,
-                    attempts=record.attempts + 1,
-                    leased_until=leased_until,
-                    leased_by=leased_by,
-                    state=_INFLIGHT,
-                    index_key=_inflight_key(queue, leased_until, record.id),
-                    attempt_history=record.attempt_history
-                    + [
-                        _attempt_event(
-                            "leased",
-                            at=now,
-                            attempt=record.attempts + 1,
-                            leased_by=leased_by,
-                        )
-                    ],
-                ),
+            updated = _replace_record(
+                record,
+                attempts=record.attempts + 1,
+                leased_until=leased_until,
+                leased_by=leased_by,
+                state=_INFLIGHT,
+                index_key=_inflight_key(queue, leased_until, record.id),
+                attempt_history=record.attempt_history
+                + [
+                    _attempt_event(
+                        "leased",
+                        at=now,
+                        attempt=record.attempts + 1,
+                        leased_by=leased_by,
+                    )
+                ],
             )
             self._upsert_record(connection, updated, sequence=self._sequence(row[1]))
             if leased_by is not None:
@@ -757,31 +755,26 @@ class SQLiteQueueStore:
             if record is None:
                 return False
             seq = self._next_seq(connection, queue)
-            updated = cast(
-                "_QueueRecord",
-                replace(
-                    record,
-                    available_at=available_at,
-                    leased_until=None,
-                    leased_by=None,
-                    last_error=last_error
-                    if last_error is not None
-                    else record.last_error,
-                    failed_at=failed_at if failed_at is not None else record.failed_at,
-                    state=_READY,
-                    index_key=_ready_key(queue, available_at, seq, message_id),
-                    attempt_history=record.attempt_history
-                    + [
-                        _attempt_event(
-                            "released",
-                            at=time.time(),
-                            attempt=record.attempts,
-                            last_error=last_error
-                            if last_error is not None
-                            else record.last_error,
-                        )
-                    ],
-                ),
+            updated = _replace_record(
+                record,
+                available_at=available_at,
+                leased_until=None,
+                leased_by=None,
+                last_error=last_error if last_error is not None else record.last_error,
+                failed_at=failed_at if failed_at is not None else record.failed_at,
+                state=_READY,
+                index_key=_ready_key(queue, available_at, seq, message_id),
+                attempt_history=record.attempt_history
+                + [
+                    _attempt_event(
+                        "released",
+                        at=time.time(),
+                        attempt=record.attempts,
+                        last_error=last_error
+                        if last_error is not None
+                        else record.last_error,
+                    )
+                ],
             )
             self._upsert_record(connection, updated, sequence=seq)
             return True
@@ -798,30 +791,25 @@ class SQLiteQueueStore:
             record = self._get_record(connection, queue, message_id)
             if record is None:
                 return False
-            updated = cast(
-                "_QueueRecord",
-                replace(
-                    record,
-                    leased_until=None,
-                    leased_by=None,
-                    last_error=last_error
-                    if last_error is not None
-                    else record.last_error,
-                    failed_at=failed_at if failed_at is not None else record.failed_at,
-                    state=_DEAD,
-                    index_key=_dead_key(queue, message_id),
-                    attempt_history=record.attempt_history
-                    + [
-                        _attempt_event(
-                            "dead_lettered",
-                            at=time.time(),
-                            attempt=record.attempts,
-                            last_error=last_error
-                            if last_error is not None
-                            else record.last_error,
-                        )
-                    ],
-                ),
+            updated = _replace_record(
+                record,
+                leased_until=None,
+                leased_by=None,
+                last_error=last_error if last_error is not None else record.last_error,
+                failed_at=failed_at if failed_at is not None else record.failed_at,
+                state=_DEAD,
+                index_key=_dead_key(queue, message_id),
+                attempt_history=record.attempt_history
+                + [
+                    _attempt_event(
+                        "dead_lettered",
+                        at=time.time(),
+                        attempt=record.attempts,
+                        last_error=last_error
+                        if last_error is not None
+                        else record.last_error,
+                    )
+                ],
             )
             self._upsert_record(
                 connection,
@@ -957,16 +945,13 @@ class SQLiteQueueStore:
             if record is None or record.state != _DEAD:
                 return False
             seq = self._next_seq(connection, queue)
-            updated = cast(
-                "_QueueRecord",
-                replace(
-                    record,
-                    available_at=available_at,
-                    leased_until=None,
-                    leased_by=None,
-                    state=_READY,
-                    index_key=_ready_key(queue, available_at, seq, message_id),
-                ),
+            updated = _replace_record(
+                record,
+                available_at=available_at,
+                leased_until=None,
+                leased_by=None,
+                state=_READY,
+                index_key=_ready_key(queue, available_at, seq, message_id),
             )
             self._upsert_record(connection, updated, sequence=seq)
             return True
@@ -1190,25 +1175,22 @@ class SQLiteQueueStore:
         for message_id, raw in cursor.fetchall():
             record = _decode_record(raw)
             seq = self._next_seq(connection, queue)
-            updated = cast(
-                "_QueueRecord",
-                replace(
-                    record,
-                    available_at=now,
-                    leased_until=None,
-                    leased_by=None,
-                    state=_READY,
-                    index_key=_ready_key(queue, now, seq, message_id),
-                    attempt_history=record.attempt_history
-                    + [
-                        _attempt_event(
-                            "lease_expired",
-                            at=now,
-                            attempt=record.attempts,
-                            leased_by=record.leased_by,
-                        )
-                    ],
-                ),
+            updated = _replace_record(
+                record,
+                available_at=now,
+                leased_until=None,
+                leased_by=None,
+                state=_READY,
+                index_key=_ready_key(queue, now, seq, message_id),
+                attempt_history=record.attempt_history
+                + [
+                    _attempt_event(
+                        "lease_expired",
+                        at=now,
+                        attempt=record.attempts,
+                        leased_by=record.leased_by,
+                    )
+                ],
             )
             self._upsert_record(connection, updated, sequence=seq)
 
