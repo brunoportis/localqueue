@@ -1101,7 +1101,9 @@ def _process_queue_iteration(
         message,
         context.handler,
         retry_store=owned_retry_store,
-        retry_store_path=None if owned_retry_store is not None else context.retry_store_path,
+        retry_store_path=None
+        if owned_retry_store is not None
+        else context.retry_store_path,
         max_tries=context.max_tries,
         release_delay=context.release_delay,
         dead_letter_on_exhaustion=context.dead_letter_on_exhaustion,
