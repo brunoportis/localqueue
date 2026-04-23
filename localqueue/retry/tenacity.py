@@ -40,6 +40,30 @@ _default_store_factory: Callable[[], AttemptStore] = _sqlite_default_store_facto
 _default_store_factory_lock = threading.Lock()
 
 
+async def _run_in_daemon_thread(
+    fn: Callable[..., Any], *args: Any, **kwargs: Any
+) -> Any:
+    result: dict[str, Any] = {}
+    error: dict[str, BaseException] = {}
+    done = threading.Event()
+
+    def runner() -> None:
+        try:
+            result["value"] = fn(*args, **kwargs)
+        except BaseException as exc:
+            error["value"] = exc
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    while not done.is_set():
+        await asyncio.sleep(0.001)
+    if "value" in error:
+        raise error["value"]
+    return result["value"]
+
+
 class PersistentRetryExhausted(RuntimeError):
     key: str
     attempts: int
@@ -669,7 +693,7 @@ class PersistentAsyncRetrying(_PersistentMixin):
     async def _load_context_async(
         self, fn: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]
     ) -> PersistentCallContext:
-        return await asyncio.to_thread(self._load_context, fn, args, kwargs)
+        return await _run_in_daemon_thread(self._load_context, fn, args, kwargs)
 
     async def _persist_attempt_async(
         self,
@@ -678,7 +702,7 @@ class PersistentAsyncRetrying(_PersistentMixin):
         *,
         exhausted: bool,
     ) -> None:
-        await asyncio.to_thread(
+        await _run_in_daemon_thread(
             self._persist_attempt_for_context,
             context,
             retry_state,
@@ -699,9 +723,7 @@ class PersistentAsyncRetrying(_PersistentMixin):
     async def _clear_if_success_async(
         self, context: PersistentCallContext, retry_state: RetryCallState
     ) -> None:
-        await asyncio.to_thread(
-            self._clear_if_success_for_context, context, retry_state
-        )
+        self._clear_if_success_for_context(context, retry_state)
 
     def _clear_if_success_for_context(
         self, context: PersistentCallContext, retry_state: RetryCallState

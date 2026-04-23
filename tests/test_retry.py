@@ -80,6 +80,21 @@ def json_dumps_record(record: RetryRecord) -> str:
 
 
 class RetryTests(unittest.TestCase):
+    def test_run_in_daemon_thread_returns_result(self) -> None:
+        async def scenario() -> str:
+            return await localqueue.retry.tenacity._run_in_daemon_thread(lambda: "ok")
+
+        self.assertEqual(asyncio.run(scenario()), "ok")
+
+    def test_run_in_daemon_thread_propagates_exception(self) -> None:
+        async def scenario() -> None:
+            await localqueue.retry.tenacity._run_in_daemon_thread(
+                _raise_runtime_error, "daemon failure"
+            )
+
+        with self.assertRaisesRegex(RuntimeError, "daemon failure"):
+            asyncio.run(scenario())
+
     def test_is_permanent_failure_checks_exit_code_carriers(self) -> None:
         class ExitCodeError(Exception):
             def __init__(self, exit_code: int) -> None:

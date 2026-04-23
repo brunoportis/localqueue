@@ -24,44 +24,50 @@ from localqueue.retry import (
     SQLiteAttemptStore,
 )
 from localqueue.cli import (
-    _CommandExecutionError,
-    _CommandNotFoundError,
-    CONFIG_FILENAME,
     DEFAULT_RETRY_STORE_PATH,
     _ShutdownState,
     _build_app,
     _complete_message,
     _command_handler,
     _dead_letter_summary,
-    _error_payload,
     _filter_dead_letters,
-    _finish_failed_message,
-    _format_command,
     _config_path,
     _load_callable,
     _load_config,
     _parse_json,
     _print_dead_letters,
     _print_queue_stats,
-    _process_message,
     _process_queue_messages,
-    _process_queue_iteration,
-    _poll_timeout,
-    _queue_worker_command_signature,
-    _last_attempt_worker_id,
     _read_value,
     _resolve_retry_store_path,
     _resolve_dead_letter_ttl,
     _resolve_retry_record_ttl,
     _resolve_store_path,
     _coerce_config_value,
-    _truncate_output,
     _validate_worker_loop_options,
     _shutdown_state,
     _worker_health_summary,
     _write_config,
-    _QueueIterationContext,
-    _QueueWorkerOptions,
+)
+from localqueue.cli_support import (
+    CONFIG_FILENAME,
+    last_attempt_worker_id as _last_attempt_worker_id,
+)
+from localqueue.cli_worker_commands import (
+    queue_worker_command_signature as _queue_worker_command_signature,
+)
+from localqueue.services.queue_worker import (
+    QueueIterationContext as _QueueIterationContext,
+    QueueWorkerOptions as _QueueWorkerOptions,
+    _CommandExecutionError,
+    _CommandNotFoundError,
+    error_payload as _error_payload,
+    finish_failed_message as _finish_failed_message,
+    format_command as _format_command,
+    poll_timeout as _poll_timeout,
+    process_message as _process_message,
+    process_queue_iteration as _process_queue_iteration,
+    truncate_output as _truncate_output,
 )
 import localqueue.cli as cli_module
 from localqueue.retry import configure_default_store
@@ -1751,8 +1757,10 @@ class CliTests(unittest.TestCase):
         resolved_policy = mock.Mock()
 
         with (
-            mock.patch("localqueue.cli._sleep_for_policy") as sleep_for_policy,
-            mock.patch("localqueue.cli.time.sleep") as sleep,
+            mock.patch(
+                "localqueue.services.queue_worker._sleep_for_policy"
+            ) as sleep_for_policy,
+            mock.patch("localqueue.services.queue_worker.time.sleep") as sleep,
         ):
             iteration, owned_retry_store, should_continue = _process_queue_iteration(
                 _QueueIterationContext(
@@ -1806,7 +1814,7 @@ class CliTests(unittest.TestCase):
             console = _JsonConsole()
 
             with mock.patch(
-                "localqueue.cli.SQLiteAttemptStore",
+                "localqueue.services.queue_worker.SQLiteAttemptStore",
                 TrackingSQLiteAttemptStore,
             ):
                 result = _process_queue_messages(
@@ -1976,6 +1984,8 @@ class CliTests(unittest.TestCase):
                     "worker-a",
                     "--store-path",
                     store_path,
+                    "--retry-store-path",
+                    str(Path(tmpdir) / "retries.sqlite3"),
                     "--",
                     sys.executable,
                     "-c",
@@ -2351,7 +2361,10 @@ class CliTests(unittest.TestCase):
                 raise PersistentRetryExhausted(message.id, 3)
 
         with (
-            mock.patch("localqueue.cli.PersistentRetrying", return_value=FakeRetryer()),
+            mock.patch(
+                "localqueue.services.queue_worker.PersistentRetrying",
+                return_value=FakeRetryer(),
+            ),
             mock.patch.object(
                 queue, "dead_letter", wraps=queue.dead_letter
             ) as dead_letter,
@@ -2393,8 +2406,14 @@ class CliTests(unittest.TestCase):
                 return None
 
         with (
-            mock.patch("localqueue.cli.PersistentRetrying", return_value=FakeRetryer()),
-            mock.patch("localqueue.cli.is_permanent_failure", return_value=False),
+            mock.patch(
+                "localqueue.services.queue_worker.PersistentRetrying",
+                return_value=FakeRetryer(),
+            ),
+            mock.patch(
+                "localqueue.services.queue_worker.is_permanent_failure",
+                return_value=False,
+            ),
             mock.patch.object(queue, "release", wraps=queue.release) as release,
             mock.patch.object(
                 queue, "dead_letter", wraps=queue.dead_letter
