@@ -27,48 +27,49 @@ Before `1.0.0`, use this convention:
 ## Checklist
 
 1. Update `version` in `pyproject.toml`.
-2. Update `CHANGELOG.md`.
-3. Confirm `requires-python`, license metadata, and PyPI classifiers still match
+2. Run `uv lock` and commit the updated `uv.lock`.
+3. Update `CHANGELOG.md`.
+4. Confirm `requires-python`, license metadata, and PyPI classifiers still match
    supported Python versions and the intended release policy.
-4. Run the test suite:
+5. Run the test suite:
 
    ```bash
    uv run pytest
    ```
 
-5. Run lint and typecheck:
+6. Run lint and typecheck:
 
    ```bash
    uv run ruff check .
    uv run basedpyright
    ```
 
-6. Build the docs:
+7. Build the docs:
 
    ```bash
    uv run zensical build --clean
    ```
 
-7. Confirm the lockfile is current:
+8. Confirm the lockfile is current:
 
    ```bash
    uv lock --check
    ```
 
-8. Build the release artifacts:
+9. Build the release artifacts:
 
    ```bash
    uv build
    ```
 
-9. Inspect the artifacts:
+10. Inspect the artifacts:
 
    ```bash
    tar -tzf dist/localqueue-<version>.tar.gz | less
    python -m zipfile -l dist/localqueue-<version>-py3-none-any.whl
    ```
 
-10. Install the wheel in a clean virtual environment:
+11. Install the wheel in a clean virtual environment:
 
    ```bash
    uv venv /tmp/localqueue-release-venv
@@ -77,7 +78,7 @@ Before `1.0.0`, use this convention:
    /tmp/localqueue-release-venv/bin/localqueue --help
    ```
 
-11. Run a local smoke test:
+12. Run a local smoke test:
 
     ```bash
     uv run python examples/enqueue_email.py user@example.com \
@@ -90,15 +91,15 @@ Before `1.0.0`, use this convention:
       --max-tries 3
     ```
 
-12. Create the release tag:
+13. Create the release tag:
 
     ```bash
     git tag v<version>
     ```
 
-13. Publish the artifacts.
+14. Publish the artifacts.
 
-14. Confirm the docs deployment finished successfully in the `Documentation`
+15. Confirm the docs deployment finished successfully in the `Documentation`
     workflow. GitHub Pages must be configured to deploy from GitHub Actions in
     the repository settings.
 
