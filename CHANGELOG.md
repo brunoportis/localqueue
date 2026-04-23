@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.1
 
 - Use XDG data directories for default SQLite queue and retry store files.
 - Move the exploratory retry demo from `main.py` to `examples/retry_demo.py`.
