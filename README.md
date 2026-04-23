@@ -2,7 +2,8 @@
 
 [![Tests](https://github.com/brunoportis/localqueue/actions/workflows/tests.yml/badge.svg)](https://github.com/brunoportis/localqueue/actions/workflows/tests.yml)
 [![CodeQL](https://github.com/brunoportis/localqueue/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/brunoportis/localqueue/actions/workflows/github-code-scanning/codeql)
-![Coverage](https://img.shields.io/badge/coverage-%E2%89%A595%25-brightgreen)
+[![PyPI version](https://img.shields.io/pypi/v/localqueue.svg)](https://pypi.org/project/localqueue/)
+![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)
 
 `localqueue` is a small durable queue for one machine. It stores work on the local filesystem by default and keeps retry state with Tenacity.
 
