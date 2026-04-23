@@ -100,7 +100,7 @@ def _run_benchmark(
                     "put",
                     lambda: queue.put({"producer": index, "sequence": sequence}),
                 )
-        except BaseException as exc:  # pragma: no cover - defensive
+        except Exception as exc:  # pragma: no cover - defensive
             record_error(exc)
 
     def consumer(index: int) -> None:
@@ -132,7 +132,7 @@ def _run_benchmark(
                     return
                 with consumed_lock:
                     consumed[message.id] += 1
-        except BaseException as exc:  # pragma: no cover - defensive
+        except Exception as exc:  # pragma: no cover - defensive
             record_error(exc)
 
     threads = [

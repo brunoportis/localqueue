@@ -1110,7 +1110,7 @@ class SQLiteQueueStore:
         return _decode_record(row[0])
 
     def _upsert_record(
-        self, connection: sqlite3.Connection, record: _QueueRecord, *, sequence: int
+        self, connection: sqlite3.Connection, record: Any, *, sequence: int
     ) -> None:
         record_json = _encode_record(record).decode("utf-8")
         connection.execute(
