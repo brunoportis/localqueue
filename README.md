@@ -13,18 +13,6 @@ Use it for scripts, CLI tools, cron jobs, and small Python workers that share on
 localqueue queue exec emails -- python scripts/send_email.py
 ```
 
-To run the CLI in a clean container:
-
-```bash
-docker run --rm ghcr.io/brunoportis/localqueue:latest --help
-```
-
-The image is also published on GitHub Container Registry:
-
-```bash
-docker pull ghcr.io/brunoportis/localqueue:latest
-```
-
 ```python
 from localqueue import PersistentQueue, persistent_worker
 
@@ -54,6 +42,15 @@ For the optional LMDB backend:
 
 ```bash
 pip install "localqueue[lmdb]"
+```
+
+## Running with Docker
+
+The image is also published on GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/brunoportis/localqueue:latest
+docker run --rm ghcr.io/brunoportis/localqueue:latest --help
 ```
 
 ## When not to use
