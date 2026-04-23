@@ -352,6 +352,8 @@ def process_queue_messages(
                 )
             )
             if empty_queue:
+                if options.forever:
+                    continue
                 return handle_empty_queue(err_console, processed)
             assert iteration is not None
             if handle_processed_queue_result(
