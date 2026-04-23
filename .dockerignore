@@ -1,0 +1,13 @@
+.git
+.github
+.cache
+.codex
+.coverage
+.pytest_cache
+.ruff_cache
+.venv
+__pycache__
+dist
+mutants
+site
+*.sqlite3

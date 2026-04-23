@@ -13,6 +13,12 @@ Use it for scripts, CLI tools, cron jobs, and small Python workers that share on
 localqueue queue exec emails -- python scripts/send_email.py
 ```
 
+To run the CLI in a clean container:
+
+```bash
+docker run --rm ghcr.io/brunoportis/localqueue:latest --help
+```
+
 ```python
 from localqueue import PersistentQueue, persistent_worker
 
