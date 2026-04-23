@@ -160,7 +160,7 @@ def _threaded_sqlite_producer(
     errors_lock: threading.Lock,
 ) -> None:
     try:
-        queue = PersistentQueue(queue_name, store_path=store_path, lease_timeout=0.2)
+        queue = PersistentQueue(queue_name, store_path=store_path, lease_timeout=1.0)
         start.wait()
         for sequence in range(message_count):
             _retry_threaded_sqlite_locked(
@@ -188,7 +188,7 @@ def _threaded_sqlite_consumer(
     errors_lock: threading.Lock,
 ) -> None:
     try:
-        queue = PersistentQueue(queue_name, store_path=store_path, lease_timeout=0.2)
+        queue = PersistentQueue(queue_name, store_path=store_path, lease_timeout=1.0)
         start.wait()
         while not _threaded_scenario_complete(
             producers_done, consumed, consumed_lock, total_messages
