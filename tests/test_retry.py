@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
+import importlib.metadata
 import json
 import sqlite3
 import tempfile
@@ -12,7 +14,9 @@ from typing import Any, cast
 from unittest import mock
 
 import lmdb
+from tenacity import Retrying
 
+import localqueue.retry.tenacity
 from localqueue.retry import (
     AttemptStoreLockedError,
     LMDBAttemptStore,
@@ -31,8 +35,10 @@ from localqueue.retry import (
     persistent_async_retry,
     persistent_retry,
 )
+from localqueue.retry.tenacity import PersistentCallContext, PersistentRetryState
 from localqueue.failure import is_permanent_failure
 from localqueue.retry.tenacity import _sqlite_default_store_factory
+import localqueue
 
 
 class AbortRun(Exception):
@@ -184,6 +190,11 @@ class RetryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _ = missing_attr_key_fn(lambda job: job, (Job("job-123"),), {})
 
+        plain_key_fn = key_from_attr("job", "id")
+        self.assertEqual(
+            plain_key_fn(lambda job: job, (Job("job-123"),), {}), "job-123"
+        )
+
     def test_idempotency_key_from_id_factory(self) -> None:
         store = MemoryAttemptStore()
 
@@ -250,6 +261,48 @@ class RetryTests(unittest.TestCase):
             configure_default_store_factory(_sqlite_default_store_factory)
             close_default_store(all_threads=True)
 
+    def test_default_store_ignores_unhashable_owned_stores(self) -> None:
+        class UnhashableStore(MemoryAttemptStore):
+            __hash__ = None  # type: ignore[assignment]
+
+        store = UnhashableStore()
+
+        try:
+            configure_default_store(store)
+            retryer = PersistentRetrying(
+                key="unhashable", max_tries=1, wait=lambda _: 0
+            )
+            with self.assertRaises(RuntimeError):
+                _ = retryer(lambda: (_ for _ in ()).throw(RuntimeError("fail")))
+            self.assertIsNotNone(store.load("unhashable"))
+        finally:
+            configure_default_store_factory(_sqlite_default_store_factory)
+            close_default_store(all_threads=True)
+
+    def test_get_default_store_ignores_unhashable_store_errors(self) -> None:
+        store = CloseTrackingStore()
+        with mock.patch(
+            "localqueue.retry.tenacity._default_store_local", new=threading.local()
+        ):
+            with mock.patch(
+                "localqueue.retry.tenacity._default_store_factory",
+                return_value=store,
+            ):
+                with mock.patch.object(
+                    localqueue.retry.tenacity._default_owned_stores,  # type: ignore[attr-defined]
+                    "add",
+                    side_effect=TypeError,
+                ):
+                    self.assertIs(localqueue.retry.tenacity._get_default_store(), store)
+
+    def test_package_version_falls_back_to_unknown(self) -> None:
+        with mock.patch(
+            "importlib.metadata.version",
+            side_effect=importlib.metadata.PackageNotFoundError,
+        ):
+            reloaded = importlib.reload(localqueue)
+        self.assertEqual(reloaded.__version__, "unknown")
+
     def test_default_sqlite_store_factory_uses_xdg_data_home(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.dict("os.environ", {"XDG_DATA_HOME": tmpdir}, clear=False):
@@ -261,6 +314,69 @@ class RetryTests(unittest.TestCase):
                     self.assertTrue(expected_path.is_file())
                 finally:
                     store.close()
+
+    def test_sqlite_retry_store_handles_legacy_schema_without_first_attempt_field(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = f"{tmpdir}/retries.sqlite3"
+            connection = sqlite3.connect(path)
+            try:
+                connection.execute(
+                    "CREATE TABLE retry_records (key TEXT PRIMARY KEY, record_json TEXT NOT NULL)"
+                )
+                connection.execute(
+                    "INSERT INTO retry_records(key, record_json) VALUES(?, ?)",
+                    (
+                        "legacy",
+                        json.dumps(
+                            {
+                                "attempts": 2,
+                                "first_attempt_at": 100.0,
+                                "exhausted": True,
+                            }
+                        ),
+                    ),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            store = SQLiteAttemptStore(path)
+            try:
+                self.assertIsNotNone(store.load("legacy"))
+            finally:
+                store.close()
+
+    def test_sqlite_retry_store_rejects_unsupported_schema_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = f"{tmpdir}/retries.sqlite3"
+            connection = sqlite3.connect(path)
+            try:
+                connection.execute("PRAGMA user_version = 99")
+                connection.commit()
+            finally:
+                connection.close()
+
+            with self.assertRaisesRegex(
+                ValueError, "unsupported SQLite retry schema version"
+            ):
+                _ = SQLiteAttemptStore(path)
+
+    def test_sqlite_retry_store_closes_connection_when_initialization_fails(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = f"{tmpdir}/retries.sqlite3"
+            connection = mock.Mock()
+            connection.execute.side_effect = [None, None, RuntimeError("boom")]
+            connection.close = mock.Mock()
+            with mock.patch(
+                "localqueue.retry.store.sqlite3.connect", return_value=connection
+            ):
+                with self.assertRaises(RuntimeError):
+                    _ = SQLiteAttemptStore(path)
+            connection.close.assert_called_once()
 
     def test_default_store_can_close_factory_stores_across_threads(self) -> None:
         stores: list[CloseTrackingStore] = []
@@ -830,6 +946,288 @@ class RetryTests(unittest.TestCase):
                 self.assertIsNotNone(store.load("job-sqlite-path"))
             finally:
                 store.close()
+
+    def test_build_effective_tenacity_kwargs_rejects_unknown_arguments(self) -> None:
+        with self.assertRaisesRegex(TypeError, "unexpected Tenacity arguments"):
+            _ = localqueue.retry.tenacity._build_effective_tenacity_kwargs(
+                Retrying, {"unknown": 1}
+            )
+
+    def test_build_effective_tenacity_kwargs_keeps_kwargs_for_var_keyword_bases(
+        self,
+    ) -> None:
+        class BaseWithVarKeyword:
+            def __init__(self, *, known: int = 1, **kwargs: Any) -> None:
+                self.known = known
+                self.kwargs = kwargs
+
+        effective = localqueue.retry.tenacity._build_effective_tenacity_kwargs(
+            BaseWithVarKeyword, {"unknown": 1}
+        )
+        self.assertEqual(effective["unknown"], 1)
+
+    def test_persistent_retry_state_reports_seconds_since_start(self) -> None:
+        retry_state = mock.Mock()
+        retry_state.attempt_number = 1
+        retry_state.outcome_timestamp = None
+        record = RetryRecord(
+            attempts=1, first_attempt_at=time.time() - 5, exhausted=False
+        )
+        state = PersistentRetryState(retry_state, record, starting_attempts=0)
+
+        self.assertIsNone(state.seconds_since_start)
+
+        retry_state.outcome_timestamp = time.time()
+        self.assertGreaterEqual(state.seconds_since_start or 0.0, 0.0)
+
+    def test_persistent_retrying_requires_context_before_translation(self) -> None:
+        retryer = PersistentRetrying(
+            store=MemoryAttemptStore(), key="ctx", max_tries=1, wait=lambda _: 0
+        )
+        with self.assertRaises(RuntimeError):
+            _ = retryer._current_context()
+
+    def test_key_from_attr_without_prefix_returns_raw_key(self) -> None:
+        class Job:
+            def __init__(self, job_id: str) -> None:
+                self.id = job_id
+
+        key_fn = key_from_attr("job", "id")
+        self.assertEqual(key_fn(lambda job: job, (Job("job-123"),), {}), "job-123")
+
+    def test_persistent_retrying_wait_none_returns_zero(self) -> None:
+        retryer = PersistentRetrying(
+            store=MemoryAttemptStore(), key="job", max_tries=1, wait=None
+        )
+        wait = retryer._wrap_wait()
+        self.assertEqual(wait(mock.Mock(outcome_timestamp=time.time())), 0.0)
+
+    def test_persistent_async_retrying_wait_none_returns_zero(self) -> None:
+        retryer = PersistentAsyncRetrying(
+            store=MemoryAttemptStore(), key="job", max_tries=1, wait=None
+        )
+        wait = retryer._wrap_wait()
+
+        async def run() -> float:
+            return await wait(mock.Mock(outcome_timestamp=time.time()))
+
+        self.assertEqual(asyncio.run(run()), 0.0)
+
+    def test_persistent_retrying_raises_exhausted_error_for_exhausted_record(
+        self,
+    ) -> None:
+        store = MemoryAttemptStore()
+        store.save(
+            "job", RetryRecord(attempts=3, first_attempt_at=100.0, exhausted=True)
+        )
+        retryer = PersistentRetrying(
+            store=store, key="job", max_tries=1, wait=lambda _: 0
+        )
+
+        with self.assertRaises(PersistentRetryExhausted) as exc_info:
+            _ = retryer(lambda: None)
+
+        self.assertEqual(exc_info.exception.key, "job")
+        self.assertEqual(exc_info.exception.attempts, 3)
+
+    def test_persistent_retrying_set_exception_raises_when_exc_info_is_missing(
+        self,
+    ) -> None:
+        retryer = PersistentRetrying(
+            store=MemoryAttemptStore(), key="job", max_tries=1, wait=lambda _: 0
+        )
+
+        with mock.patch(
+            "localqueue.retry.tenacity.sys.exc_info", return_value=(None, None, None)
+        ):
+            with self.assertRaises(RuntimeError):
+                _ = retryer(lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    def test_persistent_retrying_drops_context_after_completion(self) -> None:
+        store = MemoryAttemptStore()
+        retryer = PersistentRetrying(
+            store=store, key="job", max_tries=1, wait=lambda _: 0
+        )
+
+        def succeed() -> str:
+            return "ok"
+
+        self.assertEqual(retryer(succeed), "ok")
+        self.assertFalse(hasattr(retryer._local, "persistent_context"))
+
+    def test_persistent_async_retrying_set_exception_raises_when_exc_info_is_missing(
+        self,
+    ) -> None:
+        retryer = PersistentAsyncRetrying(
+            store=MemoryAttemptStore(), key="job", max_tries=1, wait=lambda _: 0
+        )
+
+        async def fail() -> None:
+            raise RuntimeError("boom")
+
+        with mock.patch(
+            "localqueue.retry.tenacity.sys.exc_info", return_value=(None, None, None)
+        ):
+            with self.assertRaises(RuntimeError):
+                _ = asyncio.run(retryer(fail))
+
+    def test_persistent_async_retrying_drops_context_after_completion(self) -> None:
+        retryer = PersistentAsyncRetrying(
+            store=MemoryAttemptStore(), key="job", max_tries=1, wait=lambda _: 0
+        )
+
+        async def succeed() -> str:
+            return "ok"
+
+        self.assertEqual(asyncio.run(retryer(succeed)), "ok")
+        self.assertFalse(hasattr(retryer._local, "persistent_context"))
+
+    def test_persistent_retry_error_callback_persists_attempts_before_returning(
+        self,
+    ) -> None:
+        store = MemoryAttemptStore()
+        retryer = PersistentRetrying(
+            store=store,
+            key="job",
+            max_tries=1,
+            wait=lambda _: 0,
+            retry_error_callback=lambda state: "fallback",
+        )
+        context = PersistentCallContext(
+            key="job",
+            record=RetryRecord(attempts=1, first_attempt_at=100.0, exhausted=False),
+            starting_attempts=1,
+        )
+        retryer._local.persistent_context = context
+        try:
+            retry_state = mock.Mock()
+            retry_state.attempt_number = 1
+            retry_state.outcome = mock.Mock(failed=True)
+            callback = retryer._wrap_retry_error_callback()
+            assert callback is not None
+            result = callback(retry_state)
+        finally:
+            del retryer._local.persistent_context
+
+        self.assertEqual(result, "fallback")
+        record = store.load("job")
+        assert record is not None
+        self.assertTrue(record.exhausted)
+
+    def test_persistent_async_retry_error_callback_persists_attempts_before_returning(
+        self,
+    ) -> None:
+        async def scenario() -> None:
+            store = MemoryAttemptStore()
+
+            async def on_error(state: Any) -> str:
+                return "fallback"
+
+            retryer = PersistentAsyncRetrying(
+                store=store,
+                key="job",
+                max_tries=1,
+                wait=lambda _: 0,
+                retry_error_callback=on_error,
+            )
+            context = PersistentCallContext(
+                key="job",
+                record=RetryRecord(attempts=1, first_attempt_at=100.0, exhausted=False),
+                starting_attempts=1,
+            )
+            retryer._local.persistent_context = context
+            try:
+                retry_state = mock.Mock()
+                retry_state.attempt_number = 1
+                retry_state.outcome = mock.Mock(failed=True)
+                callback = retryer._wrap_retry_error_callback()
+                assert callback is not None
+                result = await callback(retry_state)
+            finally:
+                del retryer._local.persistent_context
+
+            self.assertEqual(result, "fallback")
+            record = store.load("job")
+            assert record is not None
+            self.assertTrue(record.exhausted)
+
+        asyncio.run(scenario())
+
+    def test_persistent_async_retry_error_callback_supports_sync_callback(self) -> None:
+        async def scenario() -> None:
+            store = MemoryAttemptStore()
+
+            def on_error(state: Any) -> str:
+                return f"fallback-{state.attempt_number}"
+
+            retryer = PersistentAsyncRetrying(
+                store=store,
+                key="job",
+                max_tries=1,
+                wait=lambda _: 0,
+                retry_error_callback=on_error,
+            )
+            context = PersistentCallContext(
+                key="job",
+                record=RetryRecord(attempts=1, first_attempt_at=100.0, exhausted=False),
+                starting_attempts=1,
+            )
+            retryer._local.persistent_context = context
+            try:
+                retry_state = mock.Mock()
+                retry_state.attempt_number = 1
+                retry_state.outcome = mock.Mock(failed=True)
+                callback = retryer._wrap_retry_error_callback()
+                assert callback is not None
+                result = callback(retry_state)
+            finally:
+                del retryer._local.persistent_context
+
+            self.assertEqual(result, "fallback-2")
+            record = store.load("job")
+            assert record is not None
+            self.assertTrue(record.exhausted)
+
+        asyncio.run(scenario())
+
+    def test_persistent_async_retrying_raises_exhausted_error_for_exhausted_record(
+        self,
+    ) -> None:
+        async def scenario() -> None:
+            store = MemoryAttemptStore()
+            store.save(
+                "job", RetryRecord(attempts=3, first_attempt_at=100.0, exhausted=True)
+            )
+            retryer = PersistentAsyncRetrying(
+                store=store, key="job", max_tries=1, wait=lambda _: 0
+            )
+
+            with self.assertRaises(PersistentRetryExhausted) as exc_info:
+                _ = await retryer(lambda: None)
+
+            self.assertEqual(exc_info.exception.key, "job")
+            self.assertEqual(exc_info.exception.attempts, 3)
+
+        asyncio.run(scenario())
+
+    def test_persistent_async_retrying_set_exception_raises_when_exc_info_is_missing_sync(
+        self,
+    ) -> None:
+        async def scenario() -> None:
+            retryer = PersistentAsyncRetrying(
+                store=MemoryAttemptStore(), key="job", max_tries=1, wait=lambda _: 0
+            )
+
+            with mock.patch(
+                "localqueue.retry.tenacity.sys.exc_info",
+                return_value=(None, None, None),
+            ):
+                with self.assertRaises(RuntimeError):
+                    _ = await retryer(
+                        lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+                    )
+
+        asyncio.run(scenario())
 
     def test_retry_with_max_tries_overrides_existing_stop(self) -> None:
         store = MemoryAttemptStore()

@@ -16,7 +16,7 @@ import typer
 from typer.testing import CliRunner
 import yaml
 
-from localqueue import MemoryQueueStore, PersistentQueue
+from localqueue import MemoryQueueStore, PersistentQueue, QueueMessage
 from localqueue.retry import MemoryAttemptStore, RetryRecord, SQLiteAttemptStore
 from localqueue.cli import (
     _CommandExecutionError,
@@ -49,6 +49,7 @@ from localqueue.cli import (
     _coerce_config_value,
     _truncate_output,
     _validate_worker_loop_options,
+    _worker_health_summary,
     _write_config,
 )
 from localqueue.retry import configure_default_store
@@ -121,6 +122,22 @@ class CliTests(unittest.TestCase):
         handler(payload)
         self.assertEqual(payload, {"handled": "from cwd"})
 
+    def test_load_callable_rejects_non_callable_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "main.py"
+            path.write_text("VALUE = 1\n", encoding="utf-8")
+            previous = Path.cwd()
+            _ = sys.modules.pop("main", None)
+            try:
+                os.chdir(tmpdir)
+                with self.assertRaisesRegex(
+                    TypeError, "^handler is not callable: main:VALUE$"
+                ):
+                    _ = _load_callable("main:VALUE")
+            finally:
+                os.chdir(previous)
+                _ = sys.modules.pop("main", None)
+
     def test_read_value_uses_argument_before_stdin(self) -> None:
         self.assertEqual(_read_value("{}"), "{}")
 
@@ -128,6 +145,12 @@ class CliTests(unittest.TestCase):
         stdin = StringIO('{"to":"user@example.com"}\n')
         with mock.patch("sys.stdin", stdin):
             self.assertEqual(_read_value(None), '{"to":"user@example.com"}\n')
+
+    def test_read_value_rejects_empty_stdin(self) -> None:
+        stdin = StringIO("")
+        with mock.patch("sys.stdin", stdin):
+            with self.assertRaisesRegex(ValueError, "^stdin did not contain a value$"):
+                _ = _read_value(None)
 
     def test_config_path_uses_xdg_config_home(self) -> None:
         with mock.patch.dict(
@@ -878,6 +901,51 @@ class CliTests(unittest.TestCase):
             )
             self.assertEqual(missing_requeue.exit_code, 1)
             self.assertIn("dead-letter message not found", missing_requeue.output)
+
+    def test_queue_pop_logs_lease_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_path = str(Path(tmpdir) / "queues")
+            queue = PersistentQueue("emails", store_path=store_path)
+            _ = queue.put({"to": "user@example.com"})
+
+            result = self._invoke(
+                [
+                    "queue",
+                    "pop",
+                    "emails",
+                    "--store-path",
+                    store_path,
+                    "--worker-id",
+                    "worker-a",
+                    "--log-events",
+                ]
+            )
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertIn('"event": "queue.lease"', result.output)
+
+    def test_queue_requeue_dead_rejects_message_id_with_all(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_path = str(Path(tmpdir) / "queues")
+            queue = PersistentQueue("emails", store_path=store_path)
+            _ = queue.put({"to": "user@example.com"})
+            message = queue.get_message()
+            self.assertTrue(queue.dead_letter(message))
+
+            result = self._invoke(
+                [
+                    "queue",
+                    "requeue-dead",
+                    "emails",
+                    message.id,
+                    "--store-path",
+                    store_path,
+                    "--all",
+                ]
+            )
+
+            self.assertEqual(result.exit_code, 1, result.output)
+            self.assertIn("either a message id or --all", result.output)
 
     def test_print_dead_letters_watch_stops_on_shutdown(self) -> None:
         queue = PersistentQueue("emails", store=MemoryQueueStore())
@@ -1804,6 +1872,51 @@ class CliTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             _ = _validate_worker_loop_options(max_jobs=2, forever=True)
+
+    def test_cli_helpers_cover_dead_letter_filter_and_health_summary(self) -> None:
+        messages = [
+            QueueMessage(
+                id="1",
+                queue="jobs",
+                value="a",
+                last_error={"type": "RuntimeError", "message": "boom"},
+                failed_at=100.0,
+                attempts=2,
+                leased_by="worker-a",
+            ),
+            QueueMessage(
+                id="2",
+                queue="jobs",
+                value="b",
+                last_error={"type": "ValueError", "stderr": "bad"},
+                failed_at=150.0,
+                attempts=3,
+                leased_by="worker-b",
+            ),
+        ]
+        with mock.patch("localqueue.cli.time.time", return_value=200.0):
+            self.assertEqual(
+                [
+                    message.id
+                    for message in _filter_dead_letters(
+                        messages,
+                        min_attempts=3,
+                        max_attempts=None,
+                        error_contains="bad",
+                        failed_within=100.0,
+                    )
+                ],
+                ["2"],
+            )
+
+        with mock.patch("localqueue.cli.time.time", return_value=110.0):
+            health = _worker_health_summary(
+                {"worker-a": 100.0, "worker-b": 1.0},
+                stale_after=10.0,
+            )
+        self.assertEqual(health["active"]["count"], 1)
+        self.assertEqual(health["stale"]["count"], 1)
+        self.assertIn("worker-b", health["stale"]["by_worker_id"])
 
     def test_cli_helpers_cover_queue_summary_and_shutdown_paths(self) -> None:
         queue = PersistentQueue("jobs", store=MemoryQueueStore())

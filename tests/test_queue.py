@@ -28,10 +28,23 @@ from localqueue import (
     persistent_async_worker,
     persistent_worker,
 )
-from localqueue.worker import _get_message_async
+from localqueue.worker import (
+    WorkerPolicyState,
+    _get_message_async,
+    _record_failure,
+    _record_success,
+    _resolve_dead_letter_on_failure,
+    _UNSET,
+    _validate_circuit_breaker,
+    _validate_min_interval,
+    _validate_release_delay,
+    _sleep_for_policy,
+    _sleep_for_policy_async,
+)
 from localqueue.store import (
     _QueueRecord,
     _decode_record,
+    _encode_worker_heartbeats,
     _dead_key,
     _dedupe_key_key,
     _dedupe_token,
@@ -122,6 +135,38 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(_wait_time(None), 0.05)
         self.assertEqual(_wait_time(0.0), 0.0)
         self.assertEqual(_wait_time(0.2), 0.05)
+
+    def test_constructor_defaults_blocking_and_capacity(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+
+        self.assertEqual(queue.lease_timeout, 30.0)
+        self.assertEqual(queue.maxsize, 0)
+        self.assertTrue(queue.put("item"))
+        self.assertEqual(queue.get(), "item")
+        queue.task_done()
+
+    def test_default_get_and_get_message_block_until_item_arrives(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+
+        def producer() -> None:
+            time.sleep(0.2)
+            _ = queue.put("item")
+
+        t = threading.Thread(target=producer)
+        t.start()
+
+        start = time.time()
+        self.assertEqual(queue.get(), "item")
+        self.assertGreaterEqual(time.time() - start, 0.2)
+        queue.task_done()
+
+        t.join()
+
+    def test_put_default_delay_is_immediate(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+
+        _ = queue.put("item")
+        self.assertEqual(queue.qsize(), 1)
 
     def test_deadline_rejects_negative_timeout_with_exact_message(self) -> None:
         with self.assertRaisesRegex(
@@ -236,7 +281,7 @@ class QueueTests(unittest.TestCase):
     def test_put_rejects_empty_dedupe_key(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())
 
-        with self.assertRaisesRegex(ValueError, "dedupe_key cannot be empty"):
+        with self.assertRaisesRegex(ValueError, "^dedupe_key cannot be empty$"):
             _ = queue.put("item", dedupe_key="")
 
     def test_default_put_blocks_until_capacity_frees(self) -> None:
@@ -610,6 +655,41 @@ class QueueTests(unittest.TestCase):
             b"queue:jobs:dedupe:616263",
         )
 
+    def test_store_helpers_cover_invalid_worker_payloads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LMDBQueueStore(Path(tmpdir) / "lmdb")
+            with self.assertRaisesRegex(
+                ValueError, "^queue worker stats are not valid JSON$"
+            ):
+                store._decode_worker_stats(b"not-json")
+
+            with self.assertRaisesRegex(
+                ValueError, "^queue worker stats payload must be a JSON object$"
+            ):
+                store._decode_worker_stats(b"[]")
+
+            with self.assertRaisesRegex(
+                ValueError, "^queue worker heartbeat payload is not valid JSON$"
+            ):
+                store._decode_worker_heartbeats(b"not-json")
+
+            with self.assertRaisesRegex(
+                ValueError, "^queue worker heartbeat payload must be a JSON object$"
+            ):
+                store._decode_worker_heartbeats(b"[]")
+
+            self.assertEqual(
+                store._decode_worker_stats(b'{"worker-a": 2}'), {"worker-a": 2}
+            )
+            self.assertEqual(
+                store._decode_worker_heartbeats(b'{"worker-a": 2.5}'),
+                {"worker-a": 2.5},
+            )
+            self.assertEqual(
+                _encode_worker_heartbeats({"worker-a": 2.5}),
+                b'{"worker-a":2.5}',
+            )
+
     def test_lmdb_store_covers_empty_and_dedupe_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store = LMDBQueueStore(Path(tmpdir) / "lmdb")
@@ -659,6 +739,201 @@ class QueueTests(unittest.TestCase):
             )
             self.assertEqual(store.dead_letters("jobs"), [])
             self.assertGreaterEqual(store.purge("jobs"), 1)
+
+    def test_memory_store_cleans_stale_dedupe_keys(self) -> None:
+        store = MemoryQueueStore()
+        now = time.time()
+
+        first = store.enqueue("jobs", {"job": 1}, available_at=now, dedupe_key="job-1")
+        store._dedupe_keys["jobs"]["job-1"] = "missing"  # type: ignore[attr-defined]
+
+        second = store.enqueue("jobs", {"job": 2}, available_at=now, dedupe_key="job-1")
+
+        self.assertNotEqual(first.id, second.id)
+        self.assertEqual(second.value, {"job": 2})
+
+    def test_memory_store_prunes_dead_letters_and_dedupe_keys(self) -> None:
+        store = MemoryQueueStore()
+        now = time.time()
+
+        message = store.enqueue(
+            "jobs", {"job": 1}, available_at=now, dedupe_key="job-1"
+        )
+        self.assertTrue(store.dead_letter("jobs", message.id, failed_at=now))
+        self.assertEqual(
+            store.count_dead_letters_older_than("jobs", older_than=0, now=now), 1
+        )
+        self.assertEqual(store.prune_dead_letters("jobs", older_than=0, now=now), 1)
+        self.assertEqual(store.dead_letters("jobs"), [])
+
+        replacement = store.enqueue(
+            "jobs", {"job": 2}, available_at=now, dedupe_key="job-1"
+        )
+        self.assertNotEqual(message.id, replacement.id)
+
+    def test_lmdb_store_covers_cursor_fallback_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LMDBQueueStore(Path(tmpdir) / "lmdb")
+            now = time.time()
+
+            _ = store.enqueue("jobs2", {"job": 1}, available_at=now)
+            self.assertIsNone(store.dequeue("jobs", lease_timeout=1, now=now))
+
+            future = store.enqueue("jobs", {"job": 2}, available_at=now + 10)
+            self.assertIsNone(store.dequeue("jobs", lease_timeout=1, now=now))
+
+            with store._env.begin(write=True) as txn:  # type: ignore[attr-defined]
+                _ = txn.delete(_message_key("jobs", future.id))
+            self.assertIsNone(store.dequeue("jobs", lease_timeout=1, now=now + 20))
+
+    def test_lmdb_store_prunes_dead_letters_and_dedupe_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LMDBQueueStore(tmpdir)
+            now = time.time()
+
+            message = store.enqueue(
+                "jobs", {"job": 1}, available_at=now, dedupe_key="job-1"
+            )
+            leased = store.dequeue("jobs", lease_timeout=1, now=now)
+            assert leased is not None
+            self.assertTrue(store.dead_letter("jobs", leased.id, failed_at=now))
+            self.assertEqual(
+                store.count_dead_letters_older_than("jobs", older_than=0, now=now),
+                1,
+            )
+            self.assertEqual(store.prune_dead_letters("jobs", older_than=0, now=now), 1)
+            self.assertEqual(store.dead_letters("jobs"), [])
+
+            replacement = store.enqueue(
+                "jobs", {"job": 2}, available_at=now, dedupe_key="job-1"
+            )
+            self.assertNotEqual(message.id, replacement.id)
+
+    def test_lmdb_store_dequeue_covers_cursor_edge_cases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LMDBQueueStore(tmpdir)
+            now = time.time()
+
+            cursor = mock.MagicMock()
+            txn = mock.MagicMock()
+            txn.cursor.return_value = cursor
+            fake_env = mock.MagicMock()
+            fake_env.begin.return_value.__enter__.return_value = txn
+            fake_env.begin.return_value.__exit__.return_value = False
+            store._env = fake_env  # type: ignore[attr-defined]
+
+            cursor.set_range.return_value = True
+            cursor.item.return_value = None
+            self.assertIsNone(store.dequeue("jobs", lease_timeout=1, now=now))
+
+            cursor.item.return_value = (
+                b"queue:jobs2:ready:0000000000000:message-id",
+                b"message-id",
+            )
+            self.assertIsNone(store.dequeue("jobs", lease_timeout=1, now=now))
+
+            cursor.item.return_value = (
+                _ready_key("jobs", now + 10, 1, "future-id"),
+                b"future-id",
+            )
+            self.assertIsNone(store.dequeue("jobs", lease_timeout=1, now=now))
+
+            cursor.item.return_value = (
+                _ready_key("jobs", now, 1, "missing-id"),
+                b"missing-id",
+            )
+            txn.get.return_value = None
+            self.assertIsNone(store.dequeue("jobs", lease_timeout=1, now=now))
+
+    def test_lmdb_store_prune_and_purge_cover_internal_cleanup_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LMDBQueueStore(tmpdir)
+            now = time.time()
+
+            message = store.enqueue(
+                "jobs", {"job": 1}, available_at=now, dedupe_key="job-1"
+            )
+            self.assertTrue(store.dead_letter("jobs", message.id, failed_at=now))
+            with store._env.begin() as txn:  # type: ignore[attr-defined]
+                doomed = store._get_record(txn, "jobs", message.id)
+            assert doomed is not None
+            with mock.patch.object(
+                store,
+                "_get_record",
+                side_effect=[doomed, None],
+            ):
+                self.assertEqual(
+                    store.prune_dead_letters("jobs", older_than=0, now=now), 1
+                )
+
+            with tempfile.TemporaryDirectory() as other_tmpdir:
+                other_store = LMDBQueueStore(other_tmpdir)
+                _ = other_store.enqueue("jobs2", {"job": 2}, available_at=now)
+                self.assertEqual(other_store.purge("jobs"), 0)
+
+                _ = other_store.enqueue(
+                    "jobs", {"job": 3}, available_at=now, dedupe_key="job-3"
+                )
+                self.assertGreaterEqual(other_store.purge("jobs"), 1)
+
+    def test_lmdb_store_records_worker_heartbeat(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LMDBQueueStore(tmpdir)
+            now = time.time()
+
+            store.record_worker_heartbeat("jobs", "worker-a", now=now)
+
+            stats = store.stats("jobs", now=now)
+            self.assertEqual(stats.last_seen_by_worker_id, {"worker-a": now})
+
+    def test_lmdb_store_reclaims_missing_expired_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LMDBQueueStore(tmpdir)
+            now = time.time()
+
+            message = store.enqueue("jobs", {"job": 1}, available_at=now)
+            leased = store.dequeue("jobs", lease_timeout=0.1, now=now)
+            assert leased is not None
+
+            with store._env.begin(write=True) as txn:  # type: ignore[attr-defined]
+                _ = txn.delete(_message_key("jobs", message.id))
+
+            self.assertIsNone(store.dequeue("jobs", lease_timeout=0.1, now=now + 1))
+
+    def test_lmdb_store_iterates_and_deletes_dedupe_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LMDBQueueStore(tmpdir)
+            now = time.time()
+
+            _ = store.enqueue("jobs", {"job": 1}, available_at=now, dedupe_key="job-1")
+            with store._env.begin() as txn:  # type: ignore[attr-defined]
+                self.assertEqual(
+                    list(store._iter_dedupe_keys(txn, "jobs")),
+                    [_dedupe_key_key("jobs", "job-1")],
+                )
+
+            self.assertGreaterEqual(store.purge("jobs"), 1)
+
+    def test_lmdb_store_purge_breaks_on_non_matching_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LMDBQueueStore(tmpdir)
+            now = time.time()
+
+            _ = store.enqueue("jobsa", {"job": 1}, available_at=now)
+            self.assertEqual(store.purge("jobs"), 0)
+
+    def test_lmdb_store_purge_deletes_yielded_dedupe_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LMDBQueueStore(tmpdir)
+            now = time.time()
+
+            _ = store.enqueue("jobs", {"job": 1}, available_at=now)
+            with mock.patch.object(
+                store,
+                "_iter_dedupe_keys",
+                return_value=iter([_dedupe_key_key("jobs", "fake")]),
+            ):
+                self.assertEqual(store.purge("jobs"), 1)
 
     def test_sqlite_store_reclaims_expired_leases(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1413,6 +1688,14 @@ class QueueTests(unittest.TestCase):
             _ = queue.get(timeout=0)
         self.assertLess(time.time() - start, 0.1)
 
+    def test_get_message_timeout_zero_on_empty_queue_raises_immediately(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+
+        start = time.time()
+        with self.assertRaises(Empty):
+            _ = queue.get_message(timeout=0)
+        self.assertLess(time.time() - start, 0.1)
+
     def test_nowait_helpers_raise_when_unavailable(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore(), maxsize=1)
 
@@ -1510,6 +1793,23 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(queue.get(), "two")
         t.join()
 
+    def test_blocking_put_respects_timeout_when_queue_stays_full(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore(), maxsize=1)
+        _ = queue.put("one")
+
+        def slow_getter() -> None:
+            time.sleep(0.2)
+            _ = queue.get()
+            queue.task_done()
+
+        t = threading.Thread(target=slow_getter)
+        t.start()
+
+        with self.assertRaises(Full):
+            _ = queue.put("two", timeout=0.05)
+
+        t.join()
+
     def test_release_with_delay(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())
         _ = queue.put("item")
@@ -1592,6 +1892,15 @@ class QueueTests(unittest.TestCase):
 
         self.assertTrue(queue.release(msg))
         self.assertEqual(queue.qsize(), 1)
+        self.assertEqual(queue.get_message(block=False).id, msg.id)
+
+    def test_put_without_delay_is_available_immediately(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+
+        message = queue.put("item")
+
+        self.assertEqual(queue.qsize(), 1)
+        self.assertEqual(queue.get_message(block=False).id, message.id)
 
     def test_requeue_dead_supports_delay_zero(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())
@@ -1600,6 +1909,27 @@ class QueueTests(unittest.TestCase):
         self.assertTrue(queue.dead_letter(msg))
 
         self.assertTrue(queue.requeue_dead(msg, delay=0))
+
+    def test_requeue_dead_notifies_waiters(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+        _ = queue.put("bad-item")
+        msg = queue.get_message()
+        self.assertTrue(queue.dead_letter(msg))
+
+        received: list[QueueMessage] = []
+
+        def waiter() -> None:
+            received.append(queue.get_message())
+
+        t = threading.Thread(target=waiter)
+        t.start()
+        time.sleep(0.05)
+
+        self.assertTrue(queue.requeue_dead(msg))
+        t.join()
+
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0].id, msg.id)
 
     def test_requeue_dead_without_delay_makes_message_available_immediately(
         self,
@@ -1627,6 +1957,14 @@ class QueueTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "^older_than cannot be negative$"):
             _ = queue.count_dead_letters_older_than(older_than=-1)
+
+    def test_record_worker_heartbeat_rejects_empty_worker_id_with_exact_message(
+        self,
+    ) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+
+        with self.assertRaisesRegex(ValueError, "^worker_id cannot be empty$"):
+            queue.record_worker_heartbeat("")
 
     def test_release_preserves_last_error_on_redelivery(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())
@@ -1656,6 +1994,25 @@ class QueueTests(unittest.TestCase):
         assert released is not None
         self.assertIsNone(released.failed_at)
         self.assertIsNone(released.last_error)
+
+    def test_release_and_get_message_notify_waiters(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+        _ = queue.put("item")
+        msg = queue.get_message()
+        received: list[QueueMessage] = []
+
+        def waiter() -> None:
+            received.append(queue.get_message())
+
+        t = threading.Thread(target=waiter)
+        t.start()
+        time.sleep(0.05)
+
+        self.assertTrue(queue.release(msg))
+        t.join()
+
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0].value, "item")
 
     def test_purge(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())
@@ -2146,6 +2503,8 @@ class QueueTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             _ = PersistentWorkerConfig(min_interval=-1)
+        with self.assertRaises(ValueError):
+            _ = config.with_overrides(min_interval=-1)
 
         with self.assertRaises(ValueError):
             _ = PersistentWorkerConfig(circuit_breaker_failures=1)
@@ -2168,6 +2527,92 @@ class QueueTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             _ = config.with_overrides(circuit_breaker_cooldown=-1)
+
+    def test_worker_policy_helpers_cover_validation_and_sleep_paths(self) -> None:
+        self.assertTrue(
+            _resolve_dead_letter_on_failure(
+                dead_letter_on_failure=_UNSET,
+                dead_letter_on_exhaustion=_UNSET,
+            )
+        )
+        self.assertFalse(
+            _resolve_dead_letter_on_failure(
+                dead_letter_on_failure=False,
+                dead_letter_on_exhaustion=_UNSET,
+            )
+        )
+        with self.assertRaises(ValueError):
+            _resolve_dead_letter_on_failure(
+                dead_letter_on_failure=True,
+                dead_letter_on_exhaustion=False,
+            )
+
+        _validate_release_delay(0.0)
+        _validate_min_interval(0.0)
+        _validate_circuit_breaker(0, 0.0)
+        with self.assertRaises(ValueError):
+            _validate_release_delay(-1)
+        with self.assertRaises(ValueError):
+            _validate_min_interval(-1)
+        with self.assertRaises(ValueError):
+            _validate_circuit_breaker(-1, 0.0)
+        with self.assertRaises(ValueError):
+            _validate_circuit_breaker(1, -1.0)
+
+        state = WorkerPolicyState(last_started_at=None)
+        config = PersistentWorkerConfig()
+        with mock.patch("localqueue.worker.time.time", return_value=10.0):
+            _sleep_for_policy(state, config)
+        self.assertEqual(state.last_started_at, 10.0)
+
+        async def async_scenario() -> None:
+            state = WorkerPolicyState(last_started_at=None)
+            config = PersistentWorkerConfig()
+            with mock.patch("localqueue.worker.time.time", return_value=10.0):
+                await _sleep_for_policy_async(state, config)
+            self.assertEqual(state.last_started_at, 10.0)
+
+            state = WorkerPolicyState(last_started_at=98.0)
+            config = PersistentWorkerConfig(min_interval=5.0)
+            with mock.patch("localqueue.worker.time.time", return_value=100.0):
+                with mock.patch("localqueue.worker.asyncio.sleep") as sleep:
+                    await _sleep_for_policy_async(state, config)
+            self.assertTrue(sleep.called)
+
+        asyncio.run(async_scenario())
+
+        state = WorkerPolicyState()
+        config = PersistentWorkerConfig(
+            circuit_breaker_failures=1,
+            circuit_breaker_cooldown=1.0,
+        )
+        with mock.patch("localqueue.worker.time.time", return_value=100.0):
+            _record_failure(state, config, permanent=False)
+        self.assertEqual(state.consecutive_failures, 0)
+        self.assertIsNotNone(state.breaker_open_until)
+        _record_success(state)
+        self.assertEqual(state.consecutive_failures, 0)
+
+        state = WorkerPolicyState(
+            last_started_at=90.0, breaker_open_until=105.0, consecutive_failures=0
+        )
+        config = PersistentWorkerConfig(min_interval=5.0)
+        with mock.patch("localqueue.worker.time.time", return_value=100.0):
+            with mock.patch("localqueue.worker.time.sleep") as sleep:
+                _sleep_for_policy(state, config)
+        self.assertTrue(sleep.called)
+
+        async def async_sleep_scenario() -> None:
+            state = WorkerPolicyState(
+                last_started_at=90.0, breaker_open_until=105.0, consecutive_failures=0
+            )
+            config = PersistentWorkerConfig(min_interval=5.0)
+            with mock.patch("localqueue.worker.time.time", return_value=100.0):
+                with mock.patch("localqueue.worker.asyncio.sleep") as sleep:
+                    await _sleep_for_policy_async(state, config)
+            self.assertTrue(sleep.called)
+
+        asyncio.run(async_sleep_scenario())
 
     def test_worker_respects_min_interval_between_calls(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())
@@ -2273,6 +2718,82 @@ class QueueTests(unittest.TestCase):
 
             self.assertEqual(await cast("Any", handle)(), "A")
             self.assertEqual(attempts["count"], 2)
+
+        asyncio.run(scenario())
+
+    def test_worker_heartbeat_and_async_polling_paths(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+        _ = queue.put("item")
+        heartbeats: list[str] = []
+
+        class HeartbeatQueue(PersistentQueue):
+            def record_worker_heartbeat(self, worker_id: str) -> None:
+                heartbeats.append(worker_id)
+                super().record_worker_heartbeat(worker_id)
+
+        heartbeat_queue = HeartbeatQueue("test", store=MemoryQueueStore())
+        _ = heartbeat_queue.put("item")
+
+        @persistent_worker(
+            heartbeat_queue,
+            store=MemoryAttemptStore(),
+            max_tries=1,
+            wait=lambda _: 0,
+            worker_id="worker-a",
+        )
+        def handle(value: str) -> str:
+            return value.upper()
+
+        self.assertEqual(cast("Any", handle)(), "ITEM")
+        self.assertEqual(heartbeats, ["worker-a", "worker-a"])
+
+        async def scenario() -> None:
+            calls = {"count": 0}
+
+            class EmptyThenReadyQueue:
+                def get_message(
+                    self,
+                    block: bool = True,
+                    timeout: float | None = None,
+                    *,
+                    leased_by: str | None = None,
+                ) -> QueueMessage:
+                    calls["count"] += 1
+                    if calls["count"] == 1:
+                        raise Empty
+                    return QueueMessage(id="job-1", queue="test", value="payload")
+
+            with mock.patch("localqueue.worker.asyncio.sleep") as sleep:
+                message = await _get_message_async(cast("Any", EmptyThenReadyQueue()))
+            self.assertEqual(message.id, "job-1")
+            self.assertTrue(sleep.called)
+
+            heartbeat_queue = PersistentQueue("test", store=MemoryQueueStore())
+            _ = heartbeat_queue.put("item")
+            heartbeats: list[str] = []
+
+            class AsyncHeartbeatQueue(PersistentQueue):
+                def record_worker_heartbeat(self, worker_id: str) -> None:
+                    heartbeats.append(worker_id)
+                    super().record_worker_heartbeat(worker_id)
+
+            async_heartbeat_queue = AsyncHeartbeatQueue(
+                "test", store=MemoryQueueStore()
+            )
+            _ = async_heartbeat_queue.put("item")
+
+            @persistent_async_worker(
+                async_heartbeat_queue,
+                store=MemoryAttemptStore(),
+                max_tries=1,
+                wait=lambda _: 0,
+                worker_id="worker-a",
+            )
+            async def handle(value: str) -> str:
+                return value.upper()
+
+            self.assertEqual(await cast("Any", handle)(), "ITEM")
+            self.assertEqual(heartbeats, ["worker-a", "worker-a"])
 
         asyncio.run(scenario())
 
