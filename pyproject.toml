@@ -84,6 +84,8 @@ pythonPlatform = "All"
 venvPath = "."
 venv = ".venv"
 typeCheckingMode = "standard"
+include = ["localqueue", "tests"]
+exclude = ["mutants"]
 
 [tool.ruff]
 line-length = 88
@@ -100,3 +102,23 @@ max-complexity = 10
 
 [tool.ruff.format]
 quote-style = "double"
+
+[tool.mutmut]
+paths_to_mutate = [
+    "localqueue/queue.py",
+]
+pytest_add_cli_args_test_selection = ["tests/test_queue.py"]
+also_copy = [
+    "localqueue/cli.py",
+    "localqueue/__init__.py",
+    "localqueue/paths.py",
+    "localqueue/queue.py",
+    "localqueue/store.py",
+    "localqueue/worker.py",
+    "localqueue/retry/__init__.py",
+    "localqueue/retry/store.py",
+    "localqueue/retry/tenacity.py",
+]
+
+[tool.pytest.ini_options]
+norecursedirs = ["mutants"]

@@ -31,6 +31,7 @@ from localqueue.retry import (
     persistent_async_retry,
     persistent_retry,
 )
+from localqueue.failure import is_permanent_failure
 from localqueue.retry.tenacity import _sqlite_default_store_factory
 
 
@@ -61,6 +62,17 @@ def json_dumps_record(record: RetryRecord) -> str:
 
 
 class RetryTests(unittest.TestCase):
+    def test_is_permanent_failure_checks_exit_code_carriers(self) -> None:
+        class ExitCodeError(Exception):
+            def __init__(self, exit_code: int) -> None:
+                self.exit_code = exit_code
+
+        self.assertTrue(is_permanent_failure(ExitCodeError(127)))
+        self.assertFalse(is_permanent_failure(ExitCodeError(126)))
+        self.assertTrue(is_permanent_failure(ImportError("missing")))
+        self.assertTrue(is_permanent_failure(ModuleNotFoundError("missing")))
+        self.assertTrue(is_permanent_failure(NameError("missing")))
+
     def test_constructor_rejects_invalid_store_and_stop_arguments(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.assertRaises(ValueError):

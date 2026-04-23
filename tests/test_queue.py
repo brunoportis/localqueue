@@ -44,37 +44,168 @@ from localqueue.store import (
     _timestamp_from_inflight_key,
     _timestamp_from_ready_key,
 )
+from localqueue.queue import _deadline, _remaining, _wait_time, _validate_retry_defaults
 
 
 class QueueTests(unittest.TestCase):
     def test_constructor_rejects_invalid_arguments(self) -> None:
         store = MemoryQueueStore()
         with tempfile.TemporaryDirectory() as tmpdir:
-            with self.assertRaises(ValueError):
+            with self.assertRaisesRegex(
+                ValueError, "pass either store= or store_path=, not both"
+            ):
                 _ = PersistentQueue("test", store=store, store_path=tmpdir)
 
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(
+            ValueError, "lease_timeout must be greater than zero"
+        ):
             _ = PersistentQueue("test", store=store, lease_timeout=0)
 
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "maxsize cannot be negative"):
             _ = PersistentQueue("test", store=store, maxsize=-1)
 
-        with self.assertRaises(TypeError):
+        with self.assertRaisesRegex(TypeError, "retry_defaults must be a mapping"):
             _ = PersistentQueue("test", store=store, retry_defaults=cast("Any", []))
 
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(
+            ValueError, "retry_defaults cannot set both max_tries and stop"
+        ):
             _ = PersistentQueue(
                 "test",
                 store=store,
                 retry_defaults={"max_tries": 1, "stop": object()},
             )
 
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(
+            ValueError, "retry_defaults max_tries must be a positive integer"
+        ):
             _ = PersistentQueue(
                 "test",
                 store=store,
                 retry_defaults={"max_tries": 0},
             )
+
+    def test_constructor_copies_retry_defaults(self) -> None:
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            retry_defaults={"max_tries": 3},
+        )
+
+        self.assertEqual(queue.retry_defaults, {"max_tries": 3})
+
+        queue.retry_defaults["max_tries"] = 7
+
+        self.assertEqual(queue.retry_defaults, {"max_tries": 7})
+
+    def test_constructor_uses_default_maxsize_and_store_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            queue = PersistentQueue("test", store_path=f"{tmpdir}/queue.sqlite3")
+
+            self.assertEqual(queue.lease_timeout, 30.0)
+            self.assertEqual(queue.maxsize, 0)
+            self.assertIsNone(queue._store)
+            self.assertEqual(queue._store_path, Path(tmpdir) / "queue.sqlite3")
+
+    def test_constructor_copies_lease_timeout_and_defaults(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore(), lease_timeout=31.0)
+
+        self.assertEqual(queue.lease_timeout, 31.0)
+
+    def test_wait_time_and_remaining_helpers(self) -> None:
+        deadline = time.monotonic() + 1.0
+
+        self.assertIsNone(_remaining(None))
+        remaining = _remaining(deadline)
+        assert remaining is not None
+        self.assertAlmostEqual(remaining, 1.0, delta=0.2)
+        self.assertEqual(_wait_time(None), 0.05)
+        self.assertEqual(_wait_time(0.0), 0.0)
+        self.assertEqual(_wait_time(0.2), 0.05)
+
+    def test_deadline_rejects_negative_timeout_with_exact_message(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError, "^'timeout' must be a non-negative number$"
+        ):
+            _ = _deadline(-1)
+
+    def test_validate_retry_defaults_rejects_invalid_values_with_exact_messages(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(
+            ValueError, "^retry_defaults cannot set both max_tries and stop$"
+        ):
+            _validate_retry_defaults({"max_tries": 1, "stop": object()})
+
+        with self.assertRaisesRegex(
+            ValueError, "^retry_defaults max_tries must be a positive integer$"
+        ):
+            _validate_retry_defaults({"max_tries": 0})
+
+    def test_release_and_dead_letter_error_payloads_include_error_details(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+        _ = queue.put("item")
+        message = queue.get_message()
+
+        self.assertTrue(queue.release(message, error=RuntimeError("boom")))
+        released = queue.inspect(message.id)
+        assert released is not None
+        self.assertEqual(
+            released.last_error,
+            {
+                "type": "RuntimeError",
+                "module": "builtins",
+                "message": "boom",
+            },
+        )
+        self.assertIsNotNone(released.failed_at)
+
+        command_error = RuntimeError("boom")
+        command_error.command = "run job"  # type: ignore[attr-defined]
+        command_error.exit_code = 127  # type: ignore[attr-defined]
+        command_error.stdout = "stdout"  # type: ignore[attr-defined]
+        command_error.stderr = "stderr"  # type: ignore[attr-defined]
+        _ = queue.put("command-item")
+        command_message = queue.get_message()
+        self.assertTrue(queue.release(command_message, error=command_error))
+        command_released = queue.inspect(command_message.id)
+        assert command_released is not None
+        self.assertEqual(
+            command_released.last_error,
+            {
+                "type": "RuntimeError",
+                "module": "builtins",
+                "message": "boom",
+                "command": "run job",
+                "exit_code": 127,
+                "stdout": "stdout",
+                "stderr": "stderr",
+            },
+        )
+
+        _ = queue.put("dead-item")
+        dead_message = queue.get_message()
+        self.assertTrue(queue.dead_letter(dead_message, error="bad handler"))
+        dead = queue.inspect(dead_message.id)
+        assert dead is not None
+        self.assertEqual(
+            dead.last_error,
+            {
+                "type": None,
+                "module": None,
+                "message": "bad handler",
+            },
+        )
+        self.assertIsNotNone(dead.failed_at)
+
+    def test_dead_letter_removes_unfinished_message(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+        _ = queue.put("item")
+        message = queue.get_message()
+
+        self.assertTrue(queue.dead_letter(message))
+        with self.assertRaises(ValueError):
+            queue.task_done()
 
     def test_memory_store_basic_ops(self) -> None:
         queue: PersistentQueue[str] = PersistentQueue("test", store=MemoryQueueStore())
@@ -105,8 +236,47 @@ class QueueTests(unittest.TestCase):
     def test_put_rejects_empty_dedupe_key(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())
 
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "dedupe_key cannot be empty"):
             _ = queue.put("item", dedupe_key="")
+
+    def test_default_put_blocks_until_capacity_frees(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore(), maxsize=1)
+        _ = queue.put("one")
+
+        def freer() -> None:
+            time.sleep(0.2)
+            self.assertEqual(queue.get_nowait(), "one")
+            queue.task_done()
+
+        t = threading.Thread(target=freer)
+        t.start()
+
+        start = time.time()
+        _ = queue.put("two")
+        self.assertGreaterEqual(time.time() - start, 0.2)
+        t.join()
+
+    def test_default_get_message_blocks_until_value_is_available(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+
+        def producer() -> None:
+            time.sleep(0.2)
+            _ = queue.put("item")
+
+        t = threading.Thread(target=producer)
+        t.start()
+
+        start = time.time()
+        message = queue.get_message()
+        self.assertGreaterEqual(time.time() - start, 0.2)
+        self.assertEqual(message.value, "item")
+        t.join()
+
+    def test_put_rejects_negative_delay_with_message(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+
+        with self.assertRaisesRegex(ValueError, "delay cannot be negative"):
+            _ = queue.put("item", delay=-1)
 
     def test_stats_counts_messages_by_state(self) -> None:
         queue: PersistentQueue[str] = PersistentQueue("test", store=MemoryQueueStore())
@@ -1235,6 +1405,14 @@ class QueueTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _ = queue.put("next", timeout=-1)
 
+    def test_get_timeout_zero_on_empty_queue_raises_immediately(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+
+        start = time.time()
+        with self.assertRaises(Empty):
+            _ = queue.get(timeout=0)
+        self.assertLess(time.time() - start, 0.1)
+
     def test_nowait_helpers_raise_when_unavailable(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore(), maxsize=1)
 
@@ -1244,6 +1422,59 @@ class QueueTests(unittest.TestCase):
         _ = queue.put_nowait("one")
         with self.assertRaises(Full):
             _ = queue.put_nowait("two")
+
+    def test_default_blocking_put_waits_for_capacity(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore(), maxsize=1)
+        _ = queue.put("one")
+
+        released = threading.Event()
+
+        def freer() -> None:
+            time.sleep(0.2)
+            self.assertEqual(queue.get_nowait(), "one")
+            queue.task_done()
+            released.set()
+
+        t = threading.Thread(target=freer)
+        t.start()
+
+        start = time.time()
+        _ = queue.put("two")
+        self.assertGreaterEqual(time.time() - start, 0.2)
+        self.assertTrue(released.wait(1.0))
+        t.join()
+
+    def test_default_get_blocks_until_item_arrives(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+
+        def producer() -> None:
+            time.sleep(0.2)
+            _ = queue.put("item")
+
+        t = threading.Thread(target=producer)
+        t.start()
+
+        start = time.time()
+        self.assertEqual(queue.get(), "item")
+        self.assertGreaterEqual(time.time() - start, 0.2)
+        queue.task_done()
+        t.join()
+
+    def test_default_get_message_blocks_until_item_arrives(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+
+        def producer() -> None:
+            time.sleep(0.2)
+            _ = queue.put("item")
+
+        t = threading.Thread(target=producer)
+        t.start()
+
+        start = time.time()
+        message = queue.get_message()
+        self.assertGreaterEqual(time.time() - start, 0.2)
+        self.assertEqual(message.value, "item")
+        t.join()
 
     def test_put_and_get_timeout(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore(), maxsize=1)
@@ -1323,6 +1554,16 @@ class QueueTests(unittest.TestCase):
         assert redelivered.last_error is not None
         self.assertEqual(redelivered.last_error["message"], "cannot process")
 
+    def test_dead_letter_and_requeue_dead_accept_original_message_identity(
+        self,
+    ) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+        _ = queue.put("bad-item")
+        msg = queue.get_message()
+        self.assertTrue(queue.dead_letter(msg))
+        self.assertTrue(queue.requeue_dead(msg))
+        self.assertEqual(queue.get_message().id, msg.id)
+
     def test_requeue_dead_supports_delay_and_rejects_negative_delay(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())
         _ = queue.put("bad-item")
@@ -1336,6 +1577,56 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(queue.qsize(), 0)
         time.sleep(0.3)
         self.assertEqual(queue.qsize(), 1)
+
+    def test_release_supports_delay_zero(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+        _ = queue.put("bad-item")
+        msg = queue.get_message()
+
+        self.assertTrue(queue.release(msg, delay=0))
+
+    def test_release_without_delay_makes_message_available_immediately(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+        _ = queue.put("bad-item")
+        msg = queue.get_message()
+
+        self.assertTrue(queue.release(msg))
+        self.assertEqual(queue.qsize(), 1)
+
+    def test_requeue_dead_supports_delay_zero(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+        _ = queue.put("bad-item")
+        msg = queue.get_message()
+        self.assertTrue(queue.dead_letter(msg))
+
+        self.assertTrue(queue.requeue_dead(msg, delay=0))
+
+    def test_requeue_dead_without_delay_makes_message_available_immediately(
+        self,
+    ) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+        _ = queue.put("bad-item")
+        msg = queue.get_message()
+        self.assertTrue(queue.dead_letter(msg))
+
+        self.assertTrue(queue.requeue_dead(msg))
+        self.assertEqual(queue.qsize(), 1)
+
+    def test_prune_dead_letters_accepts_zero_and_rejects_negative(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+
+        with self.assertRaisesRegex(ValueError, "^older_than cannot be negative$"):
+            _ = queue.prune_dead_letters(older_than=-1)
+
+        self.assertEqual(queue.prune_dead_letters(older_than=0), 0)
+
+    def test_count_dead_letters_older_than_rejects_negative_with_exact_message(
+        self,
+    ) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+
+        with self.assertRaisesRegex(ValueError, "^older_than cannot be negative$"):
+            _ = queue.count_dead_letters_older_than(older_than=-1)
 
     def test_release_preserves_last_error_on_redelivery(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())
@@ -1354,6 +1645,18 @@ class QueueTests(unittest.TestCase):
         )
         self.assertIsNotNone(redelivered.failed_at)
 
+    def test_release_without_error_does_not_set_failed_at(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+        _ = queue.put("item")
+        msg = queue.get_message()
+
+        self.assertTrue(queue.release(msg))
+
+        released = queue.inspect(msg.id)
+        assert released is not None
+        self.assertIsNone(released.failed_at)
+        self.assertIsNone(released.last_error)
+
     def test_purge(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())
         _ = queue.put("1")
@@ -1362,10 +1665,24 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(queue.purge(), 2)
         self.assertEqual(queue.qsize(), 0)
 
+    def test_remove_unfinished_discards_known_message(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+        queue._unfinished["message-id"] = QueueMessage(
+            id="message-id",
+            value="item",
+            queue="test",
+        )
+
+        queue._remove_unfinished("message-id")
+
+        self.assertNotIn("message-id", queue._unfinished)
+
     def test_task_done_rejects_extra_calls_and_join_waits(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())
 
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(
+            ValueError, "task_done\\(\\) called too many times"
+        ):
             queue.task_done()
 
         _ = queue.put("item")
@@ -1385,6 +1702,21 @@ class QueueTests(unittest.TestCase):
         queue.task_done()
         self.assertTrue(joined.wait(1.0))
         t.join()
+
+    def test_internal_deadline_and_wait_time_helpers(self) -> None:
+        self.assertIsNone(_deadline(None))
+        deadline = _deadline(1.0)
+        assert deadline is not None
+        self.assertGreater(deadline, time.monotonic())
+
+        self.assertIsNone(_remaining(None))
+        remaining = _remaining(time.monotonic() + 1.0)
+        assert remaining is not None
+        self.assertGreater(remaining, 0.0)
+
+        self.assertEqual(_wait_time(None), 0.05)
+        self.assertEqual(_wait_time(-1.0), 0.0)
+        self.assertEqual(_wait_time(0.2), 0.05)
 
     def test_worker_retries_and_acks_on_success(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())

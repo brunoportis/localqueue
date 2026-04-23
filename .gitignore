@@ -20,3 +20,4 @@ site/
 /examples/*.sqlite3
 /examples/*.sqlite3-*
 feedback.md
+/mutants
