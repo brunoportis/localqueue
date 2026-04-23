@@ -19,6 +19,12 @@ To run the CLI in a clean container:
 docker run --rm ghcr.io/brunoportis/localqueue:latest --help
 ```
 
+The image is also published on GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/brunoportis/localqueue:latest
+```
+
 ```python
 from localqueue import PersistentQueue, persistent_worker
 

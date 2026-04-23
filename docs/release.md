@@ -99,6 +99,9 @@ Before `1.0.0`, use this convention:
 
 14. Publish the artifacts.
 
+    This release workflow also publishes the CLI image to GitHub Container
+    Registry as `ghcr.io/brunoportis/localqueue:<tag>` and `:latest`.
+
 15. Confirm the docs deployment finished successfully in the `Documentation`
     workflow. GitHub Pages must be configured to deploy from GitHub Actions in
     the repository settings.
