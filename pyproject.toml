@@ -122,3 +122,6 @@ also_copy = [
 
 [tool.pytest.ini_options]
 norecursedirs = ["mutants"]
+
+[tool.coverage.report]
+fail_under = 100
