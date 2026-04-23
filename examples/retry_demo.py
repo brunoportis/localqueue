@@ -188,35 +188,44 @@ def run_worker_demo(
         print(f"[worker] message={task_id} completed")
 
     for cycle in range(1, 8):
-        print(f"\n[worker] poll cycle {cycle}")
-        processed = 0
+        _run_worker_cycle(queue, retryer, cycle, process_worker_job)
 
-        while True:
-            try:
-                message = queue.get_message(block=False)
-            except Empty:
-                break
 
-            payload = message.value
-            try:
-                _ = retryer(process_worker_job, message.id, payload)
-            except PersistentRetryExhausted as exc:
-                _ = queue.dead_letter(message)
-                print(
-                    f"[queue] message={exc.key} moved to dead letter "
-                    + f"after {exc.attempts} attempts"
-                )
-            except Exception as exc:
-                _ = queue.release(message, delay=1)
-                print(f"[queue] message={message.id} released for retry: {exc}")
-            else:
-                _ = queue.ack(message)
-                print(f"[queue] message={message.id} acked")
-            processed += 1
+def _run_worker_cycle(
+    queue: PersistentQueue[dict[str, Any]],
+    retryer: PersistentRetrying,
+    cycle: int,
+    process_worker_job: Any,
+) -> None:
+    print(f"\n[worker] poll cycle {cycle}")
+    processed = 0
 
-        if processed == 0:
-            print("[worker] no tasks available")
-        time.sleep(1)
+    while True:
+        try:
+            message = queue.get_message(block=False)
+        except Empty:
+            break
+
+        payload = message.value
+        try:
+            _ = retryer(process_worker_job, message.id, payload)
+        except PersistentRetryExhausted as exc:
+            _ = queue.dead_letter(message)
+            print(
+                f"[queue] message={exc.key} moved to dead letter "
+                + f"after {exc.attempts} attempts"
+            )
+        except Exception as exc:
+            _ = queue.release(message, delay=1)
+            print(f"[queue] message={message.id} released for retry: {exc}")
+        else:
+            _ = queue.ack(message)
+            print(f"[queue] message={message.id} acked")
+        processed += 1
+
+    if processed == 0:
+        print("[worker] no tasks available")
+    time.sleep(1)
 
 
 def parse_args() -> argparse.Namespace:

@@ -588,6 +588,7 @@ class PersistentAsyncRetrying(_PersistentMixin):
         if self._user_wait is None:
 
             async def empty_wait(retry_state: RetryCallState) -> float:
+                await asyncio.sleep(0)
                 return 0.0
 
             return empty_wait
@@ -728,22 +729,7 @@ class PersistentAsyncRetrying(_PersistentMixin):
                     retry_state=retry_state
                 )
                 if isinstance(do, DoAttempt):
-                    try:
-                        result = fn(*args, **kwargs)
-                        if inspect.isawaitable(result):
-                            result = await result
-                    except BaseException:  # noqa: B902
-                        exc_info = sys.exc_info()
-                        if exc_info[0] is None:
-                            raise
-                        retry_state.set_exception(
-                            cast(
-                                "tuple[type[BaseException], BaseException, Any]",
-                                exc_info,
-                            )
-                        )
-                    else:
-                        retry_state.set_result(result)
+                    await self._handle_async_attempt(fn, args, kwargs, retry_state)
                 elif isinstance(do, DoSleep):
                     retry_state.prepare_for_next_attempt()
                     await cast("Any", self._retrying).sleep(do)
@@ -753,6 +739,27 @@ class PersistentAsyncRetrying(_PersistentMixin):
         finally:
             if hasattr(self._local, "persistent_context"):
                 del self._local.persistent_context
+
+    async def _handle_async_attempt(
+        self,
+        fn: Callable[..., Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        retry_state: RetryCallState,
+    ) -> None:
+        try:
+            result = fn(*args, **kwargs)
+            if inspect.isawaitable(result):
+                result = await result
+        except BaseException:  # noqa: B902
+            exc_info = sys.exc_info()
+            if exc_info[0] is None:
+                raise
+            retry_state.set_exception(
+                cast("tuple[type[BaseException], BaseException, Any]", exc_info)
+            )
+        else:
+            retry_state.set_result(result)
 
 
 def persistent_retry(**kwargs: Any) -> Callable[[WrappedFn], WrappedFn]:
