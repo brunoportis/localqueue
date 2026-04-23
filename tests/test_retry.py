@@ -1182,41 +1182,38 @@ class RetryTests(unittest.TestCase):
         asyncio.run(scenario())
 
     def test_persistent_async_retry_error_callback_supports_sync_callback(self) -> None:
-        async def scenario() -> None:
-            store = MemoryAttemptStore()
+        store = MemoryAttemptStore()
 
-            def on_error(state: Any) -> str:
-                return f"fallback-{state.attempt_number}"
+        def on_error(state: Any) -> str:
+            return f"fallback-{state.attempt_number}"
 
-            retryer = PersistentAsyncRetrying(
-                store=store,
-                key="job",
-                max_tries=1,
-                wait=lambda _: 0,
-                retry_error_callback=on_error,
-            )
-            context = PersistentCallContext(
-                key="job",
-                record=RetryRecord(attempts=1, first_attempt_at=100.0, exhausted=False),
-                starting_attempts=1,
-            )
-            retryer._local.persistent_context = context
-            try:
-                retry_state = mock.Mock()
-                retry_state.attempt_number = 1
-                retry_state.outcome = mock.Mock(failed=True)
-                callback = retryer._wrap_retry_error_callback()
-                assert callback is not None
-                result = callback(retry_state)
-            finally:
-                del retryer._local.persistent_context
+        retryer = PersistentAsyncRetrying(
+            store=store,
+            key="job",
+            max_tries=1,
+            wait=lambda _: 0,
+            retry_error_callback=on_error,
+        )
+        context = PersistentCallContext(
+            key="job",
+            record=RetryRecord(attempts=1, first_attempt_at=100.0, exhausted=False),
+            starting_attempts=1,
+        )
+        retryer._local.persistent_context = context
+        try:
+            retry_state = mock.Mock()
+            retry_state.attempt_number = 1
+            retry_state.outcome = mock.Mock(failed=True)
+            callback = retryer._wrap_retry_error_callback()
+            assert callback is not None
+            result = callback(retry_state)
+        finally:
+            del retryer._local.persistent_context
 
-            self.assertEqual(result, "fallback-2")
-            record = store.load("job")
-            assert record is not None
-            self.assertTrue(record.exhausted)
-
-        asyncio.run(scenario())
+        self.assertEqual(result, "fallback-2")
+        record = store.load("job")
+        assert record is not None
+        self.assertTrue(record.exhausted)
 
     def test_persistent_async_retrying_raises_exhausted_error_for_exhausted_record(
         self,

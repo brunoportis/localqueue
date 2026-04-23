@@ -2128,7 +2128,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(_truncate_output("abcdef", limit=5), "ab...")
         self.assertEqual(_poll_timeout(True, True, None), 0.5)
         self.assertEqual(_poll_timeout(False, False, 12.0), 12.0)
-        self.assertEqual(_error_payload(None), None)
+        self.assertIsNone(_error_payload(None))
         self.assertEqual(
             _error_payload("oops"),
             {"type": None, "module": None, "message": "oops"},

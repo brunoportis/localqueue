@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import json
 import os
 import signal
@@ -10,6 +11,7 @@ import time
 from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
 from queue import Empty
 from typing import Any, Iterator, TYPE_CHECKING
@@ -40,6 +42,7 @@ if TYPE_CHECKING:
 DEFAULT_STORE_PATH = str(default_queue_store_path())
 DEFAULT_RETRY_STORE_PATH = str(default_retry_store_path())
 CONFIG_FILENAME = "config.yaml"
+_EMPTY = inspect.Parameter.empty
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +72,47 @@ class _QueueWorkerOptions:
     dead_letter_on_exhaustion: bool
     log_events: bool = False
     mode: str = "process"
+
+
+@dataclass(frozen=True, slots=True)
+class _QueueWorkerCliOptions:
+    store_path: str | None
+    retry_store_path: str | None
+    max_jobs: int
+    forever: bool
+    max_tries: int
+    lease_timeout: float
+    worker_id: str | None
+    block: bool
+    timeout: float | None
+    idle_sleep: float
+    release_delay: float
+    min_interval: float
+    circuit_breaker_failures: int
+    circuit_breaker_cooldown: float
+    dead_letter_on_exhaustion: bool
+    log_events: bool
+
+    @classmethod
+    def from_kwargs(cls, values: dict[str, Any]) -> _QueueWorkerCliOptions:
+        return cls(
+            store_path=values.pop("store_path"),
+            retry_store_path=values.pop("retry_store_path"),
+            max_jobs=values.pop("max_jobs"),
+            forever=values.pop("forever"),
+            max_tries=values.pop("max_tries"),
+            lease_timeout=values.pop("lease_timeout"),
+            worker_id=values.pop("worker_id"),
+            block=values.pop("block"),
+            timeout=values.pop("timeout"),
+            idle_sleep=values.pop("idle_sleep"),
+            release_delay=values.pop("release_delay"),
+            min_interval=values.pop("min_interval"),
+            circuit_breaker_failures=values.pop("circuit_breaker_failures"),
+            circuit_breaker_cooldown=values.pop("circuit_breaker_cooldown"),
+            dead_letter_on_exhaustion=values.pop("dead_letter_on_exhaustion"),
+            log_events=values.pop("log_events"),
+        )
 
 
 class _CommandExecutionError(RuntimeError):
@@ -645,6 +689,113 @@ def _register_retry_commands(
         )
 
 
+def _argument(
+    name: str,
+    annotation: Any,
+    *,
+    default: Any = _EMPTY,
+) -> inspect.Parameter:
+    return inspect.Parameter(
+        name,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        annotation=annotation,
+        default=default,
+    )
+
+
+def _queue_worker_option_parameters(typer: Any) -> list[inspect.Parameter]:
+    return [
+        _argument(
+            "store_path",
+            str | None,
+            default=typer.Option(None, "--store-path"),
+        ),
+        _argument(
+            "retry_store_path",
+            str | None,
+            default=typer.Option(None, "--retry-store-path"),
+        ),
+        _argument("max_jobs", int, default=typer.Option(1, "--max-jobs", min=1)),
+        _argument("forever", bool, default=typer.Option(False, "--forever")),
+        _argument("max_tries", int, default=typer.Option(3, "--max-tries", min=1)),
+        _argument(
+            "lease_timeout",
+            float,
+            default=typer.Option(30.0, "--lease-timeout", min=0.001),
+        ),
+        _argument("worker_id", str | None, default=typer.Option(None, "--worker-id")),
+        _argument("block", bool, default=typer.Option(False, "--block")),
+        _argument(
+            "timeout",
+            float | None,
+            default=typer.Option(None, "--timeout", min=0.0),
+        ),
+        _argument(
+            "idle_sleep",
+            float,
+            default=typer.Option(1.0, "--idle-sleep", min=0.001),
+        ),
+        _argument(
+            "release_delay",
+            float,
+            default=typer.Option(0.0, "--release-delay", min=0.0),
+        ),
+        _argument(
+            "min_interval",
+            float,
+            default=typer.Option(0.0, "--min-interval", min=0.0),
+        ),
+        _argument(
+            "circuit_breaker_failures",
+            int,
+            default=typer.Option(0, "--circuit-breaker-failures", min=0),
+        ),
+        _argument(
+            "circuit_breaker_cooldown",
+            float,
+            default=typer.Option(0.0, "--circuit-breaker-cooldown", min=0.0),
+        ),
+        _argument(
+            "dead_letter_on_exhaustion",
+            bool,
+            default=typer.Option(
+                True,
+                "--dead-letter-on-exhaustion/--release-on-exhaustion",
+            ),
+        ),
+        _argument("log_events", bool, default=typer.Option(False, "--log-events")),
+    ]
+
+
+def _queue_worker_command_signature(
+    typer: Any,
+    *command_parameters: inspect.Parameter,
+) -> Callable[[Callable[..., None]], Callable[..., None]]:
+    parameters = [*command_parameters, *_queue_worker_option_parameters(typer)]
+    signature = inspect.Signature(parameters=parameters, return_annotation=None)
+    annotations = {parameter.name: parameter.annotation for parameter in parameters}
+    annotations["return"] = None
+
+    def decorator(callback: Callable[..., None]) -> Callable[..., None]:
+        @wraps(callback)
+        def wrapper(**values: Any) -> None:
+            command_values = {
+                parameter.name: values.pop(parameter.name)
+                for parameter in command_parameters
+            }
+            cli_options = _QueueWorkerCliOptions.from_kwargs(values)
+            if values:
+                unexpected = ", ".join(sorted(values))
+                raise TypeError(f"unexpected CLI option values: {unexpected}")
+            callback(**command_values, cli_options=cli_options)
+
+        wrapper.__annotations__ = annotations
+        setattr(wrapper, "__signature__", signature)
+        return wrapper
+
+    return decorator
+
+
 def _register_queue_admin_commands(
     queue_app: Any,
     typer: Any,
@@ -653,37 +804,20 @@ def _register_queue_admin_commands(
     config: dict[str, Any],
 ) -> None:
     @queue_app.command("process")
-    def queue_process(  # NOSONAR - Typer commands declare CLI options as parameters.
+    @_queue_worker_command_signature(
+        typer,
+        _argument("queue", str),
+        _argument("handler", str),
+    )
+    def queue_process(
         queue: str,
         handler: str,
-        store_path: str | None = typer.Option(None, "--store-path"),
-        retry_store_path: str | None = typer.Option(None, "--retry-store-path"),
-        max_jobs: int = typer.Option(1, "--max-jobs", min=1),
-        forever: bool = typer.Option(False, "--forever"),
-        max_tries: int = typer.Option(3, "--max-tries", min=1),
-        lease_timeout: float = typer.Option(30.0, "--lease-timeout", min=0.001),
-        worker_id: str | None = typer.Option(None, "--worker-id"),
-        block: bool = typer.Option(False, "--block"),
-        timeout: float | None = typer.Option(None, "--timeout", min=0.0),
-        idle_sleep: float = typer.Option(1.0, "--idle-sleep", min=0.001),
-        release_delay: float = typer.Option(0.0, "--release-delay", min=0.0),
-        min_interval: float = typer.Option(0.0, "--min-interval", min=0.0),
-        circuit_breaker_failures: int = typer.Option(
-            0, "--circuit-breaker-failures", min=0
-        ),
-        circuit_breaker_cooldown: float = typer.Option(
-            0.0, "--circuit-breaker-cooldown", min=0.0
-        ),
-        dead_letter_on_exhaustion: bool = typer.Option(
-            True,
-            "--dead-letter-on-exhaustion/--release-on-exhaustion",
-        ),
-        log_events: bool = typer.Option(False, "--log-events"),
+        cli_options: _QueueWorkerCliOptions,
     ) -> None:
         try:
             _validate_worker_loop_options(
-                max_jobs=max_jobs,
-                forever=forever,
+                max_jobs=cli_options.max_jobs,
+                forever=cli_options.forever,
             )
         except ValueError as exc:
             err_console.print(f"[red]{exc}[/red]")
@@ -695,15 +829,15 @@ def _register_queue_admin_commands(
             raise typer.Exit(1) from exc
         persistent_queue = _queue(
             queue,
-            _resolve_store_path(store_path, config),
-            lease_timeout=lease_timeout,
+            _resolve_store_path(cli_options.store_path, config),
+            lease_timeout=cli_options.lease_timeout,
         )
-        if worker_id is not None:
-            persistent_queue.record_worker_heartbeat(worker_id)
+        if cli_options.worker_id is not None:
+            persistent_queue.record_worker_heartbeat(cli_options.worker_id)
         worker_policy = PersistentWorkerConfig(
-            min_interval=min_interval,
-            circuit_breaker_failures=circuit_breaker_failures,
-            circuit_breaker_cooldown=circuit_breaker_cooldown,
+            min_interval=cli_options.min_interval,
+            circuit_breaker_failures=cli_options.circuit_breaker_failures,
+            circuit_breaker_cooldown=cli_options.circuit_breaker_cooldown,
         )
         with _shutdown_state() as shutdown:
             exit_code = _process_queue_messages(
@@ -715,18 +849,18 @@ def _register_queue_admin_commands(
                 worker_policy=worker_policy,
                 options=_QueueWorkerOptions(
                     retry_store_path=_resolve_retry_store_path(
-                        retry_store_path, config
+                        cli_options.retry_store_path, config
                     ),
-                    max_jobs=max_jobs,
-                    forever=forever,
-                    max_tries=max_tries,
-                    worker_id=worker_id,
-                    block=block,
-                    timeout=timeout,
-                    idle_sleep=idle_sleep,
-                    release_delay=release_delay,
-                    dead_letter_on_exhaustion=dead_letter_on_exhaustion,
-                    log_events=log_events,
+                    max_jobs=cli_options.max_jobs,
+                    forever=cli_options.forever,
+                    max_tries=cli_options.max_tries,
+                    worker_id=cli_options.worker_id,
+                    block=cli_options.block,
+                    timeout=cli_options.timeout,
+                    idle_sleep=cli_options.idle_sleep,
+                    release_delay=cli_options.release_delay,
+                    dead_letter_on_exhaustion=cli_options.dead_letter_on_exhaustion,
+                    log_events=cli_options.log_events,
                     mode="process",
                 ),
             )
@@ -742,55 +876,42 @@ def _register_queue_worker_commands(
     config: dict[str, Any],
 ) -> None:
     @queue_app.command("exec")
-    def queue_exec(  # NOSONAR - Typer commands declare CLI options as parameters.
+    @_queue_worker_command_signature(
+        typer,
+        _argument("queue", str),
+        _argument(
+            "command",
+            list[str],
+            default=typer.Argument(
+                ...,
+                help="Command to run. Use '--' before commands that contain options.",
+            ),
+        ),
+    )
+    def queue_exec(
         queue: str,
-        command: list[str] = typer.Argument(
-            ...,
-            help="Command to run. Use '--' before commands that contain options.",
-        ),
-        store_path: str | None = typer.Option(None, "--store-path"),
-        retry_store_path: str | None = typer.Option(None, "--retry-store-path"),
-        max_jobs: int = typer.Option(1, "--max-jobs", min=1),
-        forever: bool = typer.Option(False, "--forever"),
-        max_tries: int = typer.Option(3, "--max-tries", min=1),
-        lease_timeout: float = typer.Option(30.0, "--lease-timeout", min=0.001),
-        worker_id: str | None = typer.Option(None, "--worker-id"),
-        block: bool = typer.Option(False, "--block"),
-        timeout: float | None = typer.Option(None, "--timeout", min=0.0),
-        idle_sleep: float = typer.Option(1.0, "--idle-sleep", min=0.001),
-        release_delay: float = typer.Option(0.0, "--release-delay", min=0.0),
-        min_interval: float = typer.Option(0.0, "--min-interval", min=0.0),
-        circuit_breaker_failures: int = typer.Option(
-            0, "--circuit-breaker-failures", min=0
-        ),
-        circuit_breaker_cooldown: float = typer.Option(
-            0.0, "--circuit-breaker-cooldown", min=0.0
-        ),
-        dead_letter_on_exhaustion: bool = typer.Option(
-            True,
-            "--dead-letter-on-exhaustion/--release-on-exhaustion",
-        ),
-        log_events: bool = typer.Option(False, "--log-events"),
+        command: list[str],
+        cli_options: _QueueWorkerCliOptions,
     ) -> None:
         try:
             _validate_worker_loop_options(
-                max_jobs=max_jobs,
-                forever=forever,
+                max_jobs=cli_options.max_jobs,
+                forever=cli_options.forever,
             )
         except ValueError as exc:
             err_console.print(f"[red]{exc}[/red]")
             raise typer.Exit(1) from exc
         persistent_queue = _queue(
             queue,
-            _resolve_store_path(store_path, config),
-            lease_timeout=lease_timeout,
+            _resolve_store_path(cli_options.store_path, config),
+            lease_timeout=cli_options.lease_timeout,
         )
-        if worker_id is not None:
-            persistent_queue.record_worker_heartbeat(worker_id)
+        if cli_options.worker_id is not None:
+            persistent_queue.record_worker_heartbeat(cli_options.worker_id)
         worker_policy = PersistentWorkerConfig(
-            min_interval=min_interval,
-            circuit_breaker_failures=circuit_breaker_failures,
-            circuit_breaker_cooldown=circuit_breaker_cooldown,
+            min_interval=cli_options.min_interval,
+            circuit_breaker_failures=cli_options.circuit_breaker_failures,
+            circuit_breaker_cooldown=cli_options.circuit_breaker_cooldown,
         )
         with _shutdown_state() as shutdown:
             exit_code = _process_queue_messages(
@@ -802,18 +923,18 @@ def _register_queue_worker_commands(
                 worker_policy=worker_policy,
                 options=_QueueWorkerOptions(
                     retry_store_path=_resolve_retry_store_path(
-                        retry_store_path, config
+                        cli_options.retry_store_path, config
                     ),
-                    max_jobs=max_jobs,
-                    forever=forever,
-                    max_tries=max_tries,
-                    worker_id=worker_id,
-                    block=block,
-                    timeout=timeout,
-                    idle_sleep=idle_sleep,
-                    release_delay=release_delay,
-                    dead_letter_on_exhaustion=dead_letter_on_exhaustion,
-                    log_events=log_events,
+                    max_jobs=cli_options.max_jobs,
+                    forever=cli_options.forever,
+                    max_tries=cli_options.max_tries,
+                    worker_id=cli_options.worker_id,
+                    block=cli_options.block,
+                    timeout=cli_options.timeout,
+                    idle_sleep=cli_options.idle_sleep,
+                    release_delay=cli_options.release_delay,
+                    dead_letter_on_exhaustion=cli_options.dead_letter_on_exhaustion,
+                    log_events=cli_options.log_events,
                     mode="exec",
                 ),
             )
