@@ -73,27 +73,26 @@ What to keep in mind:
 Enqueue one email job:
 
 ```bash
-localqueue queue add use-cases-emails \
-  --value '{"to":"user@example.com"}'
+echo '{"to":"user@example.com"}' | localqueue queue add emails
 ```
 
 Inspect the queue before processing:
 
 ```bash
-localqueue queue stats use-cases-emails
+localqueue queue stats emails
 ```
 
 Process one queued message with the worker script:
 
 ```bash
-localqueue queue exec use-cases-emails \
+localqueue queue exec emails \
   -- python /tmp/localqueue-use-cases/email_worker.py
 ```
 
 Check that the queue is empty again:
 
 ```bash
-localqueue queue stats use-cases-emails
+localqueue queue stats emails
 ```
 
 This is the right shape when the caller should return now and the side effect
@@ -121,14 +120,13 @@ Why `localqueue` fits:
 Create a failing job:
 
 ```bash
-localqueue queue add use-cases-failing-emails \
-  --value '{"to":"broken@example.com","fail":true}'
+echo '{"to":"broken@example.com","fail":true}' | localqueue queue add webhooks
 ```
 
 Process it with a small retry budget so it reaches dead-letter quickly:
 
 ```bash
-localqueue queue exec use-cases-failing-emails \
+localqueue queue exec webhooks \
   --max-tries 2 \
   -- python /tmp/localqueue-use-cases/email_worker.py
 ```
@@ -136,15 +134,15 @@ localqueue queue exec use-cases-failing-emails \
 Inspect the dead-letter summary and full record:
 
 ```bash
-localqueue queue dead use-cases-failing-emails --summary
+localqueue queue dead webhooks --summary
 
-localqueue queue dead use-cases-failing-emails
+localqueue queue dead webhooks
 ```
 
 If you want to replay everything in the dead-letter queue:
 
 ```bash
-localqueue queue requeue-dead use-cases-failing-emails --all
+localqueue queue requeue-dead webhooks --all
 ```
 
 This is the strongest terminal-driven workflow in the project today: run work,

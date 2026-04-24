@@ -15,8 +15,7 @@ Use it when the work can stay local and you want one of these outcomes:
 - keep retry budgets across process restarts without adding a broker
 
 It fits scripts, CLI tools, cron jobs, and small Python workers that share one
-local store. Use `localqueue.retry` when another system already delivers work
-and you only need retry state that survives restarts.
+local store.
 
 ```bash
 localqueue queue exec emails -- python scripts/send_email.py

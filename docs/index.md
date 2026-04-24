@@ -27,7 +27,7 @@ not provide multi-host coordination.
 Use the CLI when you want to enqueue, inspect, watch, and recover jobs from the terminal.
 
 ```bash
-localqueue queue add emails --value '{"to":"user@example.com"}'
+echo '{"to":"user@example.com"}' | localqueue queue add emails
 localqueue queue exec emails -- python scripts/send_email.py
 localqueue queue stats emails --watch --interval 1
 localqueue queue dead emails --summary
@@ -52,8 +52,6 @@ queue.put({"to": "user@example.com"})
 def send_email(job: dict[str, str]) -> None:
     deliver(job["to"])
 ```
-
-`localqueue.retry` stays available when another system already delivers work and you only need retry state.
 
 See [Persistent retries](retries.md) for the retry API and store options.
 
