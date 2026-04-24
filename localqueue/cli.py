@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, TYPE_CHECKING
 
+from . import __version__
 from .cli_commands import (
     CommandRegistryContext,
     register_config_commands,
@@ -75,6 +76,15 @@ def _build_app(typer: Any, yaml: Any, console: Any, err_console: Any) -> Any:
     queue_app = typer.Typer(no_args_is_help=True)
     retry_app = typer.Typer(no_args_is_help=True)
     config_app = typer.Typer(no_args_is_help=True)
+
+    @app.callback(invoke_without_command=True)
+    def root_callback(
+        version: bool = typer.Option(False, "--version", help="Show version and exit"),
+    ) -> None:
+        if version:
+            console.print(__version__)
+            raise typer.Exit()
+
     command_context = CommandRegistryContext(
         typer=typer,
         console=console,
