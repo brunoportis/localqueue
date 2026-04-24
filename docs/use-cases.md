@@ -4,17 +4,41 @@ icon: lucide/briefcase
 
 # Use Cases
 
-These examples are meant to be copied and run from the repository root.
+These examples are meant to be copied and run from any directory.
 They keep state under `/tmp/localqueue-use-cases` so they do not interfere with
 your normal localqueue data.
 
-## Prerequisites
+## Command style
 
-Install the project with CLI support first:
+The examples below use the direct CLI form:
 
 ```bash
-uv sync --extra cli
+localqueue queue exec ...
+```
+
+Install `localqueue[cli]` first if the `localqueue` command is not available.
+If you prefer `pipx run` or `uvx`, translate the command locally after you
+understand the workflow.
+
+## Setup
+
+Create a scratch directory and a small worker script once:
+
+```bash
 mkdir -p /tmp/localqueue-use-cases
+cat > /tmp/localqueue-use-cases/email_worker.py <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+
+
+payload = json.load(sys.stdin)
+address = payload["to"]
+if payload.get("fail"):
+    raise ConnectionError(f"could not deliver email to {address}")
+print(f"sent email to {address}")
+PY
 ```
 
 ## 1. Local email spooler
@@ -25,30 +49,30 @@ another process handles it later on the same machine.
 Enqueue one email job:
 
 ```bash
-uv run python examples/enqueue_email.py \
-  user@example.com \
-  --store-path /tmp/localqueue-use-cases/emails.sqlite3
+localqueue queue add emails \
+  --store-path /tmp/localqueue-use-cases/emails.sqlite3 \
+  --value '{"to":"user@example.com"}'
 ```
 
 Inspect the queue before processing:
 
 ```bash
-uv run localqueue queue stats emails \
+localqueue queue stats emails \
   --store-path /tmp/localqueue-use-cases/emails.sqlite3
 ```
 
-Process one queued message with the example worker:
+Process one queued message with the worker script:
 
 ```bash
-uv run localqueue queue exec emails \
+localqueue queue exec emails \
   --store-path /tmp/localqueue-use-cases/emails.sqlite3 \
-  -- python examples/email_worker.py
+  -- python /tmp/localqueue-use-cases/email_worker.py
 ```
 
 Check that the queue is empty again:
 
 ```bash
-uv run localqueue queue stats emails \
+localqueue queue stats emails \
   --store-path /tmp/localqueue-use-cases/emails.sqlite3
 ```
 
@@ -63,37 +87,36 @@ the dead-letter list, then requeue it after fixing the payload.
 Create a failing job:
 
 ```bash
-uv run python examples/enqueue_email.py \
-  broken@example.com \
-  --fail \
-  --store-path /tmp/localqueue-use-cases/failing-emails.sqlite3
+localqueue queue add emails \
+  --store-path /tmp/localqueue-use-cases/failing-emails.sqlite3 \
+  --value '{"to":"broken@example.com","fail":true}'
 ```
 
 Process it with a small retry budget so it reaches dead-letter quickly:
 
 ```bash
-uv run localqueue queue exec emails \
+localqueue queue exec emails \
   --store-path /tmp/localqueue-use-cases/failing-emails.sqlite3 \
   --retry-store-path /tmp/localqueue-use-cases/failing-emails-retries.sqlite3 \
   --max-tries 2 \
-  -- python examples/email_worker.py
+  -- python /tmp/localqueue-use-cases/email_worker.py
 ```
 
 Inspect the dead-letter summary and full record:
 
 ```bash
-uv run localqueue queue dead emails \
+localqueue queue dead emails \
   --store-path /tmp/localqueue-use-cases/failing-emails.sqlite3 \
   --summary
 
-uv run localqueue queue dead emails \
+localqueue queue dead emails \
   --store-path /tmp/localqueue-use-cases/failing-emails.sqlite3
 ```
 
 If you want to replay everything in the dead-letter queue:
 
 ```bash
-uv run localqueue queue requeue-dead emails \
+localqueue queue requeue-dead emails \
   --store-path /tmp/localqueue-use-cases/failing-emails.sqlite3 \
   --all
 ```
@@ -107,10 +130,10 @@ the terminal.
 Sometimes another system already delivers the job and all you need is retry
 state that survives restarts. In that case, use `localqueue.retry` directly.
 
-Run this once:
+Run this once in an environment where `localqueue` is importable.
 
 ```bash
-uv run python - <<'PY'
+python - <<'PY'
 from localqueue.retry import PersistentRetryExhausted, persistent_retry
 
 
@@ -140,7 +163,7 @@ stable and the attempt store is on disk. After the budget is exhausted,
 You can later inspect or prune exhausted retry records:
 
 ```bash
-uv run localqueue retry prune \
+localqueue retry prune \
   --retry-store-path /tmp/localqueue-use-cases/retries.sqlite3 \
   --dry-run \
   --older-than 0
