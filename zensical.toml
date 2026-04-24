@@ -6,6 +6,7 @@ copyright = "Copyright &copy; 2026 The authors"
 
 nav = [
   { "Overview" = "index.md" },
+  { "Use cases" = "use-cases.md" },
   { "Compare" = "compare.md" },
   { "Persistent queues" = "queues.md" },
   { "Persistent retries" = "retries.md" },
