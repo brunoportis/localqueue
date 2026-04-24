@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.4.0](https://github.com/brunoportis/localqueue/compare/v0.3.4...v0.4.0) (2026-04-24)
+
+
+### Features
+
+* add release-please automation and CLI --version option ([f8db976](https://github.com/brunoportis/localqueue/commit/f8db9767f45fc1eb5055ef0e7eb946aae3af3129))
+
+
+### Bug Fixes
+
+* **release:** target uv.lock version explicitly ([3e71f44](https://github.com/brunoportis/localqueue/commit/3e71f4450e50de69488b18c04b018a6af00bf962))
+* **release:** target uv.lock version explicitly ([31b45ce](https://github.com/brunoportis/localqueue/commit/31b45ce2ba3deea070d8d49c8bebebadcbc9fb37))
+* **release:** track uv.lock in release-please ([897b86a](https://github.com/brunoportis/localqueue/commit/897b86aa33d9b38cba82da7b0e2623473488b94d))
+* **release:** track uv.lock in release-please ([637ef7f](https://github.com/brunoportis/localqueue/commit/637ef7fca945f1153b643f27b0d6df6ccc39f778))
+* **workflow:** configure git identity for release sync ([9872e7a](https://github.com/brunoportis/localqueue/commit/9872e7a85d1382a968f344444009e721da926e50))
+* **workflow:** configure git identity for release sync ([2ef15fd](https://github.com/brunoportis/localqueue/commit/2ef15fdd3b5a877569b46980ef795442c1f3089c))
+* **workflow:** sync uv.lock in release-please ([f26b1fa](https://github.com/brunoportis/localqueue/commit/f26b1fac2603f5ae0016ce994f5065291b6a6ad0))
+* **workflow:** sync uv.lock in release-please ([193b4c6](https://github.com/brunoportis/localqueue/commit/193b4c6d5dba208ec43d7ea6ada402c5c4f1c2a5))
+
+
+### Documentation
+
+* **use-cases:** simplify CLI examples ([84b92f2](https://github.com/brunoportis/localqueue/commit/84b92f2a420ddeb46dc8db2e6c1493fc45430bff))
+
 ## 0.3.4
 
 - Keep `queue exec` and `queue process` alive in `--forever --block` mode when the queue starts empty.
