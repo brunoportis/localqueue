@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.4
+
+- Keep `queue exec` and `queue process` alive in `--forever --block` mode when the queue starts empty.
+- Preserve the batch empty-queue exit behavior for non-forever workers.
+
 ## 0.3.3
 
 - Split queue and retry store implementations into dedicated modules.

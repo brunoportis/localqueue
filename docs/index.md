@@ -72,4 +72,5 @@ See [Compare](compare.md) for a short decision guide.
 - [Compare](compare.md)
 - [API reference](api.md)
 - [Operational maturity](operational-maturity.md)
+- [Development guide](develop.md)
 - [Release checklist](release.md)

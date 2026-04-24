@@ -215,6 +215,13 @@ class CliTests(unittest.TestCase):
         build_app.assert_called_once()
         app.assert_called_once_with(args=["--help"])
 
+    def test_root_version_option_prints_version(self) -> None:
+        with mock.patch("localqueue.cli.__version__", "9.9.9"):
+            result = self._invoke(["--version"])
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.stdout.strip(), "9.9.9")
+
     def test_read_value_uses_argument_before_stdin(self) -> None:
         self.assertEqual(_read_value("{}"), "{}")
 

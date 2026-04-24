@@ -12,6 +12,7 @@ nav = [
   { "Persistent retries" = "retries.md" },
   { "API reference" = "api.md" },
   { "Operational maturity" = "operational-maturity.md" },
+  { "Development guide" = "develop.md" },
   { "Release" = "release.md" },
 ]
 

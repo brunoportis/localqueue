@@ -26,6 +26,8 @@ def send_email(job: dict[str, str]) -> None:
 
 Full docs live at [brunoportis.github.io/localqueue](https://brunoportis.github.io/localqueue/). The source docs are in [`docs/`](docs/).
 
+For development and release workflow details, see [`docs/develop.md`](docs/develop.md).
+
 ## Install
 
 ```bash
