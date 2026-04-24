@@ -46,6 +46,11 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Configure git identity
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
       - name: Sync lockfile for release branch
         run: |
           uv lock
