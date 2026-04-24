@@ -65,6 +65,7 @@ See [Compare](compare.md) for a short decision guide.
 
 ## Read more
 
+- [Use cases](use-cases.md)
 - [Persistent queues](queues.md)
 - [Persistent retries](retries.md)
 - [Stability](stability.md)
