@@ -8,36 +8,21 @@ These examples are meant to be copied and run from any directory.
 They keep state under `/tmp/localqueue-use-cases` so they do not interfere with
 your normal localqueue data.
 
-## Choose a launcher
+## Command style
 
-The shell commands below use `localqueue` as the CLI name. You can provide that
-command in any of these ways:
-
-```bash
-pip install "localqueue[cli]"
-```
+The examples below use the direct CLI form:
 
 ```bash
-pipx run --spec 'localqueue[cli]' localqueue --help
+localqueue queue exec ...
 ```
 
-```bash
-uvx --from 'localqueue[cli]' localqueue --help
-```
-
-If you are using `pipx run` or `uvx`, replace `localqueue` in the examples with
-the full launcher command.
-
-The Python snippets need the `localqueue` package to be importable. Use
-`python` in an environment where `localqueue` is installed, or use:
-
-```bash
-uv run --with localqueue python --version
-```
+Install `localqueue[cli]` first if the `localqueue` command is not available.
+If you prefer `pipx run` or `uvx`, translate the command locally after you
+understand the workflow.
 
 ## Setup
 
-Create a scratch directory and a small worker script:
+Create a scratch directory and a small worker script once:
 
 ```bash
 mkdir -p /tmp/localqueue-use-cases
@@ -145,8 +130,7 @@ the terminal.
 Sometimes another system already delivers the job and all you need is retry
 state that survives restarts. In that case, use `localqueue.retry` directly.
 
-Run this once. If you do not have `localqueue` installed in the current Python
-environment, replace `python` with `uv run --with localqueue python`.
+Run this once in an environment where `localqueue` is importable.
 
 ```bash
 python - <<'PY'
