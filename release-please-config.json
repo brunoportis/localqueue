@@ -6,7 +6,11 @@
     ".": {
       "extra-files": [
         "pyproject.toml",
-        "uv.lock"
+        {
+          "type": "toml",
+          "path": "uv.lock",
+          "jsonpath": "$.package[?(@.name==\"localqueue\")].version"
+        }
       ]
     }
   }
