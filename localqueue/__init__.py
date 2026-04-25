@@ -14,6 +14,13 @@ from .idempotency import (
     SQLiteIdempotencyStore,
 )
 from .queue import PersistentQueue
+from .results import (
+    LMDBResultStore,
+    MemoryResultStore,
+    ResultStore,
+    ResultStoreLockedError,
+    SQLiteResultStore,
+)
 from .policies import (
     AT_LEAST_ONCE_DELIVERY,
     FIFO_READY_ORDERING,
@@ -92,6 +99,7 @@ __all__ = [
     "LOCAL_AT_LEAST_ONCE",
     "MemoryIdempotencyStore",
     "MemoryAttemptStore",
+    "MemoryResultStore",
     "MemoryQueueStore",
     "NO_RESULT_POLICY",
     "NoResultPolicy",
@@ -109,6 +117,8 @@ __all__ = [
     "QueueMessage",
     "QueueSemantics",
     "QueueStats",
+    "ResultStore",
+    "ResultStoreLockedError",
     "QueueStore",
     "QueueStoreLockedError",
     "RETURN_STORED_RESULT",
@@ -119,6 +129,8 @@ __all__ = [
     "SQLiteAttemptStore",
     "SQLiteIdempotencyStore",
     "SQLiteQueueStore",
+    "SQLiteResultStore",
+    "LMDBResultStore",
     "__version__",
     "close_default_store",
     "configure_default_store",

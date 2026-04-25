@@ -16,6 +16,7 @@ from .queue import _error_payload
 
 if TYPE_CHECKING:
     from .queue import PersistentQueue
+    from .results import ResultStore
     from .stores import QueueMessage
 
 WrappedFn = TypeVar("WrappedFn", bound=Callable[..., Any])
@@ -306,7 +307,21 @@ def _result_policy(queue: PersistentQueue) -> Any:
     return getattr(queue.delivery_policy, "result_policy", None)
 
 
-def _cached_result(record: IdempotencyRecord) -> Any:
+def _result_store(queue: PersistentQueue) -> ResultStore | None:
+    result_policy = _result_policy(queue)
+    return cast("ResultStore | None", getattr(result_policy, "result_store", None))
+
+
+def _result_key(message: QueueMessage) -> str | None:
+    if message.dedupe_key is None:
+        return None
+    return f"dedupe:{message.queue}:{message.dedupe_key}"
+
+
+def _cached_result(queue: PersistentQueue, record: IdempotencyRecord) -> Any:
+    result_store = _result_store(queue)
+    if result_store is not None and record.result_key is not None:
+        return result_store.load(record.result_key)
     return record.metadata.get("result")
 
 
@@ -321,7 +336,7 @@ def _begin_idempotent_handling(
         _ = queue.ack(message)
         result_policy = _result_policy(queue)
         if bool(getattr(result_policy, "returns_cached_result", False)):
-            return True, _cached_result(record)
+            return True, _cached_result(queue, record)
         return True, None
     first_seen_at = time.time() if record is None else record.first_seen_at
     store.save(
@@ -352,8 +367,15 @@ def _complete_idempotent_handling(
     result_policy = _result_policy(queue)
     result_key = None if existing is None else existing.result_key
     if bool(getattr(result_policy, "stores_result", False)) and status == "succeeded":
-        metadata["result"] = result
-        result_key = "inline"
+        result_store = _result_store(queue)
+        if result_store is None:
+            metadata["result"] = result
+            result_key = "inline"
+        else:
+            resolved_result_key = _result_key(message)
+            if resolved_result_key is not None:
+                result_store.save(resolved_result_key, result)
+                result_key = resolved_result_key
     if error is not None:
         metadata["last_error"] = _error_payload(error)
     store.save(

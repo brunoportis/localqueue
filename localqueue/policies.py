@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
     from .idempotency import IdempotencyStore
+    from .results import ResultStore
 
 AckTiming = Literal["before-delivery", "after-success", "manual"]
 DeliveryGuarantee = Literal["at-least-once", "at-most-once", "effectively-once"]
@@ -113,12 +114,16 @@ class ReturnStoredResult(ResultPolicy):
 
     stores_result: bool = True
     returns_cached_result: bool = True
+    result_store: ResultStore | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
             "type": "return-stored",
             "stores_result": self.stores_result,
             "returns_cached_result": self.returns_cached_result,
+            "result_store": (
+                None if self.result_store is None else type(self.result_store).__name__
+            ),
         }
 
 

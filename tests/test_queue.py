@@ -18,12 +18,15 @@ import lmdb
 
 from localqueue.idempotency.stores import _shared as _idempotency_shared
 from localqueue.idempotency.stores import lmdb as _idempotency_lmdb
+from localqueue.results.stores import _shared as _result_shared
+from localqueue.results.stores import lmdb as _result_lmdb
 from localqueue.retry import MemoryAttemptStore, RetryRecord, SQLiteAttemptStore
 from localqueue import (
     AT_LEAST_ONCE_DELIVERY,
     FIFO_READY_ORDERING,
     IdempotencyRecord,
     IdempotencyStoreLockedError,
+    LMDBResultStore,
     LMDBIdempotencyStore,
     POINT_TO_POINT_ROUTING,
     PULL_CONSUMPTION,
@@ -35,6 +38,7 @@ from localqueue import (
     LMDBQueueStore,
     LOCAL_AT_LEAST_ONCE,
     MemoryIdempotencyStore,
+    MemoryResultStore,
     MemoryQueueStore,
     NO_RESULT_POLICY,
     PersistentQueue,
@@ -44,10 +48,12 @@ from localqueue import (
     PullConsumption,
     QueueSemantics,
     QueueMessage,
+    ResultStoreLockedError,
     QueueStoreLockedError,
     RETURN_STORED_RESULT,
     ReturnStoredResult,
     SQLiteIdempotencyStore,
+    SQLiteResultStore,
     SQLiteQueueStore,
     persistent_async_worker,
     persistent_worker,
@@ -57,6 +63,7 @@ from localqueue.worker import (
     _get_message_async,
     _record_failure,
     _record_success,
+    _result_key,
     _resolve_dead_letter_on_failure,
     _UNSET,
     _validate_circuit_breaker,
@@ -622,6 +629,38 @@ class QueueTests(unittest.TestCase):
                 "requires_dedupe_key": True,
                 "idempotency_store": "MemoryIdempotencyStore",
                 "result_policy": RETURN_STORED_RESULT.as_dict(),
+            },
+        )
+
+    def test_constructor_accepts_effectively_once_delivery_policy_with_result_store(
+        self,
+    ) -> None:
+        delivery_policy = EffectivelyOnceDelivery(
+            idempotency_store=MemoryIdempotencyStore(),
+            result_policy=ReturnStoredResult(result_store=MemoryResultStore()),
+        )
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=delivery_policy,
+        )
+
+        self.assertIs(queue.delivery_policy, delivery_policy)
+        self.assertEqual(
+            queue.delivery_policy.as_dict(),
+            {
+                "guarantee": "effectively-once",
+                "ack_timing": "after-success",
+                "uses_leases": True,
+                "redelivers_expired_leases": True,
+                "requires_dedupe_key": True,
+                "idempotency_store": "MemoryIdempotencyStore",
+                "result_policy": {
+                    "type": "return-stored",
+                    "stores_result": True,
+                    "returns_cached_result": True,
+                    "result_store": "MemoryResultStore",
+                },
             },
         )
 
@@ -3502,6 +3541,68 @@ class QueueTests(unittest.TestCase):
         self.assertTrue(queue.empty())
         self.assertIsNone(queue.inspect(message.id))
 
+    def test_effectively_once_worker_uses_external_result_store(self) -> None:
+        store = MemoryIdempotencyStore()
+        result_store = MemoryResultStore()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=EffectivelyOnceDelivery(
+                idempotency_store=store,
+                result_policy=ReturnStoredResult(result_store=result_store),
+            ),
+        )
+        message = queue.put("item", dedupe_key="job-1")
+
+        @persistent_worker(queue)
+        def handle(value: str) -> dict[str, str]:
+            return {"status": value.upper()}
+
+        self.assertEqual(cast("Any", handle)(), {"status": "ITEM"})
+        record = store.load("job-1")
+
+        assert record is not None
+        self.assertEqual(record.result_key, "dedupe:test:job-1")
+        self.assertEqual(record.metadata, {"queue": "test", "message_id": message.id})
+        self.assertEqual(result_store.load("dedupe:test:job-1"), {"status": "ITEM"})
+
+    def test_effectively_once_worker_returns_cached_result_from_external_store(
+        self,
+    ) -> None:
+        store = MemoryIdempotencyStore()
+        result_store = MemoryResultStore()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=EffectivelyOnceDelivery(
+                idempotency_store=store,
+                result_policy=ReturnStoredResult(result_store=result_store),
+            ),
+        )
+        message = queue.put("item", dedupe_key="job-1")
+        result_store.save("dedupe:test:job-1", {"status": "CACHED"})
+        store.save(
+            "job-1",
+            IdempotencyRecord(
+                status="succeeded",
+                first_seen_at=100.0,
+                completed_at=120.0,
+                result_key="dedupe:test:job-1",
+                metadata={"queue": "test", "message_id": "previous"},
+            ),
+        )
+        calls = {"count": 0}
+
+        @persistent_worker(queue)
+        def handle(value: str) -> dict[str, str]:
+            calls["count"] += 1
+            return {"status": value.upper()}
+
+        self.assertEqual(cast("Any", handle)(), {"status": "CACHED"})
+        self.assertEqual(calls["count"], 0)
+        self.assertTrue(queue.empty())
+        self.assertIsNone(queue.inspect(message.id))
+
     def test_effectively_once_async_worker_short_circuits_known_success(self) -> None:
         async def scenario() -> None:
             store = MemoryIdempotencyStore()
@@ -3574,6 +3675,41 @@ class QueueTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_effectively_once_async_worker_uses_external_result_store(self) -> None:
+        async def scenario() -> None:
+            store = MemoryIdempotencyStore()
+            result_store = MemoryResultStore()
+            queue = PersistentQueue(
+                "test",
+                store=MemoryQueueStore(),
+                delivery_policy=EffectivelyOnceDelivery(
+                    idempotency_store=store,
+                    result_policy=ReturnStoredResult(result_store=result_store),
+                ),
+            )
+            message = queue.put("item", dedupe_key="job-1")
+
+            @persistent_async_worker(queue)
+            async def handle(value: str) -> list[str]:
+                return [value.upper()]
+
+            self.assertEqual(await cast("Any", handle)(), ["ITEM"])
+            record = store.load("job-1")
+
+            assert record is not None
+            self.assertEqual(record.result_key, "dedupe:test:job-1")
+            self.assertEqual(
+                record.metadata, {"queue": "test", "message_id": message.id}
+            )
+            self.assertEqual(result_store.load("dedupe:test:job-1"), ["ITEM"])
+
+        asyncio.run(scenario())
+
+    def test_worker_result_key_returns_none_without_dedupe_key(self) -> None:
+        self.assertIsNone(
+            _result_key(QueueMessage(id="job-1", queue="test", value=None))
+        )
+
     def test_memory_idempotency_store_round_trip_and_prune(self) -> None:
         store = MemoryIdempotencyStore()
         pending = IdempotencyRecord.pending()
@@ -3600,11 +3736,32 @@ class QueueTests(unittest.TestCase):
         self.assertIsNone(store.load("done"))
         self.assertIsNone(store.load("pending"))
 
+    def test_memory_result_store_round_trip_and_delete(self) -> None:
+        store = MemoryResultStore()
+        payload = {"status": "ok", "items": [1, 2, 3]}
+
+        store.save("job-1", payload)
+        loaded = store.load("job-1")
+
+        self.assertEqual(loaded, payload)
+        assert loaded is not None
+        loaded["items"].append(4)
+        self.assertEqual(store.load("job-1"), payload)
+        store.delete("job-1")
+        store.delete("missing")
+        self.assertIsNone(store.load("job-1"))
+
     def test_idempotency_store_locked_error_uses_resolved_path(self) -> None:
         error = IdempotencyStoreLockedError("./relative-idempotency")
 
         self.assertIn("relative-idempotency", str(error))
         self.assertTrue(error.path.endswith("relative-idempotency"))
+
+    def test_result_store_locked_error_uses_resolved_path(self) -> None:
+        error = ResultStoreLockedError("./relative-results")
+
+        self.assertIn("relative-results", str(error))
+        self.assertTrue(error.path.endswith("relative-results"))
 
     def test_sqlite_idempotency_store_round_trip_and_schema_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -3627,6 +3784,24 @@ class QueueTests(unittest.TestCase):
             )
             self.assertEqual(store.prune_completed(older_than=50, now=200.0), 1)
             self.assertIsNone(store.load("done"))
+            store.close()
+
+            connection = sqlite3.connect(path)
+            version = connection.execute("PRAGMA user_version").fetchone()
+            connection.close()
+            assert version is not None
+            self.assertEqual(int(version[0]), 1)
+
+    def test_sqlite_result_store_round_trip_and_schema_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "results.sqlite3"
+            store = SQLiteResultStore(path)
+
+            store.save("job-1", {"status": "ok"})
+            self.assertEqual(store.load("job-1"), {"status": "ok"})
+            store.delete("job-1")
+            store.delete("missing")
+            self.assertIsNone(store.load("job-1"))
             store.close()
 
             connection = sqlite3.connect(path)
@@ -3699,6 +3874,19 @@ class QueueTests(unittest.TestCase):
             ):
                 _ = SQLiteIdempotencyStore(path)
 
+    def test_sqlite_result_store_rejects_newer_schema_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "future-results.sqlite3"
+            connection = sqlite3.connect(path)
+            connection.execute("PRAGMA user_version = 999")
+            connection.commit()
+            connection.close()
+
+            with self.assertRaisesRegex(
+                ValueError, "unsupported SQLite result schema version"
+            ):
+                _ = SQLiteResultStore(path)
+
     def test_sqlite_idempotency_store_closes_connection_on_init_failure(self) -> None:
         connection = mock.Mock()
         connection.execute.side_effect = sqlite3.OperationalError("boom")
@@ -3709,6 +3897,19 @@ class QueueTests(unittest.TestCase):
         ):
             with self.assertRaises(sqlite3.OperationalError):
                 _ = SQLiteIdempotencyStore("idempotency.sqlite3")
+
+        connection.close.assert_called_once_with()
+
+    def test_sqlite_result_store_closes_connection_on_init_failure(self) -> None:
+        connection = mock.Mock()
+        connection.execute.side_effect = sqlite3.OperationalError("boom")
+
+        with mock.patch(
+            "localqueue.results.stores.sqlite.sqlite3.connect",
+            return_value=connection,
+        ):
+            with self.assertRaises(sqlite3.OperationalError):
+                _ = SQLiteResultStore("results.sqlite3")
 
         connection.close.assert_called_once_with()
 
@@ -3733,6 +3934,16 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(store.prune_completed(older_than=50, now=200.0), 1)
             self.assertIsNone(store.load("done"))
 
+    def test_lmdb_result_store_round_trip_and_delete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LMDBResultStore(tmpdir)
+
+            store.save("job-1", {"status": "ok"})
+            self.assertEqual(store.load("job-1"), {"status": "ok"})
+            store.delete("job-1")
+            store.delete("missing")
+            self.assertIsNone(store.load("job-1"))
+
     def test_lmdb_idempotency_store_handles_missing_keys_and_delete(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store = LMDBIdempotencyStore(tmpdir)
@@ -3751,6 +3962,16 @@ class QueueTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmpdir:
                 with self.assertRaises(IdempotencyStoreLockedError):
                     _ = LMDBIdempotencyStore(Path(tmpdir) / "locked")
+
+    def test_lmdb_result_store_raises_locked_error(self) -> None:
+        fake_lmdb = mock.Mock()
+        fake_lmdb.LockError = lmdb.LockError
+        fake_lmdb.open.side_effect = lmdb.LockError("locked")
+
+        with mock.patch.object(_result_lmdb, "import_lmdb", return_value=fake_lmdb):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with self.assertRaises(ResultStoreLockedError):
+                    _ = LMDBResultStore(Path(tmpdir) / "locked")
 
     def test_import_lmdb_reports_missing_optional_dependency(self) -> None:
         original_import = __import__
@@ -3771,6 +3992,26 @@ class QueueTests(unittest.TestCase):
                 RuntimeError, "LMDB support requires the optional dependency"
             ):
                 _idempotency_shared.import_lmdb()
+
+    def test_result_store_import_lmdb_reports_missing_optional_dependency(self) -> None:
+        original_import = __import__
+
+        def raising_import(
+            name: str,
+            globals: dict[str, object] | None = None,
+            locals: dict[str, object] | None = None,
+            fromlist: tuple[str, ...] = (),
+            level: int = 0,
+        ) -> object:
+            if name == "lmdb":
+                raise ModuleNotFoundError("No module named 'lmdb'")
+            return original_import(name, globals, locals, fromlist, level)
+
+        with mock.patch("builtins.__import__", side_effect=raising_import):
+            with self.assertRaisesRegex(
+                RuntimeError, "LMDB support requires the optional dependency"
+            ):
+                _result_shared.import_lmdb()
 
 
 if __name__ == "__main__":
