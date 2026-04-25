@@ -228,7 +228,7 @@ class PersistentQueue(Generic[T]):
         deadline = _deadline(timeout)
         with self._condition:
             while self.full():
-                if not block:
+                if not block or self.backpressure.overflow == "reject":
                     raise Full
                 remaining = _remaining(deadline)
                 if remaining is not None and remaining <= 0:

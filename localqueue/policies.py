@@ -14,6 +14,7 @@ RoutingPattern = Literal["point-to-point", "publish-subscribe"]
 ConsumptionPattern = Literal["pull", "push"]
 OrderingGuarantee = Literal["fifo-ready", "priority", "best-effort"]
 CommitMode = Literal["local-atomic", "transactional-outbox", "two-phase", "saga"]
+BackpressureOverflow = Literal["block", "reject"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -574,6 +575,9 @@ class BackpressureStrategy(Protocol):
     @property
     def maxsize(self) -> int: ...
 
+    @property
+    def overflow(self) -> BackpressureOverflow: ...
+
     def is_full(self, *, qsize: int) -> bool: ...
 
     def as_dict(self) -> dict[str, object]: ...
@@ -584,16 +588,47 @@ class BoundedBackpressure:
     """Bounds ready-message capacity with queue.Queue-compatible semantics."""
 
     maxsize: int = 0
+    overflow: BackpressureOverflow = "block"
 
     def __post_init__(self) -> None:
         if self.maxsize < 0:
             raise ValueError("maxsize cannot be negative")
+        if self.overflow not in ("block", "reject"):
+            raise ValueError("backpressure overflow must be 'block' or 'reject'")
 
     def is_full(self, *, qsize: int) -> bool:
         return self.maxsize > 0 and qsize >= self.maxsize
 
     def as_dict(self) -> dict[str, object]:
-        return {"type": "bounded", "maxsize": self.maxsize}
+        return {
+            "type": "bounded",
+            "maxsize": self.maxsize,
+            "overflow": self.overflow,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RejectingBackpressure:
+    """Bounds ready-message capacity and rejects producers immediately."""
+
+    maxsize: int = 0
+    overflow: BackpressureOverflow = "reject"
+
+    def __post_init__(self) -> None:
+        if self.maxsize < 0:
+            raise ValueError("maxsize cannot be negative")
+        if self.overflow != "reject":
+            raise ValueError("rejecting backpressure overflow must be 'reject'")
+
+    def is_full(self, *, qsize: int) -> bool:
+        return self.maxsize > 0 and qsize >= self.maxsize
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "type": "rejecting",
+            "maxsize": self.maxsize,
+            "overflow": self.overflow,
+        }
 
 
 @dataclass(frozen=True, slots=True)

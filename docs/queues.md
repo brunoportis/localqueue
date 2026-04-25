@@ -781,6 +781,21 @@ from localqueue import BoundedBackpressure, PersistentQueue
 queue = PersistentQueue("jobs", backpressure=BoundedBackpressure(1000))
 ```
 
+`BoundedBackpressure` defaults to `overflow="block"`, so producers wait for
+capacity according to the normal `put(block=True, timeout=...)` behavior.
+Use `RejectingBackpressure` when a full queue should reject producers
+immediately:
+
+```python
+from localqueue import PersistentQueue, RejectingBackpressure
+
+queue = PersistentQueue("jobs", backpressure=RejectingBackpressure(1000))
+```
+
+With this policy, `put()` raises `queue.Full` as soon as the ready queue is at
+capacity. This is useful when callers should handle overload explicitly instead
+of waiting inside the queue.
+
 Inspect and clean a queue with:
 
 ```python

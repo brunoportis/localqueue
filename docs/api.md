@@ -272,7 +272,14 @@ ready-before-delayed, same-timestamp stability, or priority ordering.
 
 Capacity strategy used by `PersistentQueue.full()` and blocking `put()` calls.
 `BoundedBackpressure(maxsize=0)` is unbounded. Positive values cap the number of
-ready messages, matching the existing `maxsize` constructor option.
+ready messages, matching the existing `maxsize` constructor option. The default
+`overflow="block"` preserves `queue.Queue`-style producer behavior.
+
+#### `RejectingBackpressure`
+
+Capacity strategy for producers that should fail immediately when the queue is
+full. It uses `overflow="reject"`, so `put()` raises `queue.Full` instead of
+waiting for capacity even when `block=True`.
 
 #### `PersistentWorkerConfig`
 
