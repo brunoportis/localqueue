@@ -91,6 +91,11 @@ path returns `None` by default. Pass `result_policy=ReturnStoredResult()` to
 persist the successful handler result inline in the idempotency ledger and
 return it on duplicate delivery. Pass `result_store=` to `ReturnStoredResult`
 when you want result storage to live outside the idempotency ledger.
+Pass `commit_policy=` when you want to name the coordination model explicitly.
+`LocalAtomicCommit` is the default and matches the current local flow: the
+worker records the final result and then acknowledges the queue message. The
+other built-in policies are descriptive ports for outbox, two-phase, and
+saga-style coordination.
 
 #### `NoResultPolicy`
 
@@ -104,6 +109,16 @@ results inline in the idempotency ledger and returns the cached value when a
 duplicate delivery is skipped. When `result_store=` is attached, the policy saves
 the handler result there and only keeps a `result_key` in the idempotency
 ledger.
+
+#### `CommitPolicy`
+
+Protocol for naming how a successful handler result is coordinated with queue
+acknowledgement and external side effects.
+
+#### `LocalAtomicCommit`, `TransactionalOutboxCommit`, `TwoPhaseCommit`, `SagaCommit`
+
+Built-in commit policy variants. `LocalAtomicCommit` is the default. The other
+variants are explicit ports for outbox, two-phase, and saga-style coordination.
 
 ## localqueue.results
 

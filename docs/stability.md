@@ -24,6 +24,7 @@ These names are treated as the main public contracts today:
 - `IdempotencyRecord`
 - `IdempotencyStore` and the built-in idempotency stores
 - `ResultStore` and the built-in result stores
+- `CommitPolicy` and the built-in commit policies
 - `FifoReadyOrdering`
 - `PriorityOrdering`
 - `BoundedBackpressure`

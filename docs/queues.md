@@ -164,6 +164,28 @@ queue = PersistentQueue(
 In that mode, the idempotency ledger keeps the status and `result_key`, and the
 result payload itself lives in the configured result store.
 
+The commit policy is available too:
+
+```python
+from localqueue import (
+    EffectivelyOnceDelivery,
+    LocalAtomicCommit,
+    PersistentQueue,
+    SQLiteIdempotencyStore,
+)
+
+queue = PersistentQueue(
+    "payments",
+    delivery_policy=EffectivelyOnceDelivery(
+        idempotency_store=SQLiteIdempotencyStore("payments-idempotency.sqlite3"),
+        commit_policy=LocalAtomicCommit(),
+    ),
+)
+```
+
+`LocalAtomicCommit` matches the current local behavior. The other built-in
+commit policies are named ports for outbox, two-phase, and saga coordination.
+
 The consumption behavior is available as a policy object:
 
 ```python
