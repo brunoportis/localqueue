@@ -273,6 +273,13 @@ listeners after persistence, which can be used to wake a worker loop or refresh
 an in-memory subscriber. Cross-process wake-up still belongs in a separate
 adapter.
 
+#### `InProcessNotification`
+
+Notification policy backed by `threading.Event`. `put()` sets the event after
+the message is persisted, and local threads can call `wait()` and `clear()` on
+the policy to coordinate producer wake-up with consumer polling. It is
+in-process only and does not wake other processes.
+
 #### `PointToPointRouting`
 
 Routing policy used by default. It describes the current queue behavior: each
