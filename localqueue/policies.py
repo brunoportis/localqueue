@@ -37,6 +37,46 @@ class QueueSemantics:
 LOCAL_AT_LEAST_ONCE = QueueSemantics()
 
 
+class LocalityPolicy(Protocol):
+    @property
+    def locality(self) -> Locality: ...
+
+    @property
+    def co_located_state(self) -> bool: ...
+
+    @property
+    def crosses_network_boundary(self) -> bool: ...
+
+    def as_dict(self) -> dict[str, object]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class LocalQueuePlacement:
+    """Locality policy where queue state is local to the process host."""
+
+    locality: Locality = "local"
+    co_located_state: bool = True
+    crosses_network_boundary: bool = False
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+LOCAL_QUEUE_PLACEMENT = LocalQueuePlacement()
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteQueuePlacement:
+    """Locality policy where queue state lives behind a remote boundary."""
+
+    locality: Locality = "remote"
+    co_located_state: bool = False
+    crosses_network_boundary: bool = True
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
 class DeliveryPolicy(Protocol):
     @property
     def guarantee(self) -> DeliveryGuarantee: ...
@@ -430,6 +470,7 @@ class QueuePolicySet:
     """Groups queue policies into one reusable configuration object."""
 
     semantics: QueueSemantics | None = None
+    locality_policy: LocalityPolicy | None = None
     delivery_policy: DeliveryPolicy | None = None
     consumption_policy: ConsumptionPolicy | None = None
     ordering_policy: OrderingPolicy | None = None
@@ -440,12 +481,14 @@ class QueuePolicySet:
     def at_least_once(
         cls,
         *,
+        locality_policy: LocalityPolicy | None = None,
         consumption_policy: ConsumptionPolicy | None = None,
         ordering_policy: OrderingPolicy | None = None,
         routing_policy: RoutingPolicy | None = None,
         backpressure: BackpressureStrategy | None = None,
     ) -> "QueuePolicySet":
         return cls(
+            locality_policy=locality_policy,
             delivery_policy=AT_LEAST_ONCE_DELIVERY,
             consumption_policy=consumption_policy,
             ordering_policy=ordering_policy,
@@ -457,12 +500,14 @@ class QueuePolicySet:
     def at_most_once(
         cls,
         *,
+        locality_policy: LocalityPolicy | None = None,
         consumption_policy: ConsumptionPolicy | None = None,
         ordering_policy: OrderingPolicy | None = None,
         routing_policy: RoutingPolicy | None = None,
         backpressure: BackpressureStrategy | None = None,
     ) -> "QueuePolicySet":
         return cls(
+            locality_policy=locality_policy,
             delivery_policy=AtMostOnceDelivery(),
             consumption_policy=consumption_policy,
             ordering_policy=ordering_policy,
@@ -477,6 +522,7 @@ class QueuePolicySet:
         idempotency_store: IdempotencyStore | None = None,
         result_policy: ResultPolicy = NO_RESULT_POLICY,
         commit_policy: CommitPolicy = LOCAL_ATOMIC_COMMIT,
+        locality_policy: LocalityPolicy | None = None,
         consumption_policy: ConsumptionPolicy | None = None,
         ordering_policy: OrderingPolicy | None = None,
         routing_policy: RoutingPolicy | None = None,
@@ -488,6 +534,7 @@ class QueuePolicySet:
             commit_policy=commit_policy,
         )
         return cls(
+            locality_policy=locality_policy,
             delivery_policy=delivery_policy,
             consumption_policy=consumption_policy,
             ordering_policy=ordering_policy,
@@ -498,6 +545,9 @@ class QueuePolicySet:
     def as_dict(self) -> dict[str, object]:
         return {
             "semantics": None if self.semantics is None else self.semantics.as_dict(),
+            "locality_policy": (
+                None if self.locality_policy is None else self.locality_policy.as_dict()
+            ),
             "delivery_policy": (
                 None if self.delivery_policy is None else self.delivery_policy.as_dict()
             ),

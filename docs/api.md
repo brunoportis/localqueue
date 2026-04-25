@@ -26,6 +26,7 @@ Constructor options:
 | `maxsize` | maximum number of ready messages; `0` means unbounded |
 | `retry_defaults` | Tenacity retry keyword defaults inherited by workers |
 | `semantics` | descriptive queue semantics; defaults to `LOCAL_AT_LEAST_ONCE` |
+| `locality_policy` | locality behavior; defaults to `LOCAL_QUEUE_PLACEMENT` |
 | `consumption_policy` | consumption behavior; defaults to `PULL_CONSUMPTION` |
 | `delivery_policy` | delivery behavior; defaults to `AT_LEAST_ONCE_DELIVERY` |
 | `ordering_policy` | ready-message ordering behavior; defaults to `FIFO_READY_ORDERING` |
@@ -69,15 +70,33 @@ acknowledgements, dead letters, and dedupe-key support.
 #### `QueuePolicySet`
 
 Reusable bundle for queue policies. Pass `policy_set=` to `PersistentQueue` when
-you want to keep delivery, ordering, routing, consumption, semantics, and
-backpressure choices together as one configuration object. Explicit constructor
-options remain available and conflict with the same option inside the policy set
-so configuration stays unambiguous.
+you want to keep locality, delivery, ordering, routing, consumption, semantics,
+and backpressure choices together as one configuration object. Explicit
+constructor options remain available and conflict with the same option inside
+the policy set so configuration stays unambiguous.
 
 `QueuePolicySet.at_least_once(...)`, `QueuePolicySet.at_most_once(...)`, and
 `QueuePolicySet.effectively_once(...)` build common delivery bundles with
-optional consumption, ordering, routing, and backpressure policies. The
-effectively-once factory also accepts idempotency, result, and commit policies.
+optional locality, consumption, ordering, routing, and backpressure policies.
+The effectively-once factory also accepts idempotency, result, and commit
+policies.
+
+#### `LocalityPolicy`
+
+Protocol for naming where queue state lives relative to the process using the
+queue.
+
+#### `LocalQueuePlacement`
+
+Locality policy used by default. It describes the current queue behavior: queue
+state is co-located with the process host and no network boundary is crossed to
+operate on the queue store.
+
+#### `RemoteQueuePlacement`
+
+Locality policy for queue definitions backed by a remote boundary. It names
+`locality="remote"` in the queue configuration and makes the placement explicit
+without turning the built-in local store into a distributed broker.
 
 #### `AtLeastOnceDelivery`
 
