@@ -77,6 +77,13 @@ Delivery policy for workflows that prefer losing a message over processing it
 more than once. The queue removes the message before returning it from `get()` or
 `get_message()`, so handler failures are not redelivered or dead-lettered.
 
+#### `EffectivelyOnceDelivery`
+
+Delivery policy for idempotent workflows. It keeps the at-least-once processing
+mechanics, but requires `dedupe_key` on `put()` so producers always provide a
+stable identity for the work item. This is the base contract for higher-level
+effectively-once features such as idempotency ledgers or cached results.
+
 #### `PullConsumption`
 
 Consumption policy used by default. It describes the current queue behavior:

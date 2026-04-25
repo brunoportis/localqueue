@@ -134,6 +134,8 @@ class PersistentQueue(Generic[T]):
             raise ValueError(_NEGATIVE_DELAY_ERROR)
         if dedupe_key is not None and not dedupe_key:
             raise ValueError("dedupe_key cannot be empty")
+        if _requires_dedupe_key(self.delivery_policy) and dedupe_key is None:
+            raise ValueError("dedupe_key is required by the active delivery_policy")
         _validate_priority(priority)
         if priority > 0 and self.ordering_policy.guarantee != "priority":
             raise ValueError("priority requires PriorityOrdering")
@@ -378,6 +380,10 @@ def _validate_priority(priority: int) -> None:
         raise TypeError("priority must be an integer")
     if priority < 0:
         raise ValueError("priority cannot be negative")
+
+
+def _requires_dedupe_key(delivery_policy: DeliveryPolicy) -> bool:
+    return bool(getattr(delivery_policy, "requires_dedupe_key", False))
 
 
 def _error_payload(error: BaseException | str | None) -> dict[str, Any] | None:

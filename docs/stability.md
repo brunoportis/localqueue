@@ -18,6 +18,7 @@ These names are treated as the main public contracts today:
 - `PointToPointRouting`
 - `AtLeastOnceDelivery`
 - `AtMostOnceDelivery`
+- `EffectivelyOnceDelivery`
 - `FifoReadyOrdering`
 - `PriorityOrdering`
 - `BoundedBackpressure`

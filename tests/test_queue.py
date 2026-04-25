@@ -23,6 +23,7 @@ from localqueue import (
     POINT_TO_POINT_ROUTING,
     PULL_CONSUMPTION,
     AtLeastOnceDelivery,
+    EffectivelyOnceDelivery,
     AtMostOnceDelivery,
     BoundedBackpressure,
     FifoReadyOrdering,
@@ -288,6 +289,16 @@ class QueueTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "priority requires PriorityOrdering"):
             _ = queue.put("item", priority=1)
 
+        effectively_once_queue = PersistentQueue(
+            "test",
+            store=store,
+            delivery_policy=EffectivelyOnceDelivery(),
+        )
+        with self.assertRaisesRegex(
+            ValueError, "dedupe_key is required by the active delivery_policy"
+        ):
+            _ = effectively_once_queue.put("item")
+
         with self.assertRaisesRegex(
             ValueError, "semantics delivery must match delivery_policy guarantee"
         ):
@@ -528,6 +539,27 @@ class QueueTests(unittest.TestCase):
             },
         )
 
+    def test_constructor_accepts_effectively_once_delivery_policy(self) -> None:
+        delivery_policy = EffectivelyOnceDelivery()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=delivery_policy,
+        )
+
+        self.assertEqual(queue.semantics.delivery, "effectively-once")
+        self.assertIs(queue.delivery_policy, delivery_policy)
+        self.assertEqual(
+            queue.delivery_policy.as_dict(),
+            {
+                "guarantee": "effectively-once",
+                "ack_timing": "after-success",
+                "uses_leases": True,
+                "redelivers_expired_leases": True,
+                "requires_dedupe_key": True,
+            },
+        )
+
     def test_constructor_accepts_backpressure_strategy(self) -> None:
         queue = PersistentQueue(
             "test",
@@ -705,6 +737,21 @@ class QueueTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "^dedupe_key cannot be empty$"):
             _ = queue.put("item", dedupe_key="")
+
+    def test_effectively_once_put_requires_dedupe_key(self) -> None:
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=EffectivelyOnceDelivery(),
+        )
+
+        with self.assertRaisesRegex(
+            ValueError, "dedupe_key is required by the active delivery_policy"
+        ):
+            _ = queue.put("item")
+
+        message = queue.put("item", dedupe_key="job-1")
+        self.assertEqual(message.dedupe_key, "job-1")
 
     def test_priority_ordering_delivers_higher_priority_first(self) -> None:
         queue = PersistentQueue(
