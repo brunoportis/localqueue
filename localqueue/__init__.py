@@ -6,6 +6,12 @@ except importlib.metadata.PackageNotFoundError:
     __version__ = "unknown"
 
 from .queue import PersistentQueue
+from .policies import (
+    LOCAL_AT_LEAST_ONCE,
+    BackpressureStrategy,
+    BoundedBackpressure,
+    QueueSemantics,
+)
 from .retry import (
     AttemptStore,
     AttemptStoreLockedError,
@@ -39,8 +45,11 @@ from .worker import PersistentWorkerConfig, persistent_async_worker, persistent_
 __all__ = [
     "AttemptStore",
     "AttemptStoreLockedError",
+    "BackpressureStrategy",
+    "BoundedBackpressure",
     "LMDBAttemptStore",
     "LMDBQueueStore",
+    "LOCAL_AT_LEAST_ONCE",
     "MemoryAttemptStore",
     "MemoryQueueStore",
     "PersistentAsyncRetrying",
@@ -49,6 +58,7 @@ __all__ = [
     "PersistentRetrying",
     "PersistentWorkerConfig",
     "QueueMessage",
+    "QueueSemantics",
     "QueueStats",
     "QueueStore",
     "QueueStoreLockedError",

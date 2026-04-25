@@ -13,6 +13,8 @@ room to improve the rest.
 These names are treated as the main public contracts today:
 
 - `PersistentQueue`
+- `QueueSemantics`
+- `BoundedBackpressure`
 - `QueueMessage`
 - `QueueStats`
 - `QueueStore` and the built-in queue stores

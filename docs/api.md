@@ -25,6 +25,8 @@ Constructor options:
 | `lease_timeout` | seconds before an inflight message is redelivered |
 | `maxsize` | maximum number of ready messages; `0` means unbounded |
 | `retry_defaults` | Tenacity retry keyword defaults inherited by workers |
+| `semantics` | descriptive queue semantics; defaults to `LOCAL_AT_LEAST_ONCE` |
+| `backpressure` | strategy object for capacity checks; defaults from `maxsize` |
 
 Core methods:
 
@@ -50,6 +52,20 @@ Core methods:
 | `empty()` | whether there are no ready messages |
 | `full()` | whether ready capacity is reached |
 | `purge()` | remove all queue records |
+
+#### `QueueSemantics`
+
+Descriptive value object for the queueing concepts implemented by a
+configuration. The default `LOCAL_AT_LEAST_ONCE` describes the current
+`PersistentQueue` behavior: local storage, at-least-once delivery,
+point-to-point routing, pull consumption, ready-order delivery, leases,
+acknowledgements, dead letters, and dedupe-key support.
+
+#### `BoundedBackpressure`
+
+Capacity strategy used by `PersistentQueue.full()` and blocking `put()` calls.
+`BoundedBackpressure(maxsize=0)` is unbounded. Positive values cap the number of
+ready messages, matching the existing `maxsize` constructor option.
 
 #### `PersistentWorkerConfig`
 
