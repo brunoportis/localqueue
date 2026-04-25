@@ -32,9 +32,7 @@ later.
 
 Create a scratch directory and a small worker script once:
 
-```bash
-mkdir -p /tmp/localqueue-use-cases
-cat > /tmp/localqueue-use-cases/email_worker.py <<'PY'
+```python
 from __future__ import annotations
 
 import json
@@ -46,7 +44,6 @@ address = payload["to"]
 if payload.get("fail"):
     raise ConnectionError(f"could not deliver email to {address}")
 print(f"sent email to {address}")
-PY
 ```
 
 ## Minimal flow
@@ -76,8 +73,3 @@ Check that the queue is empty again:
 localqueue queue stats emails
 ```
 
-## When to choose something else
-
-Use a broker or managed queue instead when producers and consumers run on
-different machines, strict global ordering matters, or the queue is part of a
-distributed system boundary.
