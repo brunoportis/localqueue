@@ -17,6 +17,8 @@ These names are treated as the main public contracts today:
 - `QueuePolicySet`
 - `LocalityPolicy` and the built-in locality policies
 - `LeasePolicy` and the built-in lease policies
+- `AcknowledgementPolicy` and the built-in acknowledgement policies
+- `DeadLetterPolicy` and the built-in dead-letter policies
 - `PullConsumption`
 - `PushConsumption`
 - `PointToPointRouting`

@@ -99,6 +99,17 @@ queue = PersistentQueue("events", lease_policy=FixedLeaseTimeout(60.0))
 With the built-in stores, an inflight message becomes eligible for redelivery
 after the fixed timeout expires unless it is acknowledged first.
 
+Acknowledgement and dead-letter behavior are policy objects as well:
+
+```python
+queue.acknowledgement_policy.as_dict()
+queue.dead_letter_policy.as_dict()
+```
+
+The defaults are `EXPLICIT_ACKNOWLEDGEMENT` and `DEAD_LETTER_QUEUE`: successful
+work is acknowledged explicitly, and failed messages can be retained for
+inspection and requeue.
+
 The delivery behavior is also available as a policy object:
 
 ```python
