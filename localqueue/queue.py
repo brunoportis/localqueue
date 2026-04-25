@@ -12,6 +12,7 @@ from .policies import (
     AT_LEAST_ONCE_DELIVERY,
     DEAD_LETTER_QUEUE,
     EXPLICIT_ACKNOWLEDGEMENT,
+    DEDUPE_KEY_SUPPORT,
     FIFO_READY_ORDERING,
     FIXED_LEASE_TIMEOUT,
     POINT_TO_POINT_ROUTING,
@@ -21,6 +22,7 @@ from .policies import (
     DeadLetterPolicy,
     DeliveryPolicy,
     FixedLeaseTimeout,
+    DeduplicationPolicy,
     LOCAL_QUEUE_PLACEMENT,
     LeasePolicy,
     LocalityPolicy,
@@ -44,6 +46,7 @@ class PersistentQueue(Generic[T]):
     lease_policy: LeasePolicy
     acknowledgement_policy: AcknowledgementPolicy
     dead_letter_policy: DeadLetterPolicy
+    deduplication_policy: DeduplicationPolicy
     maxsize: int
     semantics: QueueSemantics
     locality_policy: LocalityPolicy
@@ -68,6 +71,7 @@ class PersistentQueue(Generic[T]):
         lease_policy: LeasePolicy | None = None,
         acknowledgement_policy: AcknowledgementPolicy | None = None,
         dead_letter_policy: DeadLetterPolicy | None = None,
+        deduplication_policy: DeduplicationPolicy | None = None,
         maxsize: int = 0,
         retry_defaults: Mapping[str, Any] | None = None,
         semantics: QueueSemantics | None = None,
@@ -87,6 +91,7 @@ class PersistentQueue(Generic[T]):
             lease_policy,
             acknowledgement_policy,
             dead_letter_policy,
+            deduplication_policy,
             consumption_policy,
             delivery_policy,
             ordering_policy,
@@ -99,6 +104,7 @@ class PersistentQueue(Generic[T]):
             lease_policy=lease_policy,
             acknowledgement_policy=acknowledgement_policy,
             dead_letter_policy=dead_letter_policy,
+            deduplication_policy=deduplication_policy,
             consumption_policy=consumption_policy,
             delivery_policy=delivery_policy,
             ordering_policy=ordering_policy,
@@ -134,6 +140,9 @@ class PersistentQueue(Generic[T]):
         resolved_dead_letter = (
             DEAD_LETTER_QUEUE if dead_letter_policy is None else dead_letter_policy
         )
+        resolved_deduplication = (
+            DEDUPE_KEY_SUPPORT if deduplication_policy is None else deduplication_policy
+        )
         resolved_consumption = (
             PULL_CONSUMPTION if consumption_policy is None else consumption_policy
         )
@@ -155,6 +164,7 @@ class PersistentQueue(Generic[T]):
                 leases=resolved_lease.uses_leases,
                 acknowledgements=resolved_acknowledgement.acknowledgements,
                 dead_letters=resolved_dead_letter.dead_letters,
+                deduplication=resolved_deduplication.deduplication,
             )
         )
         _validate_semantics(
@@ -163,6 +173,7 @@ class PersistentQueue(Generic[T]):
             lease_policy=resolved_lease,
             acknowledgement_policy=resolved_acknowledgement,
             dead_letter_policy=resolved_dead_letter,
+            deduplication_policy=resolved_deduplication,
             delivery_policy=resolved_delivery,
             consumption_policy=resolved_consumption,
             ordering_policy=resolved_ordering,
@@ -173,6 +184,7 @@ class PersistentQueue(Generic[T]):
         self.lease_policy = resolved_lease
         self.acknowledgement_policy = resolved_acknowledgement
         self.dead_letter_policy = resolved_dead_letter
+        self.deduplication_policy = resolved_deduplication
         self.lease_timeout = resolved_lease.timeout
         self.backpressure = (
             BoundedBackpressure(maxsize) if backpressure is None else backpressure
@@ -204,6 +216,10 @@ class PersistentQueue(Generic[T]):
             raise ValueError(_NEGATIVE_DELAY_ERROR)
         if dedupe_key is not None and not dedupe_key:
             raise ValueError("dedupe_key cannot be empty")
+        if dedupe_key is not None and not self.deduplication_policy.accepts_dedupe_key:
+            raise ValueError(
+                "dedupe_key is not supported by the active deduplication_policy"
+            )
         if _requires_dedupe_key(self.delivery_policy) and dedupe_key is None:
             raise ValueError("dedupe_key is required by the active delivery_policy")
         _validate_priority(priority)
@@ -436,6 +452,7 @@ def _apply_policy_set(
     lease_policy: LeasePolicy | None,
     acknowledgement_policy: AcknowledgementPolicy | None,
     dead_letter_policy: DeadLetterPolicy | None,
+    deduplication_policy: DeduplicationPolicy | None,
     consumption_policy: ConsumptionPolicy | None,
     delivery_policy: DeliveryPolicy | None,
     ordering_policy: OrderingPolicy | None,
@@ -448,6 +465,7 @@ def _apply_policy_set(
     LeasePolicy | None,
     AcknowledgementPolicy | None,
     DeadLetterPolicy | None,
+    DeduplicationPolicy | None,
     ConsumptionPolicy | None,
     DeliveryPolicy | None,
     OrderingPolicy | None,
@@ -461,6 +479,7 @@ def _apply_policy_set(
             lease_policy,
             acknowledgement_policy,
             dead_letter_policy,
+            deduplication_policy,
             consumption_policy,
             delivery_policy,
             ordering_policy,
@@ -490,6 +509,11 @@ def _apply_policy_set(
             "dead_letter_policy",
             dead_letter_policy,
             policy_set.dead_letter_policy,
+        ),
+        _policy_value(
+            "deduplication_policy",
+            deduplication_policy,
+            policy_set.deduplication_policy,
         ),
         _policy_value(
             "consumption_policy",
@@ -527,6 +551,7 @@ def _validate_semantics(
     lease_policy: LeasePolicy,
     acknowledgement_policy: AcknowledgementPolicy,
     dead_letter_policy: DeadLetterPolicy,
+    deduplication_policy: DeduplicationPolicy,
     delivery_policy: DeliveryPolicy,
     consumption_policy: ConsumptionPolicy,
     ordering_policy: OrderingPolicy,
@@ -544,6 +569,10 @@ def _validate_semantics(
     if semantics.dead_letters != dead_letter_policy.dead_letters:
         raise ValueError(
             "semantics dead_letters must match dead_letter_policy dead_letters"
+        )
+    if semantics.deduplication != deduplication_policy.deduplication:
+        raise ValueError(
+            "semantics deduplication must match deduplication_policy deduplication"
         )
     if semantics.delivery != delivery_policy.guarantee:
         raise ValueError("semantics delivery must match delivery_policy guarantee")

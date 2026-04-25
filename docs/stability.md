@@ -19,6 +19,7 @@ These names are treated as the main public contracts today:
 - `LeasePolicy` and the built-in lease policies
 - `AcknowledgementPolicy` and the built-in acknowledgement policies
 - `DeadLetterPolicy` and the built-in dead-letter policies
+- `DeduplicationPolicy` and the built-in deduplication policies
 - `PullConsumption`
 - `PushConsumption`
 - `PointToPointRouting`

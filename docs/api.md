@@ -30,6 +30,7 @@ Constructor options:
 | `locality_policy` | locality behavior; defaults to `LOCAL_QUEUE_PLACEMENT` |
 | `acknowledgement_policy` | acknowledgement behavior; defaults to `EXPLICIT_ACKNOWLEDGEMENT` |
 | `dead_letter_policy` | dead-letter behavior; defaults to `DEAD_LETTER_QUEUE` |
+| `deduplication_policy` | deduplication behavior; defaults to `DEDUPE_KEY_SUPPORT` |
 | `consumption_policy` | consumption behavior; defaults to `PULL_CONSUMPTION` |
 | `delivery_policy` | delivery behavior; defaults to `AT_LEAST_ONCE_DELIVERY` |
 | `ordering_policy` | ready-message ordering behavior; defaults to `FIFO_READY_ORDERING` |
@@ -81,9 +82,9 @@ unambiguous.
 
 `QueuePolicySet.at_least_once(...)`, `QueuePolicySet.at_most_once(...)`, and
 `QueuePolicySet.effectively_once(...)` build common delivery bundles with
-optional locality, lease, acknowledgement, dead-letter, consumption, ordering,
-routing, and backpressure policies. The effectively-once factory also accepts
-idempotency, result, and commit policies.
+optional locality, lease, acknowledgement, dead-letter, deduplication,
+consumption, ordering, routing, and backpressure policies. The effectively-once
+factory also accepts idempotency, result, and commit policies.
 
 #### `LocalityPolicy`
 
@@ -133,6 +134,22 @@ Protocol for naming how failed messages leave normal delivery.
 Dead-letter policy used by default. It describes the current queue behavior:
 failed messages can be moved to inspectable dead-letter storage and later
 requeued.
+
+#### `DeduplicationPolicy`
+
+Protocol for naming whether the queue tracks stable dedupe keys.
+
+#### `DedupeKeySupport`
+
+Deduplication policy used by default. It describes the current queue behavior:
+messages may carry a stable `dedupe_key` and duplicate keys can reuse the same
+stored message.
+
+#### `NoDeduplication`
+
+Deduplication policy for queues that should not accept stable dedupe keys. It
+names the `deduplication=False` contract explicitly while leaving the rest of
+the queue configuration unchanged.
 
 #### `AtLeastOnceDelivery`
 

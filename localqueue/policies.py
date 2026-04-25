@@ -170,6 +170,44 @@ class DeadLetterQueue:
 DEAD_LETTER_QUEUE = DeadLetterQueue()
 
 
+class DeduplicationPolicy(Protocol):
+    @property
+    def deduplication(self) -> bool: ...
+
+    @property
+    def accepts_dedupe_key(self) -> bool: ...
+
+    def as_dict(self) -> dict[str, object]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class DedupeKeySupport:
+    """Deduplication policy where messages may carry an optional stable key."""
+
+    deduplication: bool = True
+    accepts_dedupe_key: bool = True
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+DEDUPE_KEY_SUPPORT = DedupeKeySupport()
+
+
+@dataclass(frozen=True, slots=True)
+class NoDeduplication:
+    """Deduplication policy where stable dedupe keys are not accepted."""
+
+    deduplication: bool = False
+    accepts_dedupe_key: bool = False
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+NO_DEDUPLICATION = NoDeduplication()
+
+
 class DeliveryPolicy(Protocol):
     @property
     def guarantee(self) -> DeliveryGuarantee: ...
@@ -567,6 +605,7 @@ class QueuePolicySet:
     lease_policy: LeasePolicy | None = None
     acknowledgement_policy: AcknowledgementPolicy | None = None
     dead_letter_policy: DeadLetterPolicy | None = None
+    deduplication_policy: DeduplicationPolicy | None = None
     delivery_policy: DeliveryPolicy | None = None
     consumption_policy: ConsumptionPolicy | None = None
     ordering_policy: OrderingPolicy | None = None
@@ -581,6 +620,7 @@ class QueuePolicySet:
         lease_policy: LeasePolicy | None = None,
         acknowledgement_policy: AcknowledgementPolicy | None = None,
         dead_letter_policy: DeadLetterPolicy | None = None,
+        deduplication_policy: DeduplicationPolicy | None = None,
         consumption_policy: ConsumptionPolicy | None = None,
         ordering_policy: OrderingPolicy | None = None,
         routing_policy: RoutingPolicy | None = None,
@@ -591,6 +631,7 @@ class QueuePolicySet:
             lease_policy=lease_policy,
             acknowledgement_policy=acknowledgement_policy,
             dead_letter_policy=dead_letter_policy,
+            deduplication_policy=deduplication_policy,
             delivery_policy=AT_LEAST_ONCE_DELIVERY,
             consumption_policy=consumption_policy,
             ordering_policy=ordering_policy,
@@ -606,6 +647,7 @@ class QueuePolicySet:
         lease_policy: LeasePolicy | None = None,
         acknowledgement_policy: AcknowledgementPolicy | None = None,
         dead_letter_policy: DeadLetterPolicy | None = None,
+        deduplication_policy: DeduplicationPolicy | None = None,
         consumption_policy: ConsumptionPolicy | None = None,
         ordering_policy: OrderingPolicy | None = None,
         routing_policy: RoutingPolicy | None = None,
@@ -616,6 +658,7 @@ class QueuePolicySet:
             lease_policy=lease_policy,
             acknowledgement_policy=acknowledgement_policy,
             dead_letter_policy=dead_letter_policy,
+            deduplication_policy=deduplication_policy,
             delivery_policy=AtMostOnceDelivery(),
             consumption_policy=consumption_policy,
             ordering_policy=ordering_policy,
@@ -634,6 +677,7 @@ class QueuePolicySet:
         lease_policy: LeasePolicy | None = None,
         acknowledgement_policy: AcknowledgementPolicy | None = None,
         dead_letter_policy: DeadLetterPolicy | None = None,
+        deduplication_policy: DeduplicationPolicy | None = None,
         consumption_policy: ConsumptionPolicy | None = None,
         ordering_policy: OrderingPolicy | None = None,
         routing_policy: RoutingPolicy | None = None,
@@ -649,6 +693,7 @@ class QueuePolicySet:
             lease_policy=lease_policy,
             acknowledgement_policy=acknowledgement_policy,
             dead_letter_policy=dead_letter_policy,
+            deduplication_policy=deduplication_policy,
             delivery_policy=delivery_policy,
             consumption_policy=consumption_policy,
             ordering_policy=ordering_policy,
@@ -674,6 +719,11 @@ class QueuePolicySet:
                 None
                 if self.dead_letter_policy is None
                 else self.dead_letter_policy.as_dict()
+            ),
+            "deduplication_policy": (
+                None
+                if self.deduplication_policy is None
+                else self.deduplication_policy.as_dict()
             ),
             "delivery_policy": (
                 None if self.delivery_policy is None else self.delivery_policy.as_dict()
