@@ -74,8 +74,10 @@ backpressure choices together as one configuration object. Explicit constructor
 options remain available and conflict with the same option inside the policy set
 so configuration stays unambiguous.
 
-`QueuePolicySet.effectively_once(...)` builds the common effectively-once bundle
-with optional idempotency, result, commit, ordering, and backpressure policies.
+`QueuePolicySet.at_least_once(...)`, `QueuePolicySet.at_most_once(...)`, and
+`QueuePolicySet.effectively_once(...)` build common delivery bundles with
+optional consumption, ordering, routing, and backpressure policies. The
+effectively-once factory also accepts idempotency, result, and commit policies.
 
 #### `AtLeastOnceDelivery`
 

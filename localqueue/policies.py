@@ -400,13 +400,49 @@ class QueuePolicySet:
     backpressure: BackpressureStrategy | None = None
 
     @classmethod
+    def at_least_once(
+        cls,
+        *,
+        consumption_policy: ConsumptionPolicy | None = None,
+        ordering_policy: OrderingPolicy | None = None,
+        routing_policy: RoutingPolicy | None = None,
+        backpressure: BackpressureStrategy | None = None,
+    ) -> "QueuePolicySet":
+        return cls(
+            delivery_policy=AT_LEAST_ONCE_DELIVERY,
+            consumption_policy=consumption_policy,
+            ordering_policy=ordering_policy,
+            routing_policy=routing_policy,
+            backpressure=backpressure,
+        )
+
+    @classmethod
+    def at_most_once(
+        cls,
+        *,
+        consumption_policy: ConsumptionPolicy | None = None,
+        ordering_policy: OrderingPolicy | None = None,
+        routing_policy: RoutingPolicy | None = None,
+        backpressure: BackpressureStrategy | None = None,
+    ) -> "QueuePolicySet":
+        return cls(
+            delivery_policy=AtMostOnceDelivery(),
+            consumption_policy=consumption_policy,
+            ordering_policy=ordering_policy,
+            routing_policy=routing_policy,
+            backpressure=backpressure,
+        )
+
+    @classmethod
     def effectively_once(
         cls,
         *,
         idempotency_store: IdempotencyStore | None = None,
         result_policy: ResultPolicy = NO_RESULT_POLICY,
         commit_policy: CommitPolicy = LOCAL_ATOMIC_COMMIT,
+        consumption_policy: ConsumptionPolicy | None = None,
         ordering_policy: OrderingPolicy | None = None,
+        routing_policy: RoutingPolicy | None = None,
         backpressure: BackpressureStrategy | None = None,
     ) -> "QueuePolicySet":
         delivery_policy = EffectivelyOnceDelivery(
@@ -416,7 +452,9 @@ class QueuePolicySet:
         )
         return cls(
             delivery_policy=delivery_policy,
+            consumption_policy=consumption_policy,
             ordering_policy=ordering_policy,
+            routing_policy=routing_policy,
             backpressure=backpressure,
         )
 
