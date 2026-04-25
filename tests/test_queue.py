@@ -20,6 +20,7 @@ from localqueue.retry import MemoryAttemptStore, RetryRecord, SQLiteAttemptStore
 from localqueue import (
     AT_LEAST_ONCE_DELIVERY,
     FIFO_READY_ORDERING,
+    PULL_CONSUMPTION,
     AtLeastOnceDelivery,
     BoundedBackpressure,
     FifoReadyOrdering,
@@ -28,6 +29,7 @@ from localqueue import (
     MemoryQueueStore,
     PersistentQueue,
     PersistentWorkerConfig,
+    PullConsumption,
     QueueSemantics,
     QueueMessage,
     QueueStoreLockedError,
@@ -293,6 +295,16 @@ class QueueTests(unittest.TestCase):
             )
 
         with self.assertRaisesRegex(
+            ValueError, "semantics consumption must match consumption_policy pattern"
+        ):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                semantics=QueueSemantics(consumption="push"),
+                consumption_policy=PullConsumption(),
+            )
+
+        with self.assertRaisesRegex(
             ValueError, "pass either maxsize= or backpressure=, not both"
         ):
             _ = PersistentQueue(
@@ -344,6 +356,7 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(queue.maxsize, 0)
             self.assertEqual(queue.backpressure, BoundedBackpressure())
             self.assertEqual(queue.semantics, LOCAL_AT_LEAST_ONCE)
+            self.assertEqual(queue.consumption_policy, PULL_CONSUMPTION)
             self.assertEqual(queue.delivery_policy, AT_LEAST_ONCE_DELIVERY)
             self.assertEqual(queue.ordering_policy, FIFO_READY_ORDERING)
             self.assertIsNone(queue._store)
@@ -354,7 +367,6 @@ class QueueTests(unittest.TestCase):
             locality="local",
             delivery="at-least-once",
             routing="publish-subscribe",
-            consumption="push",
         )
         queue = PersistentQueue(
             "test",
@@ -369,12 +381,30 @@ class QueueTests(unittest.TestCase):
                 "locality": "local",
                 "delivery": "at-least-once",
                 "routing": "publish-subscribe",
-                "consumption": "push",
+                "consumption": "pull",
                 "ordering": "fifo-ready",
                 "leases": True,
                 "acknowledgements": True,
                 "dead_letters": True,
                 "deduplication": True,
+            },
+        )
+
+    def test_constructor_accepts_explicit_consumption_policy(self) -> None:
+        consumption_policy = PullConsumption()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            consumption_policy=consumption_policy,
+        )
+
+        self.assertIs(queue.consumption_policy, consumption_policy)
+        self.assertEqual(
+            queue.consumption_policy.as_dict(),
+            {
+                "pattern": "pull",
+                "consumer_requests_messages": True,
+                "producer_invokes_handler": False,
             },
         )
 
