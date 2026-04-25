@@ -16,6 +16,7 @@ from .policies import (
     FIFO_READY_ORDERING,
     FIXED_LEASE_TIMEOUT,
     NO_DISPATCHER,
+    NO_NOTIFICATION,
     NO_SUBSCRIPTIONS,
     POINT_TO_POINT_ROUTING,
     PULL_CONSUMPTION,
@@ -29,6 +30,7 @@ from .policies import (
     LOCAL_QUEUE_PLACEMENT,
     LeasePolicy,
     LocalityPolicy,
+    NotificationPolicy,
     OrderingPolicy,
     RoutingPolicy,
     SubscriptionPolicy,
@@ -57,6 +59,7 @@ class PersistentQueue(Generic[T]):
     consumption_policy: ConsumptionPolicy
     delivery_policy: DeliveryPolicy
     dispatch_policy: DispatchPolicy
+    notification_policy: NotificationPolicy
     ordering_policy: OrderingPolicy
     routing_policy: RoutingPolicy
     subscription_policy: SubscriptionPolicy
@@ -85,6 +88,7 @@ class PersistentQueue(Generic[T]):
         consumption_policy: ConsumptionPolicy | None = None,
         delivery_policy: DeliveryPolicy | None = None,
         dispatch_policy: DispatchPolicy | None = None,
+        notification_policy: NotificationPolicy | None = None,
         ordering_policy: OrderingPolicy | None = None,
         routing_policy: RoutingPolicy | None = None,
         subscription_policy: SubscriptionPolicy | None = None,
@@ -103,6 +107,7 @@ class PersistentQueue(Generic[T]):
             consumption_policy,
             delivery_policy,
             dispatch_policy,
+            notification_policy,
             ordering_policy,
             routing_policy,
             subscription_policy,
@@ -118,6 +123,7 @@ class PersistentQueue(Generic[T]):
             consumption_policy=consumption_policy,
             delivery_policy=delivery_policy,
             dispatch_policy=dispatch_policy,
+            notification_policy=notification_policy,
             ordering_policy=ordering_policy,
             routing_policy=routing_policy,
             subscription_policy=subscription_policy,
@@ -161,6 +167,9 @@ class PersistentQueue(Generic[T]):
         resolved_dispatch = (
             NO_DISPATCHER if dispatch_policy is None else dispatch_policy
         )
+        resolved_notification = (
+            NO_NOTIFICATION if notification_policy is None else notification_policy
+        )
         resolved_ordering = (
             FIFO_READY_ORDERING if ordering_policy is None else ordering_policy
         )
@@ -184,6 +193,7 @@ class PersistentQueue(Generic[T]):
                 dead_letters=resolved_dead_letter.dead_letters,
                 deduplication=resolved_deduplication.deduplication,
                 subscriptions=resolved_subscription.subscriptions,
+                notifications=resolved_notification.notifies,
             )
         )
         _validate_semantics(
@@ -198,6 +208,7 @@ class PersistentQueue(Generic[T]):
             ordering_policy=resolved_ordering,
             routing_policy=resolved_routing,
             subscription_policy=resolved_subscription,
+            notification_policy=resolved_notification,
         )
 
         self.name = name
@@ -215,6 +226,7 @@ class PersistentQueue(Generic[T]):
         self.consumption_policy = resolved_consumption
         self.delivery_policy = resolved_delivery
         self.dispatch_policy = resolved_dispatch
+        self.notification_policy = resolved_notification
         self.ordering_policy = resolved_ordering
         self.routing_policy = resolved_routing
         self.subscription_policy = resolved_subscription
@@ -264,8 +276,7 @@ class PersistentQueue(Generic[T]):
                 priority=priority,
             )
             self._condition.notify_all()
-        if self.dispatch_policy.dispatches_on_put:
-            self.dispatch_policy.dispatch(message)
+        self._run_post_put_hooks(message)
         return message
 
     def put_nowait(self, item: T) -> QueueMessage:
@@ -453,6 +464,12 @@ class PersistentQueue(Generic[T]):
     def _remove_unfinished(self, message_id: str) -> None:
         _ = self._unfinished.pop(message_id, None)
 
+    def _run_post_put_hooks(self, message: QueueMessage) -> None:
+        if self.notification_policy.notifies_on_put:
+            self.notification_policy.notify(message)
+        if self.dispatch_policy.dispatches_on_put:
+            self.dispatch_policy.dispatch(message)
+
 
 def _deadline(timeout: float | None) -> float | None:
     if timeout is None:
@@ -480,6 +497,7 @@ def _apply_policy_set(
     consumption_policy: ConsumptionPolicy | None,
     delivery_policy: DeliveryPolicy | None,
     dispatch_policy: DispatchPolicy | None,
+    notification_policy: NotificationPolicy | None,
     ordering_policy: OrderingPolicy | None,
     routing_policy: RoutingPolicy | None,
     subscription_policy: SubscriptionPolicy | None,
@@ -495,6 +513,7 @@ def _apply_policy_set(
     ConsumptionPolicy | None,
     DeliveryPolicy | None,
     DispatchPolicy | None,
+    NotificationPolicy | None,
     OrderingPolicy | None,
     RoutingPolicy | None,
     SubscriptionPolicy | None,
@@ -511,6 +530,7 @@ def _apply_policy_set(
             consumption_policy,
             delivery_policy,
             dispatch_policy,
+            notification_policy,
             ordering_policy,
             routing_policy,
             subscription_policy,
@@ -552,6 +572,11 @@ def _apply_policy_set(
         ),
         _policy_value("delivery_policy", delivery_policy, policy_set.delivery_policy),
         _policy_value("dispatch_policy", dispatch_policy, policy_set.dispatch_policy),
+        _policy_value(
+            "notification_policy",
+            notification_policy,
+            policy_set.notification_policy,
+        ),
         _policy_value("ordering_policy", ordering_policy, policy_set.ordering_policy),
         _policy_value("routing_policy", routing_policy, policy_set.routing_policy),
         _policy_value(
@@ -593,6 +618,7 @@ def _validate_semantics(
     ordering_policy: OrderingPolicy,
     routing_policy: RoutingPolicy,
     subscription_policy: SubscriptionPolicy,
+    notification_policy: NotificationPolicy,
 ) -> None:
     if semantics.locality != locality_policy.locality:
         raise ValueError("semantics locality must match locality_policy locality")
@@ -603,6 +629,7 @@ def _validate_semantics(
         dead_letter_policy=dead_letter_policy,
         deduplication_policy=deduplication_policy,
         subscription_policy=subscription_policy,
+        notification_policy=notification_policy,
     )
     if semantics.delivery != delivery_policy.guarantee:
         raise ValueError("semantics delivery must match delivery_policy guarantee")
@@ -622,6 +649,7 @@ def _validate_semantics_flags(
     dead_letter_policy: DeadLetterPolicy,
     deduplication_policy: DeduplicationPolicy,
     subscription_policy: SubscriptionPolicy,
+    notification_policy: NotificationPolicy,
 ) -> None:
     if semantics.leases != lease_policy.uses_leases:
         raise ValueError("semantics leases must match lease_policy uses_leases")
@@ -641,6 +669,10 @@ def _validate_semantics_flags(
     if semantics.subscriptions != subscription_policy.subscriptions:
         raise ValueError(
             "semantics subscriptions must match subscription_policy subscriptions"
+        )
+    if semantics.notifications != notification_policy.notifies:
+        raise ValueError(
+            "semantics notifications must match notification_policy notifies"
         )
 
 

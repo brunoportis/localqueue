@@ -43,6 +43,7 @@ from localqueue import (
     BestEffortOrdering,
     BoundedBackpressure,
     CallbackDispatcher,
+    CallbackNotification,
     DedupeKeySupport,
     FixedLeaseTimeout,
     FifoReadyOrdering,
@@ -54,6 +55,7 @@ from localqueue import (
     MemoryResultStore,
     MemoryQueueStore,
     NO_DISPATCHER,
+    NO_NOTIFICATION,
     NO_RESULT_POLICY,
     NO_SUBSCRIPTIONS,
     PersistentQueue,
@@ -66,6 +68,7 @@ from localqueue import (
     RejectingBackpressure,
     NoDeduplication,
     NoDispatcher,
+    NoNotification,
     QueuePolicySet,
     QueueSemantics,
     QueueMessage,
@@ -357,6 +360,9 @@ class QueueTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "handlers cannot be empty"):
             _ = CallbackDispatcher(())
 
+        with self.assertRaisesRegex(ValueError, "listeners cannot be empty"):
+            _ = CallbackNotification(())
+
         queue = PersistentQueue("test", store=store)
         with self.assertRaisesRegex(TypeError, "priority must be an integer"):
             _ = queue.put("item", priority=cast("Any", 1.5))
@@ -491,6 +497,17 @@ class QueueTests(unittest.TestCase):
             )
 
         with self.assertRaisesRegex(
+            ValueError,
+            "semantics notifications must match notification_policy notifies",
+        ):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                semantics=QueueSemantics(notifications=True),
+                notification_policy=NO_NOTIFICATION,
+            )
+
+        with self.assertRaisesRegex(
             ValueError, "pass either maxsize= or backpressure=, not both"
         ):
             _ = PersistentQueue(
@@ -606,6 +623,19 @@ class QueueTests(unittest.TestCase):
             )
 
         with self.assertRaisesRegex(
+            ValueError,
+            "pass either notification_policy= or policy_set.notification_policy, not both",
+        ):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                notification_policy=NO_NOTIFICATION,
+                policy_set=QueuePolicySet(
+                    notification_policy=CallbackNotification((lambda message: message,))
+                ),
+            )
+
+        with self.assertRaisesRegex(
             ValueError, "pass either maxsize= or policy_set.backpressure, not both"
         ):
             _ = PersistentQueue(
@@ -716,6 +746,18 @@ class QueueTests(unittest.TestCase):
                     "handler_count": 0,
                 },
             )
+            self.assertEqual(queue.notification_policy, NO_NOTIFICATION)
+            queue.notification_policy.notify(
+                QueueMessage(id="message-2", queue="test", value="item")
+            )
+            self.assertEqual(
+                queue.notification_policy.as_dict(),
+                {
+                    "notifies": False,
+                    "notifies_on_put": False,
+                    "listener_count": 0,
+                },
+            )
             self.assertEqual(queue.ordering_policy, FIFO_READY_ORDERING)
             self.assertEqual(queue.routing_policy, POINT_TO_POINT_ROUTING)
             self.assertEqual(queue.subscription_policy, NO_SUBSCRIPTIONS)
@@ -804,6 +846,7 @@ class QueueTests(unittest.TestCase):
                 "dead_letters": True,
                 "deduplication": True,
                 "subscriptions": False,
+                "notifications": False,
             },
         )
 
@@ -902,6 +945,29 @@ class QueueTests(unittest.TestCase):
                 "dispatches": True,
                 "dispatches_on_put": True,
                 "handler_count": 1,
+            },
+        )
+
+    def test_constructor_accepts_callback_notification_policy(self) -> None:
+        notified: list[QueueMessage] = []
+        notification_policy = CallbackNotification((notified.append,))
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            notification_policy=notification_policy,
+        )
+
+        message = queue.put("item")
+
+        self.assertIs(queue.notification_policy, notification_policy)
+        self.assertEqual(notified, [message])
+        self.assertEqual(
+            queue.notification_policy.as_dict(),
+            {
+                "type": "callback",
+                "notifies": True,
+                "notifies_on_put": True,
+                "listener_count": 1,
             },
         )
 
@@ -1086,6 +1152,7 @@ class QueueTests(unittest.TestCase):
         dead_letter_policy = DeadLetterQueue()
         deduplication_policy = NoDeduplication()
         dispatch_policy = NoDispatcher()
+        notification_policy = NoNotification()
         subscription_policy = StaticFanoutSubscriptions(("billing", "audit"))
         backpressure = BoundedBackpressure(5)
         policy_set = QueuePolicySet(
@@ -1096,6 +1163,7 @@ class QueueTests(unittest.TestCase):
             deduplication_policy=deduplication_policy,
             delivery_policy=delivery_policy,
             dispatch_policy=dispatch_policy,
+            notification_policy=notification_policy,
             ordering_policy=ordering_policy,
             subscription_policy=subscription_policy,
             backpressure=backpressure,
@@ -1114,6 +1182,7 @@ class QueueTests(unittest.TestCase):
         self.assertIs(queue.deduplication_policy, deduplication_policy)
         self.assertIs(queue.delivery_policy, delivery_policy)
         self.assertIs(queue.dispatch_policy, dispatch_policy)
+        self.assertIs(queue.notification_policy, notification_policy)
         self.assertIs(queue.ordering_policy, ordering_policy)
         self.assertIs(queue.subscription_policy, subscription_policy)
         self.assertIs(queue.backpressure, backpressure)
@@ -1122,6 +1191,7 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(queue.semantics.locality, "remote")
         self.assertFalse(queue.semantics.deduplication)
         self.assertTrue(queue.semantics.subscriptions)
+        self.assertFalse(queue.semantics.notifications)
         self.assertEqual(queue.semantics.delivery, "effectively-once")
         self.assertEqual(queue.semantics.ordering, "best-effort")
 
@@ -1136,6 +1206,7 @@ class QueueTests(unittest.TestCase):
         deduplication_policy = DedupeKeySupport()
         consumption_policy = PushConsumption()
         dispatch_policy = NoDispatcher()
+        notification_policy = NoNotification()
         ordering_policy = BestEffortOrdering()
         routing_policy = PointToPointRouting()
         subscription_policy = StaticFanoutSubscriptions(("billing", "audit"))
@@ -1152,6 +1223,7 @@ class QueueTests(unittest.TestCase):
             deduplication_policy=deduplication_policy,
             consumption_policy=consumption_policy,
             dispatch_policy=dispatch_policy,
+            notification_policy=notification_policy,
             ordering_policy=ordering_policy,
             routing_policy=routing_policy,
             subscription_policy=subscription_policy,
@@ -1165,6 +1237,7 @@ class QueueTests(unittest.TestCase):
         self.assertIs(policy_set.deduplication_policy, deduplication_policy)
         self.assertIs(policy_set.consumption_policy, consumption_policy)
         self.assertIs(policy_set.dispatch_policy, dispatch_policy)
+        self.assertIs(policy_set.notification_policy, notification_policy)
         self.assertIs(policy_set.ordering_policy, ordering_policy)
         self.assertIs(policy_set.routing_policy, routing_policy)
         self.assertIs(policy_set.subscription_policy, subscription_policy)
@@ -1228,6 +1301,11 @@ class QueueTests(unittest.TestCase):
                     "dispatches_on_put": False,
                     "handler_count": 0,
                 },
+                "notification_policy": {
+                    "notifies": False,
+                    "notifies_on_put": False,
+                    "listener_count": 0,
+                },
                 "ordering_policy": {
                     "guarantee": "best-effort",
                     "ready_before_delayed": False,
@@ -1256,10 +1334,12 @@ class QueueTests(unittest.TestCase):
     def test_policy_set_delivery_factories(self) -> None:
         at_least_once = QueuePolicySet.at_least_once(
             ordering_policy=PriorityOrdering(),
+            notification_policy=NO_NOTIFICATION,
             backpressure=BoundedBackpressure(3),
         )
         at_most_once = QueuePolicySet.at_most_once(
             routing_policy=PublishSubscribeRouting(),
+            notification_policy=NO_NOTIFICATION,
             backpressure=BoundedBackpressure(1),
         )
 
@@ -1277,9 +1357,11 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(at_least_once_queue.semantics.delivery, "at-least-once")
         self.assertEqual(at_least_once_queue.semantics.ordering, "priority")
         self.assertIs(at_least_once_queue.delivery_policy, AT_LEAST_ONCE_DELIVERY)
+        self.assertIs(at_least_once_queue.notification_policy, NO_NOTIFICATION)
         self.assertEqual(at_least_once_queue.maxsize, 3)
         self.assertEqual(at_most_once_queue.semantics.delivery, "at-most-once")
         self.assertEqual(at_most_once_queue.semantics.routing, "publish-subscribe")
+        self.assertIs(at_most_once_queue.notification_policy, NO_NOTIFICATION)
         self.assertEqual(at_most_once_queue.maxsize, 1)
 
     def test_constructor_accepts_effectively_once_delivery_policy_with_result_policy(
