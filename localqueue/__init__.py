@@ -5,6 +5,14 @@ try:
 except importlib.metadata.PackageNotFoundError:
     __version__ = "unknown"
 
+from .idempotency import (
+    IdempotencyRecord,
+    IdempotencyStore,
+    IdempotencyStoreLockedError,
+    LMDBIdempotencyStore,
+    MemoryIdempotencyStore,
+    SQLiteIdempotencyStore,
+)
 from .queue import PersistentQueue
 from .policies import (
     AT_LEAST_ONCE_DELIVERY,
@@ -70,9 +78,14 @@ __all__ = [
     "DeliveryPolicy",
     "FIFO_READY_ORDERING",
     "FifoReadyOrdering",
+    "IdempotencyRecord",
+    "IdempotencyStore",
+    "IdempotencyStoreLockedError",
+    "LMDBIdempotencyStore",
     "LMDBAttemptStore",
     "LMDBQueueStore",
     "LOCAL_AT_LEAST_ONCE",
+    "MemoryIdempotencyStore",
     "MemoryAttemptStore",
     "MemoryQueueStore",
     "POINT_TO_POINT_ROUTING",
@@ -94,6 +107,7 @@ __all__ = [
     "RoutingPolicy",
     "RetryRecord",
     "SQLiteAttemptStore",
+    "SQLiteIdempotencyStore",
     "SQLiteQueueStore",
     "__version__",
     "close_default_store",

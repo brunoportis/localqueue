@@ -96,6 +96,24 @@ This policy currently makes `dedupe_key` mandatory on `put()`. It keeps the
 at-least-once delivery flow, but turns stable enqueue identity into an explicit
 contract so future idempotency/result stores can build on it.
 
+If you want to start wiring that coordination explicitly, attach an
+`idempotency_store` to the delivery policy:
+
+```python
+from localqueue import EffectivelyOnceDelivery, PersistentQueue, SQLiteIdempotencyStore
+
+queue = PersistentQueue(
+    "payments",
+    delivery_policy=EffectivelyOnceDelivery(
+        idempotency_store=SQLiteIdempotencyStore("payments-idempotency.sqlite3")
+    ),
+)
+```
+
+This PR only exposes the store interface and built-in adapters. The next layer
+can use that ledger to short-circuit already-succeeded work or return cached
+results.
+
 The consumption behavior is available as a policy object:
 
 ```python

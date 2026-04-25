@@ -19,6 +19,8 @@ These names are treated as the main public contracts today:
 - `AtLeastOnceDelivery`
 - `AtMostOnceDelivery`
 - `EffectivelyOnceDelivery`
+- `IdempotencyRecord`
+- `IdempotencyStore` and the built-in idempotency stores
 - `FifoReadyOrdering`
 - `PriorityOrdering`
 - `BoundedBackpressure`
