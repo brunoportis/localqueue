@@ -6,7 +6,12 @@ copyright = "Copyright &copy; 2026 The authors"
 
 nav = [
   { "Overview" = "index.md" },
-  { "Use cases" = "use-cases.md" },
+  { "Use cases" = [
+    "use-cases.md",
+    { "Local outbox" = "use-cases/local-outbox.md" },
+    { "Operator recovery" = "use-cases/operator-recovery.md" },
+    { "Persistent retries" = "use-cases/persistent-retries.md" },
+  ] },
   { "Compare" = "compare.md" },
   { "Persistent queues" = "queues.md" },
   { "Persistent retries" = "retries.md" },
