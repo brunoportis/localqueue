@@ -27,6 +27,7 @@ Constructor options:
 | `retry_defaults` | Tenacity retry keyword defaults inherited by workers |
 | `semantics` | descriptive queue semantics; defaults to `LOCAL_AT_LEAST_ONCE` |
 | `delivery_policy` | delivery behavior; defaults to `AT_LEAST_ONCE_DELIVERY` |
+| `ordering_policy` | ready-message ordering behavior; defaults to `FIFO_READY_ORDERING` |
 | `backpressure` | strategy object for capacity checks; defaults from `maxsize` |
 
 Core methods:
@@ -67,6 +68,12 @@ acknowledgements, dead letters, and dedupe-key support.
 Delivery policy used by default. It describes the current queue behavior:
 messages are leased before handling, acknowledged after successful handling, and
 redelivered if the lease expires before acknowledgement.
+
+#### `FifoReadyOrdering`
+
+Ordering policy used by default. It describes the current store ordering:
+messages become eligible by `available_at`, and messages with the same
+availability keep enqueue order.
 
 #### `BoundedBackpressure`
 

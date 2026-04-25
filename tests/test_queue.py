@@ -19,8 +19,10 @@ import lmdb
 from localqueue.retry import MemoryAttemptStore, RetryRecord, SQLiteAttemptStore
 from localqueue import (
     AT_LEAST_ONCE_DELIVERY,
+    FIFO_READY_ORDERING,
     AtLeastOnceDelivery,
     BoundedBackpressure,
+    FifoReadyOrdering,
     LMDBQueueStore,
     LOCAL_AT_LEAST_ONCE,
     MemoryQueueStore,
@@ -281,6 +283,16 @@ class QueueTests(unittest.TestCase):
             )
 
         with self.assertRaisesRegex(
+            ValueError, "semantics ordering must match ordering_policy guarantee"
+        ):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                semantics=QueueSemantics(ordering="priority"),
+                ordering_policy=FifoReadyOrdering(),
+            )
+
+        with self.assertRaisesRegex(
             ValueError, "pass either maxsize= or backpressure=, not both"
         ):
             _ = PersistentQueue(
@@ -333,6 +345,7 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(queue.backpressure, BoundedBackpressure())
             self.assertEqual(queue.semantics, LOCAL_AT_LEAST_ONCE)
             self.assertEqual(queue.delivery_policy, AT_LEAST_ONCE_DELIVERY)
+            self.assertEqual(queue.ordering_policy, FIFO_READY_ORDERING)
             self.assertIsNone(queue._store)
             self.assertEqual(queue._store_path, Path(tmpdir) / "queue.sqlite3")
 
@@ -362,6 +375,24 @@ class QueueTests(unittest.TestCase):
                 "acknowledgements": True,
                 "dead_letters": True,
                 "deduplication": True,
+            },
+        )
+
+    def test_constructor_accepts_explicit_ordering_policy(self) -> None:
+        ordering_policy = FifoReadyOrdering()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            ordering_policy=ordering_policy,
+        )
+
+        self.assertIs(queue.ordering_policy, ordering_policy)
+        self.assertEqual(
+            queue.ordering_policy.as_dict(),
+            {
+                "guarantee": "fifo-ready",
+                "ready_before_delayed": True,
+                "stable_for_same_timestamp": True,
             },
         )
 
