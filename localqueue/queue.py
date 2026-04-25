@@ -19,11 +19,13 @@ from .policies import (
     RoutingPolicy,
     BackpressureStrategy,
     BoundedBackpressure,
+    QueuePolicySet,
     QueueSemantics,
 )
 from .stores import QueueMessage, QueueStats, QueueStore, SQLiteQueueStore
 
 T = TypeVar("T")
+PolicyValue = TypeVar("PolicyValue")
 _NEGATIVE_DELAY_ERROR = "delay cannot be negative"
 
 
@@ -58,9 +60,27 @@ class PersistentQueue(Generic[T]):
         ordering_policy: OrderingPolicy | None = None,
         routing_policy: RoutingPolicy | None = None,
         backpressure: BackpressureStrategy | None = None,
+        policy_set: QueuePolicySet | None = None,
     ) -> None:
         if store is not None and store_path is not None:
             raise ValueError("pass either store= or store_path=, not both")
+        (
+            semantics,
+            consumption_policy,
+            delivery_policy,
+            ordering_policy,
+            routing_policy,
+            backpressure,
+        ) = _apply_policy_set(
+            policy_set=policy_set,
+            semantics=semantics,
+            consumption_policy=consumption_policy,
+            delivery_policy=delivery_policy,
+            ordering_policy=ordering_policy,
+            routing_policy=routing_policy,
+            backpressure=backpressure,
+            maxsize=maxsize,
+        )
         if backpressure is not None and maxsize != 0:
             raise ValueError("pass either maxsize= or backpressure=, not both")
         if lease_timeout <= 0:
@@ -358,6 +378,49 @@ def _remaining(deadline: float | None) -> float | None:
     return deadline - time.monotonic()
 
 
+def _apply_policy_set(
+    *,
+    policy_set: QueuePolicySet | None,
+    semantics: QueueSemantics | None,
+    consumption_policy: ConsumptionPolicy | None,
+    delivery_policy: DeliveryPolicy | None,
+    ordering_policy: OrderingPolicy | None,
+    routing_policy: RoutingPolicy | None,
+    backpressure: BackpressureStrategy | None,
+    maxsize: int,
+) -> tuple[
+    QueueSemantics | None,
+    ConsumptionPolicy | None,
+    DeliveryPolicy | None,
+    OrderingPolicy | None,
+    RoutingPolicy | None,
+    BackpressureStrategy | None,
+]:
+    if policy_set is None:
+        return (
+            semantics,
+            consumption_policy,
+            delivery_policy,
+            ordering_policy,
+            routing_policy,
+            backpressure,
+        )
+    if policy_set.backpressure is not None and maxsize != 0:
+        raise ValueError("pass either maxsize= or policy_set.backpressure, not both")
+    return (
+        _policy_value("semantics", semantics, policy_set.semantics),
+        _policy_value(
+            "consumption_policy",
+            consumption_policy,
+            policy_set.consumption_policy,
+        ),
+        _policy_value("delivery_policy", delivery_policy, policy_set.delivery_policy),
+        _policy_value("ordering_policy", ordering_policy, policy_set.ordering_policy),
+        _policy_value("routing_policy", routing_policy, policy_set.routing_policy),
+        _policy_value("backpressure", backpressure, policy_set.backpressure),
+    )
+
+
 def _wait_time(remaining: float | None) -> float:
     if remaining is None:
         return 0.05
@@ -384,6 +447,16 @@ def _validate_priority(priority: int) -> None:
 
 def _requires_dedupe_key(delivery_policy: DeliveryPolicy) -> bool:
     return bool(getattr(delivery_policy, "requires_dedupe_key", False))
+
+
+def _policy_value(
+    name: str,
+    explicit: PolicyValue | None,
+    bundled: PolicyValue | None,
+) -> PolicyValue | None:
+    if explicit is not None and bundled is not None:
+        raise ValueError(f"pass either {name}= or policy_set.{name}, not both")
+    return bundled if bundled is not None else explicit
 
 
 def _error_payload(error: BaseException | str | None) -> dict[str, Any] | None:

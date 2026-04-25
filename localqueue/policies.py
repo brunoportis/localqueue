@@ -386,3 +386,58 @@ class BoundedBackpressure:
 
     def as_dict(self) -> dict[str, object]:
         return {"type": "bounded", "maxsize": self.maxsize}
+
+
+@dataclass(frozen=True, slots=True)
+class QueuePolicySet:
+    """Groups queue policies into one reusable configuration object."""
+
+    semantics: QueueSemantics | None = None
+    delivery_policy: DeliveryPolicy | None = None
+    consumption_policy: ConsumptionPolicy | None = None
+    ordering_policy: OrderingPolicy | None = None
+    routing_policy: RoutingPolicy | None = None
+    backpressure: BackpressureStrategy | None = None
+
+    @classmethod
+    def effectively_once(
+        cls,
+        *,
+        idempotency_store: IdempotencyStore | None = None,
+        result_policy: ResultPolicy = NO_RESULT_POLICY,
+        commit_policy: CommitPolicy = LOCAL_ATOMIC_COMMIT,
+        ordering_policy: OrderingPolicy | None = None,
+        backpressure: BackpressureStrategy | None = None,
+    ) -> "QueuePolicySet":
+        delivery_policy = EffectivelyOnceDelivery(
+            idempotency_store=idempotency_store,
+            result_policy=result_policy,
+            commit_policy=commit_policy,
+        )
+        return cls(
+            delivery_policy=delivery_policy,
+            ordering_policy=ordering_policy,
+            backpressure=backpressure,
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "semantics": None if self.semantics is None else self.semantics.as_dict(),
+            "delivery_policy": (
+                None if self.delivery_policy is None else self.delivery_policy.as_dict()
+            ),
+            "consumption_policy": (
+                None
+                if self.consumption_policy is None
+                else self.consumption_policy.as_dict()
+            ),
+            "ordering_policy": (
+                None if self.ordering_policy is None else self.ordering_policy.as_dict()
+            ),
+            "routing_policy": (
+                None if self.routing_policy is None else self.routing_policy.as_dict()
+            ),
+            "backpressure": (
+                None if self.backpressure is None else self.backpressure.as_dict()
+            ),
+        }

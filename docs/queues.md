@@ -164,6 +164,27 @@ queue = PersistentQueue(
 In that mode, the idempotency ledger keeps the status and `result_key`, and the
 result payload itself lives in the configured result store.
 
+You can keep those choices together with a policy set:
+
+```python
+from localqueue import (
+    MemoryIdempotencyStore,
+    PersistentQueue,
+    QueuePolicySet,
+    ReturnStoredResult,
+)
+
+policies = QueuePolicySet.effectively_once(
+    idempotency_store=MemoryIdempotencyStore(),
+    result_policy=ReturnStoredResult(),
+)
+queue = PersistentQueue("payments", policy_set=policies)
+```
+
+`policy_set` is useful when the queue configuration should be reused or passed
+around as one object. Direct constructor options still work for small examples
+and intentionally conflict with the same choice inside a policy set.
+
 The commit policy is available too:
 
 ```python
