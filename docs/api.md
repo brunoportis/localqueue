@@ -32,6 +32,7 @@ Constructor options:
 | `dead_letter_policy` | dead-letter behavior; defaults to `DEAD_LETTER_QUEUE` |
 | `deduplication_policy` | deduplication behavior; defaults to `DEDUPE_KEY_SUPPORT` |
 | `consumption_policy` | consumption behavior; defaults to `PULL_CONSUMPTION` |
+| `dispatch_policy` | in-process dispatch behavior; defaults to `NO_DISPATCHER` |
 | `delivery_policy` | delivery behavior; defaults to `AT_LEAST_ONCE_DELIVERY` |
 | `ordering_policy` | ready-message ordering behavior; defaults to `FIFO_READY_ORDERING` |
 | `routing_policy` | message routing behavior; defaults to `POINT_TO_POINT_ROUTING` |
@@ -76,16 +77,17 @@ acknowledgements, dead letters, dedupe-key support, and no subscriptions.
 
 Reusable bundle for queue policies. Pass `policy_set=` to `PersistentQueue` when
 you want to keep locality, leases, acknowledgements, dead letters, delivery,
-ordering, routing, consumption, semantics, and backpressure choices together as
-one configuration object. Explicit constructor options remain available and
-conflict with the same option inside the policy set so configuration stays
-unambiguous.
+ordering, routing, consumption, dispatch, semantics, and backpressure choices
+together as one configuration object. Explicit constructor options remain
+available and conflict with the same option inside the policy set so
+configuration stays unambiguous.
 
 `QueuePolicySet.at_least_once(...)`, `QueuePolicySet.at_most_once(...)`, and
 `QueuePolicySet.effectively_once(...)` build common delivery bundles with
 optional locality, lease, acknowledgement, dead-letter, deduplication,
-consumption, ordering, routing, subscription, and backpressure policies. The
-effectively-once factory also accepts idempotency, result, and commit policies.
+consumption, dispatch, ordering, routing, subscription, and backpressure
+policies. The effectively-once factory also accepts idempotency, result, and
+commit policies.
 
 #### `LocalityPolicy`
 
@@ -235,6 +237,23 @@ Consumption policy for workflows that model push-based delivery, where a
 producer or dispatcher invokes handlers instead of workers polling for messages.
 It names the concept with `pattern="push"` and can be used in policy sets while
 the current built-in worker helpers remain pull-based.
+
+#### `DispatchPolicy`
+
+Protocol for naming how in-process handlers are invoked after messages are
+enqueued.
+
+#### `NoDispatcher`
+
+Dispatch policy used by default. Producers only persist messages; workers or
+callers still pull work explicitly.
+
+#### `CallbackDispatcher`
+
+Dispatch policy for local push workflows. It calls one or more in-process
+handlers after `put()` persists a message. This is not cross-process
+notification; external wake-up mechanisms should be modeled by a notification
+adapter.
 
 #### `PointToPointRouting`
 

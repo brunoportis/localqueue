@@ -310,9 +310,27 @@ queue = PersistentQueue(
 )
 ```
 
-This names the consumption contract in the queue configuration. The built-in
-worker helpers still use pull-based processing until a dispatcher port is
-attached.
+This names the consumption contract in the queue configuration. Attach a
+dispatcher when the producer should invoke local handlers after enqueue:
+
+```python
+from localqueue import CallbackDispatcher, PersistentQueue, PushConsumption
+
+def handle(message):
+    process(message.value)
+
+queue = PersistentQueue(
+    "events",
+    consumption_policy=PushConsumption(),
+    dispatch_policy=CallbackDispatcher((handle,)),
+)
+```
+
+`CallbackDispatcher` is local and in-process. `put()` still persists the message
+first, then calls the callback with the stored `QueueMessage`. It does not wake a
+different process or terminal window; cross-process push belongs in a
+notification adapter such as sockets, signals, webhooks, SSE, WebSockets, or
+Redis pub/sub.
 
 The routing behavior is available as a policy object:
 

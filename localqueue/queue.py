@@ -15,6 +15,7 @@ from .policies import (
     DEDUPE_KEY_SUPPORT,
     FIFO_READY_ORDERING,
     FIXED_LEASE_TIMEOUT,
+    NO_DISPATCHER,
     NO_SUBSCRIPTIONS,
     POINT_TO_POINT_ROUTING,
     PULL_CONSUMPTION,
@@ -22,6 +23,7 @@ from .policies import (
     ConsumptionPolicy,
     DeadLetterPolicy,
     DeliveryPolicy,
+    DispatchPolicy,
     FixedLeaseTimeout,
     DeduplicationPolicy,
     LOCAL_QUEUE_PLACEMENT,
@@ -54,6 +56,7 @@ class PersistentQueue(Generic[T]):
     locality_policy: LocalityPolicy
     consumption_policy: ConsumptionPolicy
     delivery_policy: DeliveryPolicy
+    dispatch_policy: DispatchPolicy
     ordering_policy: OrderingPolicy
     routing_policy: RoutingPolicy
     subscription_policy: SubscriptionPolicy
@@ -81,6 +84,7 @@ class PersistentQueue(Generic[T]):
         locality_policy: LocalityPolicy | None = None,
         consumption_policy: ConsumptionPolicy | None = None,
         delivery_policy: DeliveryPolicy | None = None,
+        dispatch_policy: DispatchPolicy | None = None,
         ordering_policy: OrderingPolicy | None = None,
         routing_policy: RoutingPolicy | None = None,
         subscription_policy: SubscriptionPolicy | None = None,
@@ -98,6 +102,7 @@ class PersistentQueue(Generic[T]):
             deduplication_policy,
             consumption_policy,
             delivery_policy,
+            dispatch_policy,
             ordering_policy,
             routing_policy,
             subscription_policy,
@@ -112,6 +117,7 @@ class PersistentQueue(Generic[T]):
             deduplication_policy=deduplication_policy,
             consumption_policy=consumption_policy,
             delivery_policy=delivery_policy,
+            dispatch_policy=dispatch_policy,
             ordering_policy=ordering_policy,
             routing_policy=routing_policy,
             subscription_policy=subscription_policy,
@@ -151,6 +157,9 @@ class PersistentQueue(Generic[T]):
         )
         resolved_consumption = (
             PULL_CONSUMPTION if consumption_policy is None else consumption_policy
+        )
+        resolved_dispatch = (
+            NO_DISPATCHER if dispatch_policy is None else dispatch_policy
         )
         resolved_ordering = (
             FIFO_READY_ORDERING if ordering_policy is None else ordering_policy
@@ -205,6 +214,7 @@ class PersistentQueue(Generic[T]):
         self.locality_policy = resolved_locality
         self.consumption_policy = resolved_consumption
         self.delivery_policy = resolved_delivery
+        self.dispatch_policy = resolved_dispatch
         self.ordering_policy = resolved_ordering
         self.routing_policy = resolved_routing
         self.subscription_policy = resolved_subscription
@@ -254,7 +264,9 @@ class PersistentQueue(Generic[T]):
                 priority=priority,
             )
             self._condition.notify_all()
-            return message
+        if self.dispatch_policy.dispatches_on_put:
+            self.dispatch_policy.dispatch(message)
+        return message
 
     def put_nowait(self, item: T) -> QueueMessage:
         return self.put(item, block=False)
@@ -467,6 +479,7 @@ def _apply_policy_set(
     deduplication_policy: DeduplicationPolicy | None,
     consumption_policy: ConsumptionPolicy | None,
     delivery_policy: DeliveryPolicy | None,
+    dispatch_policy: DispatchPolicy | None,
     ordering_policy: OrderingPolicy | None,
     routing_policy: RoutingPolicy | None,
     subscription_policy: SubscriptionPolicy | None,
@@ -481,6 +494,7 @@ def _apply_policy_set(
     DeduplicationPolicy | None,
     ConsumptionPolicy | None,
     DeliveryPolicy | None,
+    DispatchPolicy | None,
     OrderingPolicy | None,
     RoutingPolicy | None,
     SubscriptionPolicy | None,
@@ -496,6 +510,7 @@ def _apply_policy_set(
             deduplication_policy,
             consumption_policy,
             delivery_policy,
+            dispatch_policy,
             ordering_policy,
             routing_policy,
             subscription_policy,
@@ -536,6 +551,7 @@ def _apply_policy_set(
             policy_set.consumption_policy,
         ),
         _policy_value("delivery_policy", delivery_policy, policy_set.delivery_policy),
+        _policy_value("dispatch_policy", dispatch_policy, policy_set.dispatch_policy),
         _policy_value("ordering_policy", ordering_policy, policy_set.ordering_policy),
         _policy_value("routing_policy", routing_policy, policy_set.routing_policy),
         _policy_value(
