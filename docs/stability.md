@@ -14,6 +14,7 @@ These names are treated as the main public contracts today:
 
 - `PersistentQueue`
 - `QueueSemantics`
+- `AtLeastOnceDelivery`
 - `BoundedBackpressure`
 - `QueueMessage`
 - `QueueStats`

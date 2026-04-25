@@ -26,6 +26,7 @@ Constructor options:
 | `maxsize` | maximum number of ready messages; `0` means unbounded |
 | `retry_defaults` | Tenacity retry keyword defaults inherited by workers |
 | `semantics` | descriptive queue semantics; defaults to `LOCAL_AT_LEAST_ONCE` |
+| `delivery_policy` | delivery behavior; defaults to `AT_LEAST_ONCE_DELIVERY` |
 | `backpressure` | strategy object for capacity checks; defaults from `maxsize` |
 
 Core methods:
@@ -60,6 +61,12 @@ configuration. The default `LOCAL_AT_LEAST_ONCE` describes the current
 `PersistentQueue` behavior: local storage, at-least-once delivery,
 point-to-point routing, pull consumption, ready-order delivery, leases,
 acknowledgements, dead letters, and dedupe-key support.
+
+#### `AtLeastOnceDelivery`
+
+Delivery policy used by default. It describes the current queue behavior:
+messages are leased before handling, acknowledged after successful handling, and
+redelivered if the lease expires before acknowledgement.
 
 #### `BoundedBackpressure`
 

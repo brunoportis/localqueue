@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Literal, Protocol
 
+AckTiming = Literal["before-delivery", "after-success", "manual"]
 DeliveryGuarantee = Literal["at-least-once", "at-most-once", "effectively-once"]
 Locality = Literal["local", "remote"]
 RoutingPattern = Literal["point-to-point", "publish-subscribe"]
@@ -29,6 +30,38 @@ class QueueSemantics:
 
 
 LOCAL_AT_LEAST_ONCE = QueueSemantics()
+
+
+class DeliveryPolicy(Protocol):
+    @property
+    def guarantee(self) -> DeliveryGuarantee: ...
+
+    @property
+    def ack_timing(self) -> AckTiming: ...
+
+    @property
+    def uses_leases(self) -> bool: ...
+
+    @property
+    def redelivers_expired_leases(self) -> bool: ...
+
+    def as_dict(self) -> dict[str, object]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class AtLeastOnceDelivery:
+    """Delivery policy where messages are acknowledged after successful handling."""
+
+    guarantee: DeliveryGuarantee = "at-least-once"
+    ack_timing: AckTiming = "after-success"
+    uses_leases: bool = True
+    redelivers_expired_leases: bool = True
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+AT_LEAST_ONCE_DELIVERY = AtLeastOnceDelivery()
 
 
 class BackpressureStrategy(Protocol):
