@@ -23,6 +23,7 @@ from localqueue import (
     POINT_TO_POINT_ROUTING,
     PULL_CONSUMPTION,
     AtLeastOnceDelivery,
+    AtMostOnceDelivery,
     BoundedBackpressure,
     FifoReadyOrdering,
     LMDBQueueStore,
@@ -507,6 +508,26 @@ class QueueTests(unittest.TestCase):
             },
         )
 
+    def test_constructor_accepts_at_most_once_delivery_policy(self) -> None:
+        delivery_policy = AtMostOnceDelivery()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=delivery_policy,
+        )
+
+        self.assertEqual(queue.semantics.delivery, "at-most-once")
+        self.assertIs(queue.delivery_policy, delivery_policy)
+        self.assertEqual(
+            queue.delivery_policy.as_dict(),
+            {
+                "guarantee": "at-most-once",
+                "ack_timing": "before-delivery",
+                "uses_leases": False,
+                "redelivers_expired_leases": False,
+            },
+        )
+
     def test_constructor_accepts_backpressure_strategy(self) -> None:
         queue = PersistentQueue(
             "test",
@@ -764,6 +785,38 @@ class QueueTests(unittest.TestCase):
         queue.task_done()
         self.assertTrue(put_finished.wait(1.0))
         t.join()
+
+    def test_at_most_once_get_message_removes_message_before_handling(self) -> None:
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=AtMostOnceDelivery(),
+        )
+        original = queue.put("item")
+
+        message = queue.get_message()
+
+        self.assertEqual(message.id, original.id)
+        self.assertEqual(message.value, "item")
+        self.assertIsNone(queue.inspect(message.id))
+        self.assertTrue(queue.empty())
+        self.assertFalse(queue.ack(message))
+        self.assertFalse(queue.release(message))
+        self.assertFalse(queue.dead_letter(message))
+
+    def test_at_most_once_get_does_not_track_unfinished_tasks(self) -> None:
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=AtMostOnceDelivery(),
+        )
+        _ = queue.put("item")
+
+        self.assertEqual(queue.get_nowait(), "item")
+        with self.assertRaisesRegex(
+            ValueError, "task_done\\(\\) called too many times"
+        ):
+            queue.task_done()
 
     def test_default_get_message_blocks_until_value_is_available(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())
@@ -2707,6 +2760,27 @@ class QueueTests(unittest.TestCase):
             return payload["name"].upper()
 
         self.assertEqual(cast("Any", handle)(), "ALICE")
+
+    def test_at_most_once_worker_removes_message_before_handler(self) -> None:
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=AtMostOnceDelivery(),
+        )
+        message = queue.put("bad")
+
+        @persistent_worker(
+            queue, store=MemoryAttemptStore(), max_tries=1, wait=lambda _: 0
+        )
+        def fail(value: str) -> None:
+            self.assertIsNone(queue.inspect(message.id))
+            raise RuntimeError(value)
+
+        with self.assertRaises(RuntimeError):
+            cast("Any", fail)()
+
+        self.assertTrue(queue.empty())
+        self.assertEqual(queue.dead_letters(), [])
 
     def test_worker_config_can_be_shared_and_overridden(self) -> None:
         config = PersistentWorkerConfig(

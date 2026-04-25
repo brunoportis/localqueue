@@ -64,6 +64,19 @@ class AtLeastOnceDelivery:
 AT_LEAST_ONCE_DELIVERY = AtLeastOnceDelivery()
 
 
+@dataclass(frozen=True, slots=True)
+class AtMostOnceDelivery:
+    """Delivery policy where messages are removed before user handling."""
+
+    guarantee: DeliveryGuarantee = "at-most-once"
+    ack_timing: AckTiming = "before-delivery"
+    uses_leases: bool = False
+    redelivers_expired_leases: bool = False
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
 class ConsumptionPolicy(Protocol):
     @property
     def pattern(self) -> ConsumptionPattern: ...

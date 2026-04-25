@@ -71,6 +71,12 @@ Delivery policy used by default. It describes the current queue behavior:
 messages are leased before handling, acknowledged after successful handling, and
 redelivered if the lease expires before acknowledgement.
 
+#### `AtMostOnceDelivery`
+
+Delivery policy for workflows that prefer losing a message over processing it
+more than once. The queue removes the message before returning it from `get()` or
+`get_message()`, so handler failures are not redelivered or dead-lettered.
+
 #### `PullConsumption`
 
 Consumption policy used by default. It describes the current queue behavior:

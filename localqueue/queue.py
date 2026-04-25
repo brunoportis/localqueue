@@ -167,6 +167,8 @@ class PersistentQueue(Generic[T]):
         leased_by: str | None = None,
     ) -> T:
         message = self.get_message(block=block, timeout=timeout, leased_by=leased_by)
+        if self.delivery_policy.ack_timing == "before-delivery":
+            return cast("T", message.value)
         with self._condition:
             self._unfinished[message.id] = message
         return cast("T", message.value)
@@ -191,6 +193,8 @@ class PersistentQueue(Generic[T]):
                     leased_by=leased_by,
                 )
                 if message is not None:
+                    if self.delivery_policy.ack_timing == "before-delivery":
+                        _ = self._get_store().ack(self.name, message.id)
                     self._condition.notify_all()
                     return message
                 if not block:
