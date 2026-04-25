@@ -12,10 +12,12 @@ from .policies import (
     AT_LEAST_ONCE_DELIVERY,
     FIFO_READY_ORDERING,
     LOCAL_AT_LEAST_ONCE,
+    POINT_TO_POINT_ROUTING,
     PULL_CONSUMPTION,
     ConsumptionPolicy,
     DeliveryPolicy,
     OrderingPolicy,
+    RoutingPolicy,
     BackpressureStrategy,
     BoundedBackpressure,
     QueueSemantics,
@@ -34,6 +36,7 @@ class PersistentQueue(Generic[T]):
     consumption_policy: ConsumptionPolicy
     delivery_policy: DeliveryPolicy
     ordering_policy: OrderingPolicy
+    routing_policy: RoutingPolicy
     backpressure: BackpressureStrategy
     _store: QueueStore | None
     _store_path: Path | None
@@ -54,6 +57,7 @@ class PersistentQueue(Generic[T]):
         consumption_policy: ConsumptionPolicy | None = None,
         delivery_policy: DeliveryPolicy | None = None,
         ordering_policy: OrderingPolicy | None = None,
+        routing_policy: RoutingPolicy | None = None,
         backpressure: BackpressureStrategy | None = None,
     ) -> None:
         if store is not None and store_path is not None:
@@ -76,6 +80,9 @@ class PersistentQueue(Generic[T]):
         resolved_ordering = (
             FIFO_READY_ORDERING if ordering_policy is None else ordering_policy
         )
+        resolved_routing = (
+            POINT_TO_POINT_ROUTING if routing_policy is None else routing_policy
+        )
         resolved_semantics = semantics if semantics is not None else LOCAL_AT_LEAST_ONCE
         if resolved_semantics.delivery != resolved_delivery.guarantee:
             raise ValueError("semantics delivery must match delivery_policy guarantee")
@@ -85,6 +92,8 @@ class PersistentQueue(Generic[T]):
             )
         if resolved_semantics.ordering != resolved_ordering.guarantee:
             raise ValueError("semantics ordering must match ordering_policy guarantee")
+        if resolved_semantics.routing != resolved_routing.pattern:
+            raise ValueError("semantics routing must match routing_policy pattern")
 
         self.name = name
         self.lease_timeout = lease_timeout
@@ -96,6 +105,7 @@ class PersistentQueue(Generic[T]):
         self.consumption_policy = resolved_consumption
         self.delivery_policy = resolved_delivery
         self.ordering_policy = resolved_ordering
+        self.routing_policy = resolved_routing
         self._store = store
         self._store_path = Path(store_path) if store_path is not None else None
         self.retry_defaults = dict(retry_defaults or {})

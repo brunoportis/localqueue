@@ -20,6 +20,7 @@ from localqueue.retry import MemoryAttemptStore, RetryRecord, SQLiteAttemptStore
 from localqueue import (
     AT_LEAST_ONCE_DELIVERY,
     FIFO_READY_ORDERING,
+    POINT_TO_POINT_ROUTING,
     PULL_CONSUMPTION,
     AtLeastOnceDelivery,
     BoundedBackpressure,
@@ -29,6 +30,7 @@ from localqueue import (
     MemoryQueueStore,
     PersistentQueue,
     PersistentWorkerConfig,
+    PointToPointRouting,
     PullConsumption,
     QueueSemantics,
     QueueMessage,
@@ -305,6 +307,16 @@ class QueueTests(unittest.TestCase):
             )
 
         with self.assertRaisesRegex(
+            ValueError, "semantics routing must match routing_policy pattern"
+        ):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                semantics=QueueSemantics(routing="publish-subscribe"),
+                routing_policy=PointToPointRouting(),
+            )
+
+        with self.assertRaisesRegex(
             ValueError, "pass either maxsize= or backpressure=, not both"
         ):
             _ = PersistentQueue(
@@ -359,6 +371,7 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(queue.consumption_policy, PULL_CONSUMPTION)
             self.assertEqual(queue.delivery_policy, AT_LEAST_ONCE_DELIVERY)
             self.assertEqual(queue.ordering_policy, FIFO_READY_ORDERING)
+            self.assertEqual(queue.routing_policy, POINT_TO_POINT_ROUTING)
             self.assertIsNone(queue._store)
             self.assertEqual(queue._store_path, Path(tmpdir) / "queue.sqlite3")
 
@@ -366,7 +379,6 @@ class QueueTests(unittest.TestCase):
         semantics = QueueSemantics(
             locality="local",
             delivery="at-least-once",
-            routing="publish-subscribe",
         )
         queue = PersistentQueue(
             "test",
@@ -380,13 +392,31 @@ class QueueTests(unittest.TestCase):
             {
                 "locality": "local",
                 "delivery": "at-least-once",
-                "routing": "publish-subscribe",
+                "routing": "point-to-point",
                 "consumption": "pull",
                 "ordering": "fifo-ready",
                 "leases": True,
                 "acknowledgements": True,
                 "dead_letters": True,
                 "deduplication": True,
+            },
+        )
+
+    def test_constructor_accepts_explicit_routing_policy(self) -> None:
+        routing_policy = PointToPointRouting()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            routing_policy=routing_policy,
+        )
+
+        self.assertIs(queue.routing_policy, routing_policy)
+        self.assertEqual(
+            queue.routing_policy.as_dict(),
+            {
+                "pattern": "point-to-point",
+                "single_consumer_per_message": True,
+                "fanout": False,
             },
         )
 
@@ -626,18 +656,19 @@ class QueueTests(unittest.TestCase):
     def test_default_put_blocks_until_capacity_frees(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore(), maxsize=1)
         _ = queue.put("one")
+        put_finished = threading.Event()
 
-        def freer() -> None:
-            time.sleep(0.2)
-            self.assertEqual(queue.get_nowait(), "one")
-            queue.task_done()
+        def producer() -> None:
+            _ = queue.put("two")
+            put_finished.set()
 
-        t = threading.Thread(target=freer)
+        t = threading.Thread(target=producer)
         t.start()
 
-        start = time.time()
-        _ = queue.put("two")
-        self.assertGreaterEqual(time.time() - start, 0.2)
+        self.assertFalse(put_finished.wait(0.05))
+        self.assertEqual(queue.get_nowait(), "one")
+        queue.task_done()
+        self.assertTrue(put_finished.wait(1.0))
         t.join()
 
     def test_default_get_message_blocks_until_value_is_available(self) -> None:
