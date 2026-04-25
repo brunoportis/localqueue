@@ -218,6 +218,30 @@ responsible for.
   policies, outbox, two-phase commit, and sagas should be available, but the
   project should not imply generic distributed exactly-once delivery.
 
+## Long-Term Future
+
+These concepts should have an architectural place, but they should not be
+presented as near-term promises or implied by the local default queue:
+
+- clustering, replication, leader election, and consensus
+- partitioning, rebalancing, consumer groups, and offset management for
+  stream-style workloads
+- broker protocol compatibility such as AMQP, MQTT, Redis Streams, Kafka, SQS,
+  or RabbitMQ APIs
+- access control, authentication, authorization, multitenancy, and tenant-level
+  quotas
+- schema registry, payload compatibility policies, and migration workflows for
+  message formats
+- remote store adapters such as Postgres, Redis, SQS, RabbitMQ, or cloud queue
+  services
+- stream processing features such as replay windows, compacted topics,
+  materialized views, and stateful processors
+- cross-region replication, disaster recovery, and managed retention policies
+
+The near-term goal is not to become every broker. It is to make the concepts
+visible, name the boundaries honestly, and keep the simple local API useful
+while advanced adapters can be added deliberately.
+
 ## Closure Criteria
 
 This queue architecture phase is complete when:
