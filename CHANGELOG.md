@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.4.1](https://github.com/brunoportis/localqueue/compare/v0.4.0...v0.4.1) (2026-04-25)
+
+
+### Documentation
+
+* reposition use cases and guides ([8e98379](https://github.com/brunoportis/localqueue/commit/8e98379c29091b414ad437facbdb4d7a7c45db4c))
+* reposition use cases and guides ([280288b](https://github.com/brunoportis/localqueue/commit/280288b02f877d78d2df067df67ce14a800cbfe2))
+* simplify queue examples ([ed488b2](https://github.com/brunoportis/localqueue/commit/ed488b2ab210369331fbcda3568760f0da24618b))
+* split use cases into dedicated pages ([5496826](https://github.com/brunoportis/localqueue/commit/54968266b0733b009147c56761ce9fe29889d5e9))
+
 ## [0.4.0](https://github.com/brunoportis/localqueue/compare/v0.3.4...v0.4.0) (2026-04-24)
 
 
