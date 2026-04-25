@@ -53,6 +53,7 @@ from localqueue import (
     MemoryResultStore,
     MemoryQueueStore,
     NO_RESULT_POLICY,
+    NO_SUBSCRIPTIONS,
     PersistentQueue,
     PersistentWorkerConfig,
     PointToPointRouting,
@@ -71,6 +72,7 @@ from localqueue import (
     ReturnStoredResult,
     RemoteQueuePlacement,
     SagaCommit,
+    StaticFanoutSubscriptions,
     SQLiteIdempotencyStore,
     SQLiteResultStore,
     TwoPhaseCommit,
@@ -340,6 +342,15 @@ class QueueTests(unittest.TestCase):
         ):
             _ = RejectingBackpressure(1, overflow=cast("Any", "block"))
 
+        with self.assertRaisesRegex(ValueError, "subscribers cannot be empty"):
+            _ = StaticFanoutSubscriptions(())
+
+        with self.assertRaisesRegex(ValueError, "subscriber names cannot be empty"):
+            _ = StaticFanoutSubscriptions(("billing", ""))
+
+        with self.assertRaisesRegex(ValueError, "subscriber names must be unique"):
+            _ = StaticFanoutSubscriptions(("billing", "billing"))
+
         queue = PersistentQueue("test", store=store)
         with self.assertRaisesRegex(TypeError, "priority must be an integer"):
             _ = queue.put("item", priority=cast("Any", 1.5))
@@ -463,6 +474,17 @@ class QueueTests(unittest.TestCase):
             )
 
         with self.assertRaisesRegex(
+            ValueError,
+            "semantics subscriptions must match subscription_policy subscriptions",
+        ):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                semantics=QueueSemantics(subscriptions=True),
+                subscription_policy=NO_SUBSCRIPTIONS,
+            )
+
+        with self.assertRaisesRegex(
             ValueError, "pass either maxsize= or backpressure=, not both"
         ):
             _ = PersistentQueue(
@@ -549,6 +571,19 @@ class QueueTests(unittest.TestCase):
                 store=store,
                 deduplication_policy=DedupeKeySupport(),
                 policy_set=QueuePolicySet(deduplication_policy=NoDeduplication()),
+            )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "pass either subscription_policy= or policy_set.subscription_policy, not both",
+        ):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                subscription_policy=NO_SUBSCRIPTIONS,
+                policy_set=QueuePolicySet(
+                    subscription_policy=StaticFanoutSubscriptions(("billing",))
+                ),
             )
 
         with self.assertRaisesRegex(
@@ -652,6 +687,15 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(queue.delivery_policy, AT_LEAST_ONCE_DELIVERY)
             self.assertEqual(queue.ordering_policy, FIFO_READY_ORDERING)
             self.assertEqual(queue.routing_policy, POINT_TO_POINT_ROUTING)
+            self.assertEqual(queue.subscription_policy, NO_SUBSCRIPTIONS)
+            self.assertEqual(
+                queue.subscription_policy.as_dict(),
+                {
+                    "subscriptions": False,
+                    "fanout": False,
+                    "subscriber_count": 0,
+                },
+            )
             self.assertIsNone(queue._store)
             self.assertEqual(queue._store_path, Path(tmpdir) / "queue.sqlite3")
 
@@ -728,6 +772,7 @@ class QueueTests(unittest.TestCase):
                 "acknowledgements": True,
                 "dead_letters": True,
                 "deduplication": True,
+                "subscriptions": False,
             },
         )
 
@@ -765,6 +810,26 @@ class QueueTests(unittest.TestCase):
                 "pattern": "publish-subscribe",
                 "single_consumer_per_message": False,
                 "fanout": True,
+            },
+        )
+
+    def test_constructor_accepts_static_fanout_subscriptions(self) -> None:
+        subscription_policy = StaticFanoutSubscriptions(("billing", "audit"))
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            subscription_policy=subscription_policy,
+        )
+
+        self.assertIs(queue.subscription_policy, subscription_policy)
+        self.assertTrue(queue.semantics.subscriptions)
+        self.assertEqual(
+            queue.subscription_policy.as_dict(),
+            {
+                "subscriptions": True,
+                "fanout": True,
+                "subscriber_count": 2,
+                "subscribers": ["billing", "audit"],
             },
         )
 
@@ -966,6 +1031,7 @@ class QueueTests(unittest.TestCase):
         acknowledgement_policy = ExplicitAcknowledgement()
         dead_letter_policy = DeadLetterQueue()
         deduplication_policy = NoDeduplication()
+        subscription_policy = StaticFanoutSubscriptions(("billing", "audit"))
         backpressure = BoundedBackpressure(5)
         policy_set = QueuePolicySet(
             locality_policy=locality_policy,
@@ -975,6 +1041,7 @@ class QueueTests(unittest.TestCase):
             deduplication_policy=deduplication_policy,
             delivery_policy=delivery_policy,
             ordering_policy=ordering_policy,
+            subscription_policy=subscription_policy,
             backpressure=backpressure,
         )
 
@@ -991,11 +1058,13 @@ class QueueTests(unittest.TestCase):
         self.assertIs(queue.deduplication_policy, deduplication_policy)
         self.assertIs(queue.delivery_policy, delivery_policy)
         self.assertIs(queue.ordering_policy, ordering_policy)
+        self.assertIs(queue.subscription_policy, subscription_policy)
         self.assertIs(queue.backpressure, backpressure)
         self.assertEqual(queue.maxsize, 5)
         self.assertEqual(queue.lease_timeout, 15)
         self.assertEqual(queue.semantics.locality, "remote")
         self.assertFalse(queue.semantics.deduplication)
+        self.assertTrue(queue.semantics.subscriptions)
         self.assertEqual(queue.semantics.delivery, "effectively-once")
         self.assertEqual(queue.semantics.ordering, "best-effort")
 
@@ -1011,6 +1080,7 @@ class QueueTests(unittest.TestCase):
         consumption_policy = PushConsumption()
         ordering_policy = BestEffortOrdering()
         routing_policy = PointToPointRouting()
+        subscription_policy = StaticFanoutSubscriptions(("billing", "audit"))
         backpressure = BoundedBackpressure(5)
 
         policy_set = QueuePolicySet.effectively_once(
@@ -1025,6 +1095,7 @@ class QueueTests(unittest.TestCase):
             consumption_policy=consumption_policy,
             ordering_policy=ordering_policy,
             routing_policy=routing_policy,
+            subscription_policy=subscription_policy,
             backpressure=backpressure,
         )
 
@@ -1036,6 +1107,7 @@ class QueueTests(unittest.TestCase):
         self.assertIs(policy_set.consumption_policy, consumption_policy)
         self.assertIs(policy_set.ordering_policy, ordering_policy)
         self.assertIs(policy_set.routing_policy, routing_policy)
+        self.assertIs(policy_set.subscription_policy, subscription_policy)
         self.assertIs(policy_set.backpressure, backpressure)
         self.assertEqual(
             policy_set.as_dict(),
@@ -1101,6 +1173,12 @@ class QueueTests(unittest.TestCase):
                     "pattern": "point-to-point",
                     "single_consumer_per_message": True,
                     "fanout": False,
+                },
+                "subscription_policy": {
+                    "subscriptions": True,
+                    "fanout": True,
+                    "subscriber_count": 2,
+                    "subscribers": ["billing", "audit"],
                 },
                 "backpressure": {
                     "type": "bounded",

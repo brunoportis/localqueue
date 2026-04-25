@@ -340,6 +340,27 @@ This is a routing contract on the queue configuration. It does not turn a
 single local queue into a distributed broker or automatically create subscriber
 queues.
 
+Use `StaticFanoutSubscriptions` when the publish/subscribe definition should
+also name its subscribers:
+
+```python
+from localqueue import (
+    PersistentQueue,
+    PublishSubscribeRouting,
+    StaticFanoutSubscriptions,
+)
+
+queue = PersistentQueue(
+    "notifications",
+    routing_policy=PublishSubscribeRouting(),
+    subscription_policy=StaticFanoutSubscriptions(("email", "audit")),
+)
+```
+
+This keeps fanout visible in the architecture without changing the local store
+contract yet. `NoSubscriptions` remains the default for the simple
+point-to-point queue path.
+
 The ready-message ordering is available as a policy object too:
 
 ```python

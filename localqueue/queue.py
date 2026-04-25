@@ -15,6 +15,7 @@ from .policies import (
     DEDUPE_KEY_SUPPORT,
     FIFO_READY_ORDERING,
     FIXED_LEASE_TIMEOUT,
+    NO_SUBSCRIPTIONS,
     POINT_TO_POINT_ROUTING,
     PULL_CONSUMPTION,
     AcknowledgementPolicy,
@@ -28,6 +29,7 @@ from .policies import (
     LocalityPolicy,
     OrderingPolicy,
     RoutingPolicy,
+    SubscriptionPolicy,
     BackpressureStrategy,
     BoundedBackpressure,
     QueuePolicySet,
@@ -54,6 +56,7 @@ class PersistentQueue(Generic[T]):
     delivery_policy: DeliveryPolicy
     ordering_policy: OrderingPolicy
     routing_policy: RoutingPolicy
+    subscription_policy: SubscriptionPolicy
     backpressure: BackpressureStrategy
     _store: QueueStore | None
     _store_path: Path | None
@@ -80,6 +83,7 @@ class PersistentQueue(Generic[T]):
         delivery_policy: DeliveryPolicy | None = None,
         ordering_policy: OrderingPolicy | None = None,
         routing_policy: RoutingPolicy | None = None,
+        subscription_policy: SubscriptionPolicy | None = None,
         backpressure: BackpressureStrategy | None = None,
         policy_set: QueuePolicySet | None = None,
     ) -> None:
@@ -96,6 +100,7 @@ class PersistentQueue(Generic[T]):
             delivery_policy,
             ordering_policy,
             routing_policy,
+            subscription_policy,
             backpressure,
         ) = _apply_policy_set(
             policy_set=policy_set,
@@ -109,6 +114,7 @@ class PersistentQueue(Generic[T]):
             delivery_policy=delivery_policy,
             ordering_policy=ordering_policy,
             routing_policy=routing_policy,
+            subscription_policy=subscription_policy,
             backpressure=backpressure,
             maxsize=maxsize,
         )
@@ -152,6 +158,9 @@ class PersistentQueue(Generic[T]):
         resolved_routing = (
             POINT_TO_POINT_ROUTING if routing_policy is None else routing_policy
         )
+        resolved_subscription = (
+            NO_SUBSCRIPTIONS if subscription_policy is None else subscription_policy
+        )
         resolved_semantics = (
             semantics
             if semantics is not None
@@ -165,6 +174,7 @@ class PersistentQueue(Generic[T]):
                 acknowledgements=resolved_acknowledgement.acknowledgements,
                 dead_letters=resolved_dead_letter.dead_letters,
                 deduplication=resolved_deduplication.deduplication,
+                subscriptions=resolved_subscription.subscriptions,
             )
         )
         _validate_semantics(
@@ -178,6 +188,7 @@ class PersistentQueue(Generic[T]):
             consumption_policy=resolved_consumption,
             ordering_policy=resolved_ordering,
             routing_policy=resolved_routing,
+            subscription_policy=resolved_subscription,
         )
 
         self.name = name
@@ -196,6 +207,7 @@ class PersistentQueue(Generic[T]):
         self.delivery_policy = resolved_delivery
         self.ordering_policy = resolved_ordering
         self.routing_policy = resolved_routing
+        self.subscription_policy = resolved_subscription
         self._store = store
         self._store_path = Path(store_path) if store_path is not None else None
         self.retry_defaults = dict(retry_defaults or {})
@@ -457,6 +469,7 @@ def _apply_policy_set(
     delivery_policy: DeliveryPolicy | None,
     ordering_policy: OrderingPolicy | None,
     routing_policy: RoutingPolicy | None,
+    subscription_policy: SubscriptionPolicy | None,
     backpressure: BackpressureStrategy | None,
     maxsize: int,
 ) -> tuple[
@@ -470,6 +483,7 @@ def _apply_policy_set(
     DeliveryPolicy | None,
     OrderingPolicy | None,
     RoutingPolicy | None,
+    SubscriptionPolicy | None,
     BackpressureStrategy | None,
 ]:
     if policy_set is None:
@@ -484,6 +498,7 @@ def _apply_policy_set(
             delivery_policy,
             ordering_policy,
             routing_policy,
+            subscription_policy,
             backpressure,
         )
     if policy_set.backpressure is not None and maxsize != 0:
@@ -523,6 +538,11 @@ def _apply_policy_set(
         _policy_value("delivery_policy", delivery_policy, policy_set.delivery_policy),
         _policy_value("ordering_policy", ordering_policy, policy_set.ordering_policy),
         _policy_value("routing_policy", routing_policy, policy_set.routing_policy),
+        _policy_value(
+            "subscription_policy",
+            subscription_policy,
+            policy_set.subscription_policy,
+        ),
         _policy_value("backpressure", backpressure, policy_set.backpressure),
     )
 
@@ -556,9 +576,37 @@ def _validate_semantics(
     consumption_policy: ConsumptionPolicy,
     ordering_policy: OrderingPolicy,
     routing_policy: RoutingPolicy,
+    subscription_policy: SubscriptionPolicy,
 ) -> None:
     if semantics.locality != locality_policy.locality:
         raise ValueError("semantics locality must match locality_policy locality")
+    _validate_semantics_flags(
+        semantics,
+        lease_policy=lease_policy,
+        acknowledgement_policy=acknowledgement_policy,
+        dead_letter_policy=dead_letter_policy,
+        deduplication_policy=deduplication_policy,
+        subscription_policy=subscription_policy,
+    )
+    if semantics.delivery != delivery_policy.guarantee:
+        raise ValueError("semantics delivery must match delivery_policy guarantee")
+    if semantics.consumption != consumption_policy.pattern:
+        raise ValueError("semantics consumption must match consumption_policy pattern")
+    if semantics.ordering != ordering_policy.guarantee:
+        raise ValueError("semantics ordering must match ordering_policy guarantee")
+    if semantics.routing != routing_policy.pattern:
+        raise ValueError("semantics routing must match routing_policy pattern")
+
+
+def _validate_semantics_flags(
+    semantics: QueueSemantics,
+    *,
+    lease_policy: LeasePolicy,
+    acknowledgement_policy: AcknowledgementPolicy,
+    dead_letter_policy: DeadLetterPolicy,
+    deduplication_policy: DeduplicationPolicy,
+    subscription_policy: SubscriptionPolicy,
+) -> None:
     if semantics.leases != lease_policy.uses_leases:
         raise ValueError("semantics leases must match lease_policy uses_leases")
     if semantics.acknowledgements != acknowledgement_policy.acknowledgements:
@@ -574,14 +622,10 @@ def _validate_semantics(
         raise ValueError(
             "semantics deduplication must match deduplication_policy deduplication"
         )
-    if semantics.delivery != delivery_policy.guarantee:
-        raise ValueError("semantics delivery must match delivery_policy guarantee")
-    if semantics.consumption != consumption_policy.pattern:
-        raise ValueError("semantics consumption must match consumption_policy pattern")
-    if semantics.ordering != ordering_policy.guarantee:
-        raise ValueError("semantics ordering must match ordering_policy guarantee")
-    if semantics.routing != routing_policy.pattern:
-        raise ValueError("semantics routing must match routing_policy pattern")
+    if semantics.subscriptions != subscription_policy.subscriptions:
+        raise ValueError(
+            "semantics subscriptions must match subscription_policy subscriptions"
+        )
 
 
 def _validate_priority(priority: int) -> None:
