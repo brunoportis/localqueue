@@ -8,14 +8,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, TYPE_CHECKING
 
-from . import __version__
-from .cli_commands import (
+from .. import __version__
+from .commands import (
     CommandRegistryContext,
     register_config_commands,
     register_queue_commands as _register_non_worker_queue_commands,
     register_retry_commands,
 )
-from .cli_support import (
+from .support import (
     coerce_config_value as _coerce_config_value,
     config_path as _config_path,
     dead_letter_summary as _dead_letter_summary,
@@ -32,20 +32,20 @@ from .cli_support import (
     worker_health_summary as _worker_health_summary,
     write_config as _write_config,
 )
-from .cli_worker_commands import (
+from .worker import (
     register_queue_exec_command,
     register_queue_process_command,
 )
-from .paths import default_queue_store_path, default_retry_store_path
-from .queue import PersistentQueue
-from .services.queue_worker import (
+from ..paths import default_queue_store_path, default_retry_store_path
+from ..queue import PersistentQueue
+from ..services.queue_worker import (
     ShutdownState as _ShutdownState,
     command_handler as _command_handler,
     message_payload as _message_payload,
     print_json as _print_json,
     process_queue_messages as _process_queue_messages,
 )
-from .stores import QueueMessage
+from ..stores import QueueMessage
 
 if TYPE_CHECKING:
     from types import FrameType
