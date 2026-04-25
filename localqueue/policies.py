@@ -130,6 +130,9 @@ class OrderingPolicy(Protocol):
     @property
     def stable_for_same_timestamp(self) -> bool: ...
 
+    @property
+    def priority_before_sequence(self) -> bool: ...
+
     def as_dict(self) -> dict[str, object]: ...
 
 
@@ -140,12 +143,26 @@ class FifoReadyOrdering:
     guarantee: OrderingGuarantee = "fifo-ready"
     ready_before_delayed: bool = True
     stable_for_same_timestamp: bool = True
+    priority_before_sequence: bool = False
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
 
 
 FIFO_READY_ORDERING = FifoReadyOrdering()
+
+
+@dataclass(frozen=True, slots=True)
+class PriorityOrdering:
+    """Ordering policy where higher-priority ready messages are delivered first."""
+
+    guarantee: OrderingGuarantee = "priority"
+    ready_before_delayed: bool = True
+    stable_for_same_timestamp: bool = True
+    priority_before_sequence: bool = True
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
 
 
 class BackpressureStrategy(Protocol):

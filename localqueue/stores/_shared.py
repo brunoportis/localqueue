@@ -18,8 +18,9 @@ _ENVS_LOCK = threading.Lock()
 _READY = "ready"
 _INFLIGHT = "inflight"
 _DEAD = "dead"
-_QUEUE_RECORD_VERSION = 4
-_SQLITE_SCHEMA_VERSION = 2
+_QUEUE_RECORD_VERSION = 5
+_SQLITE_SCHEMA_VERSION = 3
+_MAX_PRIORITY = 99999999999999999999
 
 
 def import_lmdb() -> ModuleType:
@@ -68,6 +69,7 @@ class QueueRecord:
     dedupe_key: str | None
     state: str
     index_key: bytes | None
+    priority: int = 0
     attempt_history: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
@@ -78,6 +80,7 @@ class QueueRecord:
         available_at: float,
         *,
         dedupe_key: str | None = None,
+        priority: int = 0,
     ) -> "QueueRecord":
         return cls(
             id=uuid.uuid4().hex,
@@ -91,6 +94,7 @@ class QueueRecord:
             last_error=None,
             failed_at=None,
             dedupe_key=dedupe_key,
+            priority=priority,
             state=_READY,
             index_key=None,
         )
@@ -110,6 +114,7 @@ class QueueRecord:
             failed_at=self.failed_at,
             attempt_history=list(self.attempt_history),
             dedupe_key=self.dedupe_key,
+            priority=self.priority,
         )
 
 
@@ -153,7 +158,16 @@ def ready_prefix(queue: str) -> bytes:
     return f"queue:{safe_queue(queue)}:ready:".encode("utf-8")
 
 
-def ready_key(queue: str, available_at: float, seq: int, message_id: str) -> bytes:
+def ready_key(
+    queue: str, available_at: float, seq: int, message_id: str, *, priority: int = 0
+) -> bytes:
+    if priority > 0:
+        priority_rank = _MAX_PRIORITY - priority
+        return (
+            f"queue:{safe_queue(queue)}:ready:"
+            + f"{millis(available_at):020d}:!{priority_rank:020d}:"
+            + f"{seq:020d}:{message_id}"
+        ).encode("utf-8")
     return (
         f"queue:{safe_queue(queue)}:ready:"
         + f"{millis(available_at):020d}:{seq:020d}:{message_id}"
@@ -222,6 +236,7 @@ def encode_record(record: QueueRecord) -> bytes:
         "last_error": record.last_error,
         "failed_at": record.failed_at,
         "dedupe_key": record.dedupe_key,
+        "priority": record.priority,
         "attempt_history": record.attempt_history,
         "state": record.state,
         "index_key": record.index_key.decode("utf-8")
@@ -245,7 +260,7 @@ def decode_record(raw: bytes | str) -> QueueRecord:
         raise ValueError("queue record is not valid JSON") from exc
 
     version = payload.get("version")
-    if version not in {1, 2, 3, _QUEUE_RECORD_VERSION}:
+    if version not in {1, 2, 3, 4, _QUEUE_RECORD_VERSION}:
         raise ValueError(f"unsupported queue record version: {version!r}")
 
     index_key = payload["index_key"]
@@ -261,6 +276,7 @@ def decode_record(raw: bytes | str) -> QueueRecord:
         last_error=payload.get("last_error"),
         failed_at=payload.get("failed_at"),
         dedupe_key=payload.get("dedupe_key"),
+        priority=payload.get("priority", 0),
         attempt_history=payload.get("attempt_history", []),
         state=payload["state"],
         index_key=index_key.encode("utf-8") if index_key is not None else None,
@@ -399,6 +415,8 @@ def sequence_from_index_key(key: bytes) -> int:
         return 0
 
     parts = decoded.split(":")
+    if len(parts) >= 7 and parts[2] == _READY and parts[4].startswith("!"):
+        return int(parts[5])
     if len(parts) >= 6 and parts[2] == _READY:
         return int(parts[4])
     return 0

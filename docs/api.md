@@ -36,7 +36,7 @@ Core methods:
 
 | Method | Meaning |
 | --- | --- |
-| `put(item, block=True, timeout=None, delay=0.0)` | enqueue an item |
+| `put(item, block=True, timeout=None, delay=0.0, priority=0)` | enqueue an item |
 | `put_nowait(item)` | enqueue without blocking |
 | `get(block=True, timeout=None, leased_by=None)` | get only the value |
 | `get_nowait()` | get without blocking |
@@ -88,6 +88,14 @@ fan it out to multiple independent subscriber queues.
 Ordering policy used by default. It describes the current store ordering:
 messages become eligible by `available_at`, and messages with the same
 availability keep enqueue order.
+
+#### `PriorityOrdering`
+
+Ordering policy for queues that should deliver higher-priority ready messages
+first. Pass `ordering_policy=PriorityOrdering()` to `PersistentQueue`, then use
+`put(..., priority=n)` with non-negative integer priorities. Higher numbers are
+delivered before lower numbers when messages are available at the same time.
+Messages with the same priority keep enqueue order.
 
 #### `BoundedBackpressure`
 
@@ -149,6 +157,7 @@ Dataclass returned by `put()` and `get_message()`.
 | `attempts` | delivery attempt count |
 | `created_at` | creation timestamp |
 | `available_at` | earliest delivery timestamp |
+| `priority` | non-negative priority; higher values are delivered first with `PriorityOrdering` |
 | `leased_until` | lease expiration timestamp, if inflight |
 | `leased_by` | optional worker id that currently owns the lease, if inflight |
 | `dedupe_key` | optional idempotency key used to reuse the same stored message |

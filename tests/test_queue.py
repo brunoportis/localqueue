@@ -31,6 +31,7 @@ from localqueue import (
     PersistentQueue,
     PersistentWorkerConfig,
     PointToPointRouting,
+    PriorityOrdering,
     PullConsumption,
     QueueSemantics,
     QueueMessage,
@@ -276,6 +277,16 @@ class QueueTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "maxsize cannot be negative"):
             _ = BoundedBackpressure(-1)
 
+        queue = PersistentQueue("test", store=store)
+        with self.assertRaisesRegex(TypeError, "priority must be an integer"):
+            _ = queue.put("item", priority=cast("Any", 1.5))
+        with self.assertRaisesRegex(TypeError, "priority must be an integer"):
+            _ = queue.put("item", priority=cast("Any", True))
+        with self.assertRaisesRegex(ValueError, "priority cannot be negative"):
+            _ = queue.put("item", priority=-1)
+        with self.assertRaisesRegex(ValueError, "priority requires PriorityOrdering"):
+            _ = queue.put("item", priority=1)
+
         with self.assertRaisesRegex(
             ValueError, "semantics delivery must match delivery_policy guarantee"
         ):
@@ -453,6 +464,27 @@ class QueueTests(unittest.TestCase):
                 "guarantee": "fifo-ready",
                 "ready_before_delayed": True,
                 "stable_for_same_timestamp": True,
+                "priority_before_sequence": False,
+            },
+        )
+
+    def test_constructor_accepts_priority_ordering_policy(self) -> None:
+        ordering_policy = PriorityOrdering()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            ordering_policy=ordering_policy,
+        )
+
+        self.assertEqual(queue.semantics.ordering, "priority")
+        self.assertIs(queue.ordering_policy, ordering_policy)
+        self.assertEqual(
+            queue.ordering_policy.as_dict(),
+            {
+                "guarantee": "priority",
+                "ready_before_delayed": True,
+                "stable_for_same_timestamp": True,
+                "priority_before_sequence": True,
             },
         )
 
@@ -652,6 +684,68 @@ class QueueTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "^dedupe_key cannot be empty$"):
             _ = queue.put("item", dedupe_key="")
+
+    def test_priority_ordering_delivers_higher_priority_first(self) -> None:
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            ordering_policy=PriorityOrdering(),
+        )
+        with mock.patch("time.time", return_value=100.0):
+            low = queue.put("low", priority=1)
+            high = queue.put("high", priority=10)
+            normal = queue.put("normal")
+
+        self.assertEqual(low.priority, 1)
+        self.assertEqual(high.priority, 10)
+        self.assertEqual(normal.priority, 0)
+        with mock.patch("time.time", return_value=100.0):
+            self.assertEqual(queue.get_nowait(), "high")
+            queue.task_done()
+            self.assertEqual(queue.get_nowait(), "low")
+            queue.task_done()
+            self.assertEqual(queue.get_nowait(), "normal")
+            queue.task_done()
+
+    def test_sqlite_priority_ordering_delivers_higher_priority_first(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            queue = PersistentQueue(
+                "test",
+                store_path=f"{tmpdir}/queue.sqlite3",
+                ordering_policy=PriorityOrdering(),
+            )
+            with mock.patch("time.time", return_value=100.0):
+                _ = queue.put("low", priority=1)
+                _ = queue.put("high", priority=10)
+                _ = queue.put("normal")
+
+            with mock.patch("time.time", return_value=100.0):
+                self.assertEqual(queue.get_nowait(), "high")
+                queue.task_done()
+                self.assertEqual(queue.get_nowait(), "low")
+                queue.task_done()
+                self.assertEqual(queue.get_nowait(), "normal")
+                queue.task_done()
+
+    def test_lmdb_priority_ordering_delivers_higher_priority_first(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            queue = PersistentQueue(
+                "test",
+                store=LMDBQueueStore(tmpdir),
+                ordering_policy=PriorityOrdering(),
+            )
+            with mock.patch("time.time", return_value=100.0):
+                _ = queue.put("low", priority=1)
+                _ = queue.put("high", priority=10)
+                _ = queue.put("normal")
+
+            with mock.patch("time.time", return_value=100.0):
+                self.assertEqual(queue.get_nowait(), "high")
+                queue.task_done()
+                self.assertEqual(queue.get_nowait(), "low")
+                queue.task_done()
+                self.assertEqual(queue.get_nowait(), "normal")
+                queue.task_done()
 
     def test_default_put_blocks_until_capacity_frees(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore(), maxsize=1)
@@ -1355,7 +1449,7 @@ class QueueTests(unittest.TestCase):
             connection.close()
 
             assert row is not None
-            self.assertEqual(int(row[0]), 2)
+            self.assertEqual(int(row[0]), 3)
 
     def test_sqlite_store_rejects_future_schema_versions(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1625,10 +1719,11 @@ class QueueTests(unittest.TestCase):
 
             assert raw is not None
             payload = json.loads(bytes(raw).decode("utf-8"))
-            self.assertEqual(payload["version"], 4)
+            self.assertEqual(payload["version"], 5)
             self.assertEqual(payload["value"], {"kind": "email"})
             self.assertIsNone(payload["leased_by"])
             self.assertIsNone(payload["dedupe_key"])
+            self.assertEqual(payload["priority"], 0)
             self.assertEqual(payload["attempt_history"], [])
 
     def test_lmdb_store_rejects_non_json_serializable_values(self) -> None:
@@ -1708,6 +1803,12 @@ class QueueTests(unittest.TestCase):
     def test_sequence_from_index_key_handles_non_ready_keys(self) -> None:
         self.assertEqual(_sequence_from_index_key(b"\xff"), 0)
         self.assertEqual(_sequence_from_index_key(_dead_key("jobs", "id")), 0)
+        self.assertEqual(
+            _sequence_from_index_key(
+                _ready_key("jobs", time.time(), 12, "id", priority=5)
+            ),
+            12,
+        )
 
         store = SQLiteQueueStore(":memory:")
         raw = _encode_record(
@@ -1757,6 +1858,7 @@ class QueueTests(unittest.TestCase):
             ).encode("utf-8")
         )
         self.assertEqual(decoded.attempt_history, [])
+        self.assertEqual(decoded.priority, 0)
 
     def test_sqlite_store_reads_legacy_version_1_records(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1821,16 +1923,18 @@ class QueueTests(unittest.TestCase):
             column_rows = connection.execute("PRAGMA table_info(queue_messages)")
             columns = {str(row[1]) for row in column_rows.fetchall()}
             migrated_row = connection.execute(
-                "SELECT created_at, failed_at, leased_by "
+                "SELECT created_at, failed_at, leased_by, priority "
                 "FROM queue_messages WHERE queue = ? AND id = ?",
                 ("jobs", "legacy-job"),
             ).fetchone()
             connection.close()
 
             assert version_row is not None
-            self.assertEqual(int(version_row[0]), 2)
-            self.assertLessEqual({"created_at", "failed_at", "leased_by"}, columns)
-            self.assertEqual(migrated_row, (100.0, 120.0, "worker-a"))
+            self.assertEqual(int(version_row[0]), 3)
+            self.assertLessEqual(
+                {"created_at", "failed_at", "leased_by", "priority"}, columns
+            )
+            self.assertEqual(migrated_row, (100.0, 120.0, "worker-a", 0))
 
     def test_lmdb_store_reclaims_expired_leases(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -11,7 +11,6 @@ from .paths import default_queue_store_path
 from .policies import (
     AT_LEAST_ONCE_DELIVERY,
     FIFO_READY_ORDERING,
-    LOCAL_AT_LEAST_ONCE,
     POINT_TO_POINT_ROUTING,
     PULL_CONSUMPTION,
     ConsumptionPolicy,
@@ -83,7 +82,16 @@ class PersistentQueue(Generic[T]):
         resolved_routing = (
             POINT_TO_POINT_ROUTING if routing_policy is None else routing_policy
         )
-        resolved_semantics = semantics if semantics is not None else LOCAL_AT_LEAST_ONCE
+        resolved_semantics = (
+            semantics
+            if semantics is not None
+            else QueueSemantics(
+                delivery=resolved_delivery.guarantee,
+                consumption=resolved_consumption.pattern,
+                ordering=resolved_ordering.guarantee,
+                routing=resolved_routing.pattern,
+            )
+        )
         if resolved_semantics.delivery != resolved_delivery.guarantee:
             raise ValueError("semantics delivery must match delivery_policy guarantee")
         if resolved_semantics.consumption != resolved_consumption.pattern:
@@ -120,11 +128,15 @@ class PersistentQueue(Generic[T]):
         *,
         delay: float = 0.0,
         dedupe_key: str | None = None,
+        priority: int = 0,
     ) -> QueueMessage:
         if delay < 0:
             raise ValueError(_NEGATIVE_DELAY_ERROR)
         if dedupe_key is not None and not dedupe_key:
             raise ValueError("dedupe_key cannot be empty")
+        _validate_priority(priority)
+        if priority > 0 and self.ordering_policy.guarantee != "priority":
+            raise ValueError("priority requires PriorityOrdering")
         deadline = _deadline(timeout)
         with self._condition:
             while self.full():
@@ -139,6 +151,7 @@ class PersistentQueue(Generic[T]):
                 item,
                 available_at=time.time() + delay,
                 dedupe_key=dedupe_key,
+                priority=priority,
             )
             self._condition.notify_all()
             return message
@@ -354,6 +367,13 @@ def _validate_retry_defaults(retry_defaults: Mapping[str, Any] | None) -> None:
         max_tries = retry_defaults["max_tries"]
         if not isinstance(max_tries, int) or max_tries <= 0:
             raise ValueError("retry_defaults max_tries must be a positive integer")
+
+
+def _validate_priority(priority: int) -> None:
+    if isinstance(priority, bool) or not isinstance(priority, int):
+        raise TypeError("priority must be an integer")
+    if priority < 0:
+        raise ValueError("priority cannot be negative")
 
 
 def _error_payload(error: BaseException | str | None) -> dict[str, Any] | None:

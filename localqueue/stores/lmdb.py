@@ -75,6 +75,7 @@ class LMDBQueueStore:
         *,
         available_at: float,
         dedupe_key: str | None = None,
+        priority: int = 0,
     ):
         validate_json_serializable(value)
         with self._env.begin(write=True) as txn:
@@ -85,10 +86,15 @@ class LMDBQueueStore:
                     if record is not None:
                         return record.to_message()
                     _ = txn.delete(dedupe_key_key(queue, dedupe_key))
-            record = QueueRecord.new(queue, value, available_at, dedupe_key=dedupe_key)
+            record = QueueRecord.new(
+                queue, value, available_at, dedupe_key=dedupe_key, priority=priority
+            )
             seq = self._next_seq(txn, queue)
             record = replace_record(
-                record, index_key=ready_key(queue, available_at, seq, record.id)
+                record,
+                index_key=ready_key(
+                    queue, available_at, seq, record.id, priority=record.priority
+                ),
             )
             self._put_record(txn, record)
             assert record.index_key is not None
@@ -191,7 +197,9 @@ class LMDBQueueStore:
                 last_error=last_error if last_error is not None else record.last_error,
                 failed_at=failed_at if failed_at is not None else record.failed_at,
                 state="ready",
-                index_key=ready_key(queue, available_at, seq, message_id),
+                index_key=ready_key(
+                    queue, available_at, seq, message_id, priority=record.priority
+                ),
                 attempt_history=record.attempt_history
                 + [
                     attempt_event(
@@ -320,7 +328,9 @@ class LMDBQueueStore:
                 leased_until=None,
                 leased_by=None,
                 state="ready",
-                index_key=ready_key(queue, available_at, seq, message_id),
+                index_key=ready_key(
+                    queue, available_at, seq, message_id, priority=record.priority
+                ),
                 attempt_history=record.attempt_history
                 + [attempt_event("requeued", at=time.time(), attempt=record.attempts)],
             )
@@ -430,7 +440,9 @@ class LMDBQueueStore:
                 leased_until=None,
                 leased_by=None,
                 state="ready",
-                index_key=ready_key(queue, now, seq, message_id),
+                index_key=ready_key(
+                    queue, now, seq, message_id, priority=record.priority
+                ),
                 attempt_history=record.attempt_history
                 + [
                     attempt_event(
