@@ -8,9 +8,11 @@ from collections.abc import Callable
 from queue import Empty
 from typing import Any, TypeVar, cast, TYPE_CHECKING
 
+from .idempotency import IdempotencyRecord, IdempotencyStore
 from .retry import PersistentAsyncRetrying, PersistentRetrying
 
 from .failure import is_permanent_failure
+from .queue import _error_payload
 
 if TYPE_CHECKING:
     from .queue import PersistentQueue
@@ -293,6 +295,62 @@ def _record_success(state: WorkerPolicyState) -> None:
     state.consecutive_failures = 0
 
 
+def _idempotency_store(queue: PersistentQueue) -> IdempotencyStore | None:
+    return cast(
+        "IdempotencyStore | None",
+        getattr(queue.delivery_policy, "idempotency_store", None),
+    )
+
+
+def _begin_idempotent_handling(
+    queue: PersistentQueue, message: QueueMessage
+) -> IdempotencyRecord | None:
+    store = _idempotency_store(queue)
+    if store is None or message.dedupe_key is None:
+        return None
+    record = store.load(message.dedupe_key)
+    if record is not None and record.status == "succeeded":
+        _ = queue.ack(message)
+        return record
+    first_seen_at = time.time() if record is None else record.first_seen_at
+    store.save(
+        message.dedupe_key,
+        IdempotencyRecord(
+            status="pending",
+            first_seen_at=first_seen_at,
+            metadata={"queue": message.queue, "message_id": message.id},
+        ),
+    )
+    return None
+
+
+def _complete_idempotent_handling(
+    queue: PersistentQueue,
+    message: QueueMessage,
+    *,
+    status: str,
+    error: BaseException | None = None,
+) -> None:
+    store = _idempotency_store(queue)
+    if store is None or message.dedupe_key is None:
+        return
+    existing = store.load(message.dedupe_key)
+    first_seen_at = time.time() if existing is None else existing.first_seen_at
+    metadata: dict[str, Any] = {"queue": message.queue, "message_id": message.id}
+    if error is not None:
+        metadata["last_error"] = _error_payload(error)
+    store.save(
+        message.dedupe_key,
+        IdempotencyRecord(
+            status=cast("Any", status),
+            first_seen_at=first_seen_at,
+            completed_at=time.time(),
+            result_key=None if existing is None else existing.result_key,
+            metadata=metadata,
+        ),
+    )
+
+
 def persistent_worker(
     queue: PersistentQueue,
     *,
@@ -322,10 +380,16 @@ def persistent_worker(
                 queue.record_worker_heartbeat(worker_id)
             _sleep_for_policy(policy_state, worker_config)
             message = queue.get_message()
+            if _begin_idempotent_handling(queue, message) is not None:
+                _record_success(policy_state)
+                return None
             retryer = PersistentRetrying(key=message.id, **retry_kwargs)
             try:
                 result = retryer(fn, message.value, *args, **kwargs)
             except Exception as exc:
+                _complete_idempotent_handling(
+                    queue, message, status="failed", error=exc
+                )
                 if is_permanent_failure(exc) or worker_config.dead_letter_on_failure:
                     queue.dead_letter(message, error=exc)
                 else:
@@ -340,6 +404,7 @@ def persistent_worker(
                 if worker_id is not None:
                     queue.record_worker_heartbeat(worker_id)
             _record_success(policy_state)
+            _complete_idempotent_handling(queue, message, status="succeeded")
             queue.ack(message)
             return result
 
@@ -377,10 +442,16 @@ def persistent_async_worker(
                 queue.record_worker_heartbeat(worker_id)
             await _sleep_for_policy_async(policy_state, worker_config)
             message = await _get_message_async(queue)
+            if _begin_idempotent_handling(queue, message) is not None:
+                _record_success(policy_state)
+                return None
             retryer = PersistentAsyncRetrying(key=message.id, **retry_kwargs)
             try:
                 result = await retryer(fn, message.value, *args, **kwargs)
             except Exception as exc:
+                _complete_idempotent_handling(
+                    queue, message, status="failed", error=exc
+                )
                 if is_permanent_failure(exc) or worker_config.dead_letter_on_failure:
                     queue.dead_letter(message, error=exc)
                 else:
@@ -399,6 +470,7 @@ def persistent_async_worker(
                 if worker_id is not None:
                     queue.record_worker_heartbeat(worker_id)
             _record_success(policy_state)
+            _complete_idempotent_handling(queue, message, status="succeeded")
             queue.ack(message)
             return result
 

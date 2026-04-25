@@ -3343,6 +3343,124 @@ class QueueTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_effectively_once_worker_records_success_in_idempotency_store(self) -> None:
+        store = MemoryIdempotencyStore()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=EffectivelyOnceDelivery(idempotency_store=store),
+        )
+        message = queue.put("item", dedupe_key="job-1")
+
+        @persistent_worker(queue)
+        def handle(value: str) -> str:
+            return value.upper()
+
+        self.assertEqual(cast("Any", handle)(), "ITEM")
+        record = store.load("job-1")
+
+        assert record is not None
+        self.assertEqual(record.status, "succeeded")
+        self.assertIsNotNone(record.completed_at)
+        self.assertEqual(
+            record.metadata,
+            {"queue": "test", "message_id": message.id},
+        )
+        self.assertTrue(queue.empty())
+
+    def test_effectively_once_worker_records_failure_in_idempotency_store(self) -> None:
+        store = MemoryIdempotencyStore()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=EffectivelyOnceDelivery(idempotency_store=store),
+        )
+        message = queue.put("item", dedupe_key="job-1")
+
+        @persistent_worker(
+            queue,
+            config=PersistentWorkerConfig(dead_letter_on_failure=False, max_tries=1),
+        )
+        def handle(value: str) -> None:
+            raise RuntimeError(f"boom: {value}")
+
+        with self.assertRaisesRegex(RuntimeError, "boom: item"):
+            cast("Any", handle)()
+
+        record = store.load("job-1")
+        assert record is not None
+        self.assertEqual(record.status, "failed")
+        self.assertIsNotNone(record.completed_at)
+        self.assertEqual(record.metadata["queue"], "test")
+        self.assertEqual(record.metadata["message_id"], message.id)
+        self.assertEqual(record.metadata["last_error"]["type"], "RuntimeError")
+        self.assertEqual(record.metadata["last_error"]["message"], "boom: item")
+        self.assertIsNotNone(queue.inspect(message.id))
+
+    def test_effectively_once_worker_short_circuits_known_success(self) -> None:
+        store = MemoryIdempotencyStore()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=EffectivelyOnceDelivery(idempotency_store=store),
+        )
+        message = queue.put("item", dedupe_key="job-1")
+        store.save(
+            "job-1",
+            IdempotencyRecord(
+                status="succeeded",
+                first_seen_at=100.0,
+                completed_at=120.0,
+                metadata={"queue": "test", "message_id": "previous"},
+            ),
+        )
+        calls = {"count": 0}
+
+        @persistent_worker(queue)
+        def handle(value: str) -> str:
+            calls["count"] += 1
+            return value.upper()
+
+        self.assertIsNone(cast("Any", handle)())
+        self.assertEqual(calls["count"], 0)
+        self.assertTrue(queue.empty())
+        self.assertIsNone(queue.inspect(message.id))
+        record = store.load("job-1")
+        assert record is not None
+        self.assertEqual(record.metadata["message_id"], "previous")
+
+    def test_effectively_once_async_worker_short_circuits_known_success(self) -> None:
+        async def scenario() -> None:
+            store = MemoryIdempotencyStore()
+            queue = PersistentQueue(
+                "test",
+                store=MemoryQueueStore(),
+                delivery_policy=EffectivelyOnceDelivery(idempotency_store=store),
+            )
+            message = queue.put("item", dedupe_key="job-1")
+            store.save(
+                "job-1",
+                IdempotencyRecord(
+                    status="succeeded",
+                    first_seen_at=100.0,
+                    completed_at=120.0,
+                    metadata={"queue": "test", "message_id": "previous"},
+                ),
+            )
+            calls = {"count": 0}
+
+            @persistent_async_worker(queue)
+            async def handle(value: str) -> str:
+                calls["count"] += 1
+                return value.upper()
+
+            self.assertIsNone(await cast("Any", handle)())
+            self.assertEqual(calls["count"], 0)
+            self.assertTrue(queue.empty())
+            self.assertIsNone(queue.inspect(message.id))
+
+        asyncio.run(scenario())
+
     def test_memory_idempotency_store_round_trip_and_prune(self) -> None:
         store = MemoryIdempotencyStore()
         pending = IdempotencyRecord.pending()
