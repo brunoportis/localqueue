@@ -145,6 +145,22 @@ This policy currently makes `dedupe_key` mandatory on `put()`. It keeps the
 at-least-once delivery flow, but turns stable enqueue identity into an explicit
 contract so future idempotency/result stores can build on it.
 
+Use `NoDeduplication` when the queue should reject stable dedupe keys entirely:
+
+```python
+from localqueue import NoDeduplication, PersistentQueue
+
+queue = PersistentQueue(
+    "telemetry",
+    deduplication_policy=NoDeduplication(),
+)
+```
+
+The default `DEDUPE_KEY_SUPPORT` policy keeps deduplication available and lets
+`dedupe_key` participate in the queue's identity model. When you use
+`NoDeduplication`, `put(..., dedupe_key=...)` raises immediately so the policy
+choice is visible in the queue contract.
+
 If you want to start wiring that coordination explicitly, attach an
 `idempotency_store` to the delivery policy:
 

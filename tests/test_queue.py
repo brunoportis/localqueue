@@ -24,6 +24,7 @@ from localqueue.retry import MemoryAttemptStore, RetryRecord, SQLiteAttemptStore
 from localqueue import (
     AT_LEAST_ONCE_DELIVERY,
     DEAD_LETTER_QUEUE,
+    DEDUPE_KEY_SUPPORT,
     EXPLICIT_ACKNOWLEDGEMENT,
     FIFO_READY_ORDERING,
     FIXED_LEASE_TIMEOUT,
@@ -41,6 +42,7 @@ from localqueue import (
     AtMostOnceDelivery,
     BestEffortOrdering,
     BoundedBackpressure,
+    DedupeKeySupport,
     FixedLeaseTimeout,
     FifoReadyOrdering,
     ExplicitAcknowledgement,
@@ -58,6 +60,7 @@ from localqueue import (
     PublishSubscribeRouting,
     PullConsumption,
     PushConsumption,
+    NoDeduplication,
     QueuePolicySet,
     QueueSemantics,
     QueueMessage,
@@ -386,6 +389,26 @@ class QueueTests(unittest.TestCase):
             )
 
         with self.assertRaisesRegex(
+            ValueError,
+            "semantics deduplication must match deduplication_policy deduplication",
+        ):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                semantics=QueueSemantics(deduplication=False),
+                deduplication_policy=DedupeKeySupport(),
+            )
+
+        with self.assertRaisesRegex(
+            ValueError, "dedupe_key is not supported by the active deduplication_policy"
+        ):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                deduplication_policy=NoDeduplication(),
+            ).put("item", dedupe_key="job-1")
+
+        with self.assertRaisesRegex(
             ValueError, "semantics delivery must match delivery_policy guarantee"
         ):
             _ = PersistentQueue(
@@ -504,6 +527,17 @@ class QueueTests(unittest.TestCase):
             )
 
         with self.assertRaisesRegex(
+            ValueError,
+            "pass either deduplication_policy= or policy_set.deduplication_policy, not both",
+        ):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                deduplication_policy=DedupeKeySupport(),
+                policy_set=QueuePolicySet(deduplication_policy=NoDeduplication()),
+            )
+
+        with self.assertRaisesRegex(
             ValueError, "pass either maxsize= or policy_set.backpressure, not both"
         ):
             _ = PersistentQueue(
@@ -555,6 +589,7 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(queue.lease_policy, FIXED_LEASE_TIMEOUT)
             self.assertEqual(queue.acknowledgement_policy, EXPLICIT_ACKNOWLEDGEMENT)
             self.assertEqual(queue.dead_letter_policy, DEAD_LETTER_QUEUE)
+            self.assertEqual(queue.deduplication_policy, DEDUPE_KEY_SUPPORT)
             self.assertEqual(
                 queue.lease_policy.as_dict(),
                 {
@@ -578,6 +613,13 @@ class QueueTests(unittest.TestCase):
                     "dead_letters": True,
                     "stores_failures": True,
                     "supports_requeue": True,
+                },
+            )
+            self.assertEqual(
+                queue.deduplication_policy.as_dict(),
+                {
+                    "deduplication": True,
+                    "accepts_dedupe_key": True,
                 },
             )
             self.assertEqual(queue.maxsize, 0)
@@ -610,6 +652,24 @@ class QueueTests(unittest.TestCase):
         self.assertIs(queue.lease_policy, lease_policy)
         self.assertEqual(queue.lease_timeout, 12.5)
         self.assertTrue(queue.semantics.leases)
+
+    def test_constructor_accepts_deduplication_policy(self) -> None:
+        deduplication_policy = NoDeduplication()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            deduplication_policy=deduplication_policy,
+        )
+
+        self.assertIs(queue.deduplication_policy, deduplication_policy)
+        self.assertFalse(queue.semantics.deduplication)
+        self.assertEqual(
+            queue.deduplication_policy.as_dict(),
+            {
+                "deduplication": False,
+                "accepts_dedupe_key": False,
+            },
+        )
 
     def test_constructor_accepts_remote_locality_policy(self) -> None:
         locality_policy = RemoteQueuePlacement()
@@ -891,12 +951,14 @@ class QueueTests(unittest.TestCase):
         lease_policy = FixedLeaseTimeout(15)
         acknowledgement_policy = ExplicitAcknowledgement()
         dead_letter_policy = DeadLetterQueue()
+        deduplication_policy = NoDeduplication()
         backpressure = BoundedBackpressure(5)
         policy_set = QueuePolicySet(
             locality_policy=locality_policy,
             lease_policy=lease_policy,
             acknowledgement_policy=acknowledgement_policy,
             dead_letter_policy=dead_letter_policy,
+            deduplication_policy=deduplication_policy,
             delivery_policy=delivery_policy,
             ordering_policy=ordering_policy,
             backpressure=backpressure,
@@ -912,12 +974,14 @@ class QueueTests(unittest.TestCase):
         self.assertIs(queue.lease_policy, lease_policy)
         self.assertIs(queue.acknowledgement_policy, acknowledgement_policy)
         self.assertIs(queue.dead_letter_policy, dead_letter_policy)
+        self.assertIs(queue.deduplication_policy, deduplication_policy)
         self.assertIs(queue.delivery_policy, delivery_policy)
         self.assertIs(queue.ordering_policy, ordering_policy)
         self.assertIs(queue.backpressure, backpressure)
         self.assertEqual(queue.maxsize, 5)
         self.assertEqual(queue.lease_timeout, 15)
         self.assertEqual(queue.semantics.locality, "remote")
+        self.assertFalse(queue.semantics.deduplication)
         self.assertEqual(queue.semantics.delivery, "effectively-once")
         self.assertEqual(queue.semantics.ordering, "best-effort")
 
@@ -929,6 +993,7 @@ class QueueTests(unittest.TestCase):
         lease_policy = FixedLeaseTimeout(45)
         acknowledgement_policy = ExplicitAcknowledgement()
         dead_letter_policy = DeadLetterQueue()
+        deduplication_policy = DedupeKeySupport()
         consumption_policy = PushConsumption()
         ordering_policy = BestEffortOrdering()
         routing_policy = PointToPointRouting()
@@ -942,6 +1007,7 @@ class QueueTests(unittest.TestCase):
             lease_policy=lease_policy,
             acknowledgement_policy=acknowledgement_policy,
             dead_letter_policy=dead_letter_policy,
+            deduplication_policy=deduplication_policy,
             consumption_policy=consumption_policy,
             ordering_policy=ordering_policy,
             routing_policy=routing_policy,
@@ -952,6 +1018,7 @@ class QueueTests(unittest.TestCase):
         self.assertIs(policy_set.lease_policy, lease_policy)
         self.assertIs(policy_set.acknowledgement_policy, acknowledgement_policy)
         self.assertIs(policy_set.dead_letter_policy, dead_letter_policy)
+        self.assertIs(policy_set.deduplication_policy, deduplication_policy)
         self.assertIs(policy_set.consumption_policy, consumption_policy)
         self.assertIs(policy_set.ordering_policy, ordering_policy)
         self.assertIs(policy_set.routing_policy, routing_policy)
@@ -980,6 +1047,10 @@ class QueueTests(unittest.TestCase):
                     "dead_letters": True,
                     "stores_failures": True,
                     "supports_requeue": True,
+                },
+                "deduplication_policy": {
+                    "deduplication": True,
+                    "accepts_dedupe_key": True,
                 },
                 "delivery_policy": {
                     "guarantee": "effectively-once",
