@@ -4,14 +4,27 @@ icon: lucide/rotate-cw
 
 # Persistent Retries
 
-`localqueue` is the durable retry layer used by queue workers and by code
-that already has its own delivery mechanism. It wraps Tenacity's `Retrying` and
-`AsyncRetrying` classes. You still configure `stop`, `wait`, `retry`, callbacks,
-and `retry_with()` the same way; the wrapper adds a durable attempt record before
-each stop decision.
+`localqueue.retry` is for code that already receives the work but still needs a
+retry budget that survives process restarts.
 
-If you need a full job lifecycle with ack, release, leases, and dead-letter
-records, start with [Persistent queues](queues.md).
+This is the durable retry layer used by queue workers and by code that already
+has its own delivery mechanism. It wraps Tenacity's `Retrying` and
+`AsyncRetrying` classes. You still configure `stop`, `wait`, `retry`,
+callbacks, and `retry_with()` the same way; the wrapper adds a durable attempt
+record before each stop decision.
+
+Best-fit retry workflows:
+
+- cron jobs that call fragile external services
+- HTTP handlers or consumers that need durable retry budgets per logical job
+- scripts where retry state must outlive the current process
+
+Use this layer when the missing piece is persistent attempt tracking. If you
+need ack, release, leases, dead-letter records, or queue inspection, start with
+[Persistent queues](queues.md) instead.
+
+The main design constraint is stable identity: each logical job needs a stable
+retry key so the same work does not retry forever under a new process.
 
 ## Decorator API
 

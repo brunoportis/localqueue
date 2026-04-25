@@ -4,13 +4,27 @@ icon: lucide/inbox
 
 # Persistent Queues
 
-`localqueue` is the main workflow API in this project. It is a small queue
-abstraction backed by SQLite by default and designed for durable, at-least-once
-delivery of Python values.
+`localqueue` queues are for local workflows where you want to accept work now,
+run it later on the same machine, and keep enough state to inspect and recover
+failures from the terminal.
+
+This is the main workflow API in the project. It is a small queue abstraction
+backed by SQLite by default and designed for durable, at-least-once delivery of
+Python values.
 
 It is local infrastructure: producers and consumers should run where they can
 share the same queue store safely. It is not a distributed broker and does not
 provide multi-host coordination.
+
+Best-fit queue workflows:
+
+- local outbox patterns for email, webhooks, uploads, or report generation
+- CLI-driven workers that should survive restarts
+- jobs that may need dead-letter inspection and replay
+
+Start somewhere else if the queue itself needs to be a distributed system
+boundary. `localqueue` keeps delivery local, recovery local, and operations
+simple.
 
 If you have independent workloads, give them separate queue names instead of
 loading everything into one queue. Each queue keeps its own stats, dead
@@ -30,7 +44,8 @@ queue = PersistentQueue(
 )
 ```
 
-The queue name identifies an independent stream inside the store. Queue names cannot be empty and cannot contain `:`.
+The queue name identifies an independent stream inside the store. Queue names
+cannot be empty and cannot contain `:`.
 Queue-level retry defaults are merged into worker retry kwargs before explicit
 worker overrides, so the same policy can be reused across several workers that
 consume the same queue.

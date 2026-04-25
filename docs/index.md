@@ -4,19 +4,30 @@ icon: lucide/inbox
 
 # Overview
 
-`localqueue` is a small durable queue for one machine. It stores work on the local filesystem by default and keeps retry state with Tenacity.
+`localqueue` is a small durable queue for one machine. It stores work on the
+local filesystem by default and keeps retry state with Tenacity.
 
-It fits scripts, CLI tools, cron jobs, development helpers, and small workers that can safely share one local store. It is not a distributed broker and does not provide multi-host coordination.
+It fits scripts, CLI tools, cron jobs, development helpers, and small workers
+that can safely share one local store. It is not a distributed broker and does
+not provide multi-host coordination.
 
 !!! note
     The default model is local-file storage, at-least-once delivery, and best-effort ordering under concurrency.
+
+## Best-fit workflows
+
+`localqueue` is strongest in three situations:
+
+- local outbox workflows where the caller should return before the side effect happens
+- terminal-driven recovery where operators need dead-letter inspection and replay
+- persistent retry budgets for work that already arrives from somewhere else
 
 ## CLI
 
 Use the CLI when you want to enqueue, inspect, watch, and recover jobs from the terminal.
 
 ```bash
-localqueue queue add emails --value '{"to":"user@example.com"}'
+echo '{"to":"user@example.com"}' | localqueue queue add emails
 localqueue queue exec emails -- python scripts/send_email.py
 localqueue queue stats emails --watch --interval 1
 localqueue queue dead emails --summary
@@ -42,14 +53,13 @@ def send_email(job: dict[str, str]) -> None:
     deliver(job["to"])
 ```
 
-`localqueue.retry` stays available when another system already delivers work and you only need retry state.
-
 See [Persistent retries](retries.md) for the retry API and store options.
 
 ## When to use
 
 - small Python workers on one machine
 - scripts that need durable work after restarts
+- local outbox workflows for emails, webhooks, uploads, or reports
 - terminal-driven queues for jobs you want to inspect and requeue
 - retry state that must survive process restarts
 
