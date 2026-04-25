@@ -71,6 +71,15 @@ The default `AT_LEAST_ONCE_DELIVERY` policy means a message is leased before
 handling, acknowledged after successful handling, and redelivered if the lease
 expires before acknowledgement.
 
+The ready-message ordering is available as a policy object too:
+
+```python
+queue.ordering_policy.as_dict()
+```
+
+The default `FIFO_READY_ORDERING` policy means messages become eligible by
+`available_at`, and messages with the same availability keep enqueue order.
+
 ## Retry-aware workers
 
 `persistent_worker()` connects a queue to `localqueue`. The queue message id

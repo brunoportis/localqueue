@@ -10,8 +10,10 @@ from typing import Any, Generic, TypeVar, cast
 from .paths import default_queue_store_path
 from .policies import (
     AT_LEAST_ONCE_DELIVERY,
+    FIFO_READY_ORDERING,
     LOCAL_AT_LEAST_ONCE,
     DeliveryPolicy,
+    OrderingPolicy,
     BackpressureStrategy,
     BoundedBackpressure,
     QueueSemantics,
@@ -28,6 +30,7 @@ class PersistentQueue(Generic[T]):
     maxsize: int
     semantics: QueueSemantics
     delivery_policy: DeliveryPolicy
+    ordering_policy: OrderingPolicy
     backpressure: BackpressureStrategy
     _store: QueueStore | None
     _store_path: Path | None
@@ -46,6 +49,7 @@ class PersistentQueue(Generic[T]):
         retry_defaults: Mapping[str, Any] | None = None,
         semantics: QueueSemantics | None = None,
         delivery_policy: DeliveryPolicy | None = None,
+        ordering_policy: OrderingPolicy | None = None,
         backpressure: BackpressureStrategy | None = None,
     ) -> None:
         if store is not None and store_path is not None:
@@ -62,9 +66,14 @@ class PersistentQueue(Generic[T]):
         resolved_delivery = (
             AT_LEAST_ONCE_DELIVERY if delivery_policy is None else delivery_policy
         )
+        resolved_ordering = (
+            FIFO_READY_ORDERING if ordering_policy is None else ordering_policy
+        )
         resolved_semantics = semantics if semantics is not None else LOCAL_AT_LEAST_ONCE
         if resolved_semantics.delivery != resolved_delivery.guarantee:
             raise ValueError("semantics delivery must match delivery_policy guarantee")
+        if resolved_semantics.ordering != resolved_ordering.guarantee:
+            raise ValueError("semantics ordering must match ordering_policy guarantee")
 
         self.name = name
         self.lease_timeout = lease_timeout
@@ -74,6 +83,7 @@ class PersistentQueue(Generic[T]):
         self.maxsize = self.backpressure.maxsize
         self.semantics = resolved_semantics
         self.delivery_policy = resolved_delivery
+        self.ordering_policy = resolved_ordering
         self._store = store
         self._store_path = Path(store_path) if store_path is not None else None
         self.retry_defaults = dict(retry_defaults or {})

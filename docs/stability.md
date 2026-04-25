@@ -15,6 +15,7 @@ These names are treated as the main public contracts today:
 - `PersistentQueue`
 - `QueueSemantics`
 - `AtLeastOnceDelivery`
+- `FifoReadyOrdering`
 - `BoundedBackpressure`
 - `QueueMessage`
 - `QueueStats`

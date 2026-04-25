@@ -64,6 +64,34 @@ class AtLeastOnceDelivery:
 AT_LEAST_ONCE_DELIVERY = AtLeastOnceDelivery()
 
 
+class OrderingPolicy(Protocol):
+    @property
+    def guarantee(self) -> OrderingGuarantee: ...
+
+    @property
+    def ready_before_delayed(self) -> bool: ...
+
+    @property
+    def stable_for_same_timestamp(self) -> bool: ...
+
+    def as_dict(self) -> dict[str, object]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class FifoReadyOrdering:
+    """Ordering policy for ready messages using availability then enqueue order."""
+
+    guarantee: OrderingGuarantee = "fifo-ready"
+    ready_before_delayed: bool = True
+    stable_for_same_timestamp: bool = True
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+FIFO_READY_ORDERING = FifoReadyOrdering()
+
+
 class BackpressureStrategy(Protocol):
     @property
     def maxsize(self) -> int: ...

@@ -8,11 +8,14 @@ except importlib.metadata.PackageNotFoundError:
 from .queue import PersistentQueue
 from .policies import (
     AT_LEAST_ONCE_DELIVERY,
+    FIFO_READY_ORDERING,
     LOCAL_AT_LEAST_ONCE,
     AtLeastOnceDelivery,
     BackpressureStrategy,
     BoundedBackpressure,
     DeliveryPolicy,
+    FifoReadyOrdering,
+    OrderingPolicy,
     QueueSemantics,
 )
 from .retry import (
@@ -53,6 +56,8 @@ __all__ = [
     "BackpressureStrategy",
     "BoundedBackpressure",
     "DeliveryPolicy",
+    "FIFO_READY_ORDERING",
+    "FifoReadyOrdering",
     "LMDBAttemptStore",
     "LMDBQueueStore",
     "LOCAL_AT_LEAST_ONCE",
@@ -63,6 +68,7 @@ __all__ = [
     "PersistentRetryExhausted",
     "PersistentRetrying",
     "PersistentWorkerConfig",
+    "OrderingPolicy",
     "QueueMessage",
     "QueueSemantics",
     "QueueStats",
