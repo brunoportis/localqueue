@@ -162,6 +162,13 @@ Routing policy used by default. It describes the current queue behavior: each
 message is leased to one consumer at a time, and publishing a message does not
 fan it out to multiple independent subscriber queues.
 
+#### `PublishSubscribeRouting`
+
+Routing policy for workflows that model publish/subscribe fanout. It names the
+concept explicitly with `pattern="publish-subscribe"` and `fanout=True`, so a
+queue configuration can advertise the routing contract even when the current
+local store is still responsible for one concrete queue at a time.
+
 #### `FifoReadyOrdering`
 
 Ordering policy used by default. It describes the current store ordering:

@@ -243,6 +243,22 @@ The default `POINT_TO_POINT_ROUTING` policy means each message is leased to one
 consumer at a time. Enqueueing a message does not fan it out to multiple
 independent subscriber queues.
 
+Use `PublishSubscribeRouting` when the queue definition should model a
+publish/subscribe route:
+
+```python
+from localqueue import PersistentQueue, PublishSubscribeRouting
+
+queue = PersistentQueue(
+    "notifications",
+    routing_policy=PublishSubscribeRouting(),
+)
+```
+
+This is a routing contract on the queue configuration. It does not turn a
+single local queue into a distributed broker or automatically create subscriber
+queues.
+
 The ready-message ordering is available as a policy object too:
 
 ```python

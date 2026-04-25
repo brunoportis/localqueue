@@ -46,6 +46,7 @@ from localqueue import (
     PersistentWorkerConfig,
     PointToPointRouting,
     PriorityOrdering,
+    PublishSubscribeRouting,
     PullConsumption,
     QueuePolicySet,
     QueueSemantics,
@@ -491,6 +492,25 @@ class QueueTests(unittest.TestCase):
             },
         )
 
+    def test_constructor_accepts_publish_subscribe_routing_policy(self) -> None:
+        routing_policy = PublishSubscribeRouting()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            routing_policy=routing_policy,
+        )
+
+        self.assertIs(queue.routing_policy, routing_policy)
+        self.assertEqual(queue.semantics.routing, "publish-subscribe")
+        self.assertEqual(
+            queue.routing_policy.as_dict(),
+            {
+                "pattern": "publish-subscribe",
+                "single_consumer_per_message": False,
+                "fanout": True,
+            },
+        )
+
     def test_constructor_accepts_explicit_consumption_policy(self) -> None:
         consumption_policy = PullConsumption()
         queue = PersistentQueue(
@@ -738,7 +758,7 @@ class QueueTests(unittest.TestCase):
             backpressure=BoundedBackpressure(3),
         )
         at_most_once = QueuePolicySet.at_most_once(
-            routing_policy=PointToPointRouting(),
+            routing_policy=PublishSubscribeRouting(),
             backpressure=BoundedBackpressure(1),
         )
 
@@ -758,6 +778,7 @@ class QueueTests(unittest.TestCase):
         self.assertIs(at_least_once_queue.delivery_policy, AT_LEAST_ONCE_DELIVERY)
         self.assertEqual(at_least_once_queue.maxsize, 3)
         self.assertEqual(at_most_once_queue.semantics.delivery, "at-most-once")
+        self.assertEqual(at_most_once_queue.semantics.routing, "publish-subscribe")
         self.assertEqual(at_most_once_queue.maxsize, 1)
 
     def test_constructor_accepts_effectively_once_delivery_policy_with_result_policy(
