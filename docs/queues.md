@@ -298,6 +298,18 @@ queue.put({"kind": "cleanup"}, priority=1)
 Higher priority values are delivered first when messages are available at the
 same time. Messages with the same priority keep enqueue order.
 
+Use `BestEffortOrdering` when the queue definition should explicitly avoid
+promising stable ordering:
+
+```python
+from localqueue import BestEffortOrdering, PersistentQueue
+
+queue = PersistentQueue("telemetry", ordering_policy=BestEffortOrdering())
+```
+
+This names the ordering contract. The default local store still uses its normal
+ready-message indexes unless a store adapter implements a looser ordering model.
+
 ## Retry-aware workers
 
 `persistent_worker()` connects a queue to `localqueue`. The queue message id

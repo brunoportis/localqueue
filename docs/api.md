@@ -190,6 +190,12 @@ first. Pass `ordering_policy=PriorityOrdering()` to `PersistentQueue`, then use
 delivered before lower numbers when messages are available at the same time.
 Messages with the same priority keep enqueue order.
 
+#### `BestEffortOrdering`
+
+Ordering policy for workflows that do not require stable delivery order. It
+names `guarantee="best-effort"` in the queue configuration and avoids promising
+ready-before-delayed, same-timestamp stability, or priority ordering.
+
 #### `BoundedBackpressure`
 
 Capacity strategy used by `PersistentQueue.full()` and blocking `put()` calls.
