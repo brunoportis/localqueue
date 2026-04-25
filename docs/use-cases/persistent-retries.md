@@ -32,8 +32,7 @@ you need ack, release, leases, or dead-letter handling, start with
 
 Run this once in an environment where `localqueue` is importable.
 
-```bash
-python - <<'PY'
+```python
 from localqueue.retry import PersistentRetryExhausted, persistent_retry
 
 
@@ -52,7 +51,6 @@ except PersistentRetryExhausted as exc:
     print(f"exhausted: {exc.key} after {exc.attempts} attempts")
 except Exception as exc:
     print(f"failed this run: {exc}")
-PY
 ```
 
 Run the same command again. The retry state is reused because the key is

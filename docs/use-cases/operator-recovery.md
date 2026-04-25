@@ -32,9 +32,7 @@ custom one-off script.
 
 Create a scratch directory and a small worker script once:
 
-```bash
-mkdir -p /tmp/localqueue-use-cases
-cat > /tmp/localqueue-use-cases/email_worker.py <<'PY'
+```python
 from __future__ import annotations
 
 import json
@@ -46,7 +44,6 @@ address = payload["to"]
 if payload.get("fail"):
     raise ConnectionError(f"could not deliver email to {address}")
 print(f"sent email to {address}")
-PY
 ```
 
 ## Minimal flow
@@ -79,7 +76,3 @@ Replay everything in the dead-letter queue:
 localqueue queue requeue-dead webhooks --all
 ```
 
-## When to choose something else
-
-Use a different system when recovery, retention, and observability must work as
-shared platform capabilities across multiple hosts or services.
