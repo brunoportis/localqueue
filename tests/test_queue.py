@@ -34,6 +34,7 @@ from localqueue import (
     AtLeastOnceDelivery,
     EffectivelyOnceDelivery,
     AtMostOnceDelivery,
+    BestEffortOrdering,
     BoundedBackpressure,
     FifoReadyOrdering,
     LMDBQueueStore,
@@ -588,6 +589,26 @@ class QueueTests(unittest.TestCase):
             },
         )
 
+    def test_constructor_accepts_best_effort_ordering_policy(self) -> None:
+        ordering_policy = BestEffortOrdering()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            ordering_policy=ordering_policy,
+        )
+
+        self.assertEqual(queue.semantics.ordering, "best-effort")
+        self.assertIs(queue.ordering_policy, ordering_policy)
+        self.assertEqual(
+            queue.ordering_policy.as_dict(),
+            {
+                "guarantee": "best-effort",
+                "ready_before_delayed": False,
+                "stable_for_same_timestamp": False,
+                "priority_before_sequence": False,
+            },
+        )
+
     def test_constructor_accepts_explicit_delivery_policy(self) -> None:
         delivery_policy = AtLeastOnceDelivery()
         queue = PersistentQueue(
@@ -684,7 +705,7 @@ class QueueTests(unittest.TestCase):
             result_policy=ReturnStoredResult(result_store=MemoryResultStore()),
             commit_policy=SagaCommit(saga_store=MemoryResultStore()),
         )
-        ordering_policy = PriorityOrdering()
+        ordering_policy = BestEffortOrdering()
         backpressure = BoundedBackpressure(5)
         policy_set = QueuePolicySet(
             delivery_policy=delivery_policy,
@@ -703,14 +724,14 @@ class QueueTests(unittest.TestCase):
         self.assertIs(queue.backpressure, backpressure)
         self.assertEqual(queue.maxsize, 5)
         self.assertEqual(queue.semantics.delivery, "effectively-once")
-        self.assertEqual(queue.semantics.ordering, "priority")
+        self.assertEqual(queue.semantics.ordering, "best-effort")
 
     def test_effectively_once_policy_set_factory(self) -> None:
         idempotency_store = MemoryIdempotencyStore()
         result_policy = ReturnStoredResult(result_store=MemoryResultStore())
         commit_policy = SagaCommit(saga_store=MemoryResultStore())
         consumption_policy = PushConsumption()
-        ordering_policy = PriorityOrdering()
+        ordering_policy = BestEffortOrdering()
         routing_policy = PointToPointRouting()
         backpressure = BoundedBackpressure(5)
 
@@ -758,10 +779,10 @@ class QueueTests(unittest.TestCase):
                     "producer_invokes_handler": True,
                 },
                 "ordering_policy": {
-                    "guarantee": "priority",
-                    "ready_before_delayed": True,
-                    "stable_for_same_timestamp": True,
-                    "priority_before_sequence": True,
+                    "guarantee": "best-effort",
+                    "ready_before_delayed": False,
+                    "stable_for_same_timestamp": False,
+                    "priority_before_sequence": False,
                 },
                 "routing_policy": {
                     "pattern": "point-to-point",

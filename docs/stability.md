@@ -30,6 +30,7 @@ These names are treated as the main public contracts today:
 - `CommitPolicy` and the built-in commit policies
 - `FifoReadyOrdering`
 - `PriorityOrdering`
+- `BestEffortOrdering`
 - `BoundedBackpressure`
 - `QueueMessage`
 - `QueueStats`

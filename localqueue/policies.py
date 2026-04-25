@@ -386,6 +386,19 @@ class PriorityOrdering:
         return asdict(self)
 
 
+@dataclass(frozen=True, slots=True)
+class BestEffortOrdering:
+    """Ordering policy that does not promise stable delivery order."""
+
+    guarantee: OrderingGuarantee = "best-effort"
+    ready_before_delayed: bool = False
+    stable_for_same_timestamp: bool = False
+    priority_before_sequence: bool = False
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
 class BackpressureStrategy(Protocol):
     @property
     def maxsize(self) -> int: ...
