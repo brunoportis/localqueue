@@ -68,6 +68,7 @@ from localqueue.worker import (
     _get_message_async,
     _record_failure,
     _record_success,
+    _commit_outbox,
     _result_key,
     _resolve_dead_letter_on_failure,
     _UNSET,
@@ -715,6 +716,7 @@ class QueueTests(unittest.TestCase):
                 "mode": "transactional-outbox",
                 "local_commit": True,
                 "coordinates_effects": True,
+                "outbox_store": None,
             },
         )
         self.assertEqual(
@@ -733,6 +735,115 @@ class QueueTests(unittest.TestCase):
                 "coordinates_effects": True,
             },
         )
+
+    def test_transactional_outbox_commit_uses_outbox_store(self) -> None:
+        store = MemoryIdempotencyStore()
+        outbox_store = MemoryResultStore()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=EffectivelyOnceDelivery(
+                idempotency_store=store,
+                result_policy=ReturnStoredResult(result_store=MemoryResultStore()),
+                commit_policy=TransactionalOutboxCommit(outbox_store=outbox_store),
+            ),
+        )
+        message = queue.put("item", dedupe_key="job-1")
+
+        @persistent_worker(queue)
+        def handle(value: str) -> dict[str, str]:
+            return {"status": value.upper()}
+
+        self.assertEqual(cast("Any", handle)(), {"status": "ITEM"})
+        record = store.load("job-1")
+        assert record is not None
+        self.assertEqual(record.metadata, {"queue": "test", "message_id": message.id})
+        self.assertEqual(record.result_key, "dedupe:test:job-1")
+        self.assertEqual(
+            outbox_store.load("outbox:dedupe:test:job-1"),
+            {
+                "queue": "test",
+                "message_id": message.id,
+                "dedupe_key": "job-1",
+                "result_key": "dedupe:test:job-1",
+                "result": {"status": "ITEM"},
+            },
+        )
+
+    def test_transactional_outbox_commit_failure_prevents_ack(self) -> None:
+        store = MemoryIdempotencyStore()
+
+        class FailingOutboxStore:
+            def load(self, key: str) -> Any | None:
+                return None
+
+            def save(self, key: str, value: Any) -> None:
+                raise RuntimeError("outbox down")
+
+            def delete(self, key: str) -> None:
+                return None
+
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=EffectivelyOnceDelivery(
+                idempotency_store=store,
+                result_policy=ReturnStoredResult(result_store=MemoryResultStore()),
+                commit_policy=TransactionalOutboxCommit(
+                    outbox_store=FailingOutboxStore()
+                ),
+            ),
+        )
+        message = queue.put("item", dedupe_key="job-1")
+
+        @persistent_worker(queue)
+        def handle(value: str) -> dict[str, str]:
+            return {"status": value.upper()}
+
+        with self.assertRaisesRegex(RuntimeError, "outbox down"):
+            cast("Any", handle)()
+
+        record = store.load("job-1")
+        assert record is not None
+        self.assertEqual(record.status, "succeeded")
+        self.assertEqual(queue.qsize(), 0)
+        self.assertIsNotNone(queue.inspect(message.id))
+
+    def test_transactional_outbox_commit_without_outbox_store_is_noop(self) -> None:
+        store = MemoryIdempotencyStore()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=EffectivelyOnceDelivery(
+                idempotency_store=store,
+                result_policy=ReturnStoredResult(result_store=MemoryResultStore()),
+                commit_policy=TransactionalOutboxCommit(),
+            ),
+        )
+        _ = queue.put("item", dedupe_key="job-1")
+
+        @persistent_worker(queue)
+        def handle(value: str) -> dict[str, str]:
+            return {"status": value.upper()}
+
+        self.assertEqual(cast("Any", handle)(), {"status": "ITEM"})
+        self.assertIsNone(MemoryResultStore().load("outbox:dedupe:test:job-1"))
+
+    def test_commit_outbox_returns_without_dedupe_key(self) -> None:
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=EffectivelyOnceDelivery(
+                idempotency_store=MemoryIdempotencyStore(),
+                result_policy=ReturnStoredResult(result_store=MemoryResultStore()),
+                commit_policy=TransactionalOutboxCommit(
+                    outbox_store=MemoryResultStore()
+                ),
+            ),
+        )
+        message = QueueMessage(id="message-1", queue="test", value="item")
+
+        _commit_outbox(queue, message, result={"status": "ITEM"}, result_key=None)
 
     def test_constructor_accepts_backpressure_strategy(self) -> None:
         queue = PersistentQueue(

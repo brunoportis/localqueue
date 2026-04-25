@@ -307,9 +307,18 @@ def _result_policy(queue: PersistentQueue) -> Any:
     return getattr(queue.delivery_policy, "result_policy", None)
 
 
+def _commit_policy(queue: PersistentQueue) -> Any:
+    return getattr(queue.delivery_policy, "commit_policy", None)
+
+
 def _result_store(queue: PersistentQueue) -> ResultStore | None:
     result_policy = _result_policy(queue)
     return cast("ResultStore | None", getattr(result_policy, "result_store", None))
+
+
+def _outbox_store(queue: PersistentQueue) -> ResultStore | None:
+    commit_policy = _commit_policy(queue)
+    return cast("ResultStore | None", getattr(commit_policy, "outbox_store", None))
 
 
 def _result_key(message: QueueMessage) -> str | None:
@@ -390,6 +399,34 @@ def _complete_idempotent_handling(
     )
 
 
+def _commit_outbox(
+    queue: PersistentQueue,
+    message: QueueMessage,
+    *,
+    result: Any,
+    result_key: str | None,
+) -> None:
+    commit_policy = _commit_policy(queue)
+    if getattr(commit_policy, "mode", None) != "transactional-outbox":
+        return
+    outbox_store = _outbox_store(queue)
+    if outbox_store is None:
+        return
+    outbox_key = _result_key(message)
+    if outbox_key is None:
+        return
+    outbox_store.save(
+        f"outbox:{outbox_key}",
+        {
+            "queue": message.queue,
+            "message_id": message.id,
+            "dedupe_key": message.dedupe_key,
+            "result_key": result_key,
+            "result": result,
+        },
+    )
+
+
 def persistent_worker(
     queue: PersistentQueue,
     *,
@@ -450,6 +487,10 @@ def persistent_worker(
                 status="succeeded",
                 result=result,
             )
+            result_key = None
+            if _result_store(queue) is not None:
+                result_key = _result_key(message)
+            _commit_outbox(queue, message, result=result, result_key=result_key)
             queue.ack(message)
             return result
 
@@ -522,6 +563,10 @@ def persistent_async_worker(
                 status="succeeded",
                 result=result,
             )
+            result_key = None
+            if _result_store(queue) is not None:
+                result_key = _result_key(message)
+            _commit_outbox(queue, message, result=result, result_key=result_key)
             queue.ack(message)
             return result
 
