@@ -11,11 +11,14 @@ from .paths import default_queue_store_path
 from .policies import (
     AT_LEAST_ONCE_DELIVERY,
     FIFO_READY_ORDERING,
+    FIXED_LEASE_TIMEOUT,
     POINT_TO_POINT_ROUTING,
     PULL_CONSUMPTION,
     ConsumptionPolicy,
     DeliveryPolicy,
+    FixedLeaseTimeout,
     LOCAL_QUEUE_PLACEMENT,
+    LeasePolicy,
     LocalityPolicy,
     OrderingPolicy,
     RoutingPolicy,
@@ -34,6 +37,7 @@ _NEGATIVE_DELAY_ERROR = "delay cannot be negative"
 class PersistentQueue(Generic[T]):
     name: str
     lease_timeout: float
+    lease_policy: LeasePolicy
     maxsize: int
     semantics: QueueSemantics
     locality_policy: LocalityPolicy
@@ -55,6 +59,7 @@ class PersistentQueue(Generic[T]):
         store: QueueStore | None = None,
         store_path: str | Path | None = None,
         lease_timeout: float = 30.0,
+        lease_policy: LeasePolicy | None = None,
         maxsize: int = 0,
         retry_defaults: Mapping[str, Any] | None = None,
         semantics: QueueSemantics | None = None,
@@ -71,6 +76,7 @@ class PersistentQueue(Generic[T]):
         (
             semantics,
             locality_policy,
+            lease_policy,
             consumption_policy,
             delivery_policy,
             ordering_policy,
@@ -80,6 +86,7 @@ class PersistentQueue(Generic[T]):
             policy_set=policy_set,
             semantics=semantics,
             locality_policy=locality_policy,
+            lease_policy=lease_policy,
             consumption_policy=consumption_policy,
             delivery_policy=delivery_policy,
             ordering_policy=ordering_policy,
@@ -89,6 +96,8 @@ class PersistentQueue(Generic[T]):
         )
         if backpressure is not None and maxsize != 0:
             raise ValueError("pass either maxsize= or backpressure=, not both")
+        if lease_policy is not None and lease_timeout != FIXED_LEASE_TIMEOUT.timeout:
+            raise ValueError("pass either lease_timeout= or lease_policy=, not both")
         if lease_timeout <= 0:
             raise ValueError("lease_timeout must be greater than zero")
         if maxsize < 0:
@@ -101,6 +110,9 @@ class PersistentQueue(Generic[T]):
         )
         resolved_locality = (
             LOCAL_QUEUE_PLACEMENT if locality_policy is None else locality_policy
+        )
+        resolved_lease = (
+            FixedLeaseTimeout(lease_timeout) if lease_policy is None else lease_policy
         )
         resolved_consumption = (
             PULL_CONSUMPTION if consumption_policy is None else consumption_policy
@@ -120,11 +132,13 @@ class PersistentQueue(Generic[T]):
                 consumption=resolved_consumption.pattern,
                 ordering=resolved_ordering.guarantee,
                 routing=resolved_routing.pattern,
+                leases=resolved_lease.uses_leases,
             )
         )
         _validate_semantics(
             resolved_semantics,
             locality_policy=resolved_locality,
+            lease_policy=resolved_lease,
             delivery_policy=resolved_delivery,
             consumption_policy=resolved_consumption,
             ordering_policy=resolved_ordering,
@@ -132,7 +146,8 @@ class PersistentQueue(Generic[T]):
         )
 
         self.name = name
-        self.lease_timeout = lease_timeout
+        self.lease_policy = resolved_lease
+        self.lease_timeout = resolved_lease.timeout
         self.backpressure = (
             BoundedBackpressure(maxsize) if backpressure is None else backpressure
         )
@@ -392,6 +407,7 @@ def _apply_policy_set(
     policy_set: QueuePolicySet | None,
     semantics: QueueSemantics | None,
     locality_policy: LocalityPolicy | None,
+    lease_policy: LeasePolicy | None,
     consumption_policy: ConsumptionPolicy | None,
     delivery_policy: DeliveryPolicy | None,
     ordering_policy: OrderingPolicy | None,
@@ -401,6 +417,7 @@ def _apply_policy_set(
 ) -> tuple[
     QueueSemantics | None,
     LocalityPolicy | None,
+    LeasePolicy | None,
     ConsumptionPolicy | None,
     DeliveryPolicy | None,
     OrderingPolicy | None,
@@ -411,6 +428,7 @@ def _apply_policy_set(
         return (
             semantics,
             locality_policy,
+            lease_policy,
             consumption_policy,
             delivery_policy,
             ordering_policy,
@@ -425,6 +443,11 @@ def _apply_policy_set(
             "locality_policy",
             locality_policy,
             policy_set.locality_policy,
+        ),
+        _policy_value(
+            "lease_policy",
+            lease_policy,
+            policy_set.lease_policy,
         ),
         _policy_value(
             "consumption_policy",
@@ -459,6 +482,7 @@ def _validate_semantics(
     semantics: QueueSemantics,
     *,
     locality_policy: LocalityPolicy,
+    lease_policy: LeasePolicy,
     delivery_policy: DeliveryPolicy,
     consumption_policy: ConsumptionPolicy,
     ordering_policy: OrderingPolicy,
@@ -466,6 +490,8 @@ def _validate_semantics(
 ) -> None:
     if semantics.locality != locality_policy.locality:
         raise ValueError("semantics locality must match locality_policy locality")
+    if semantics.leases != lease_policy.uses_leases:
+        raise ValueError("semantics leases must match lease_policy uses_leases")
     if semantics.delivery != delivery_policy.guarantee:
         raise ValueError("semantics delivery must match delivery_policy guarantee")
     if semantics.consumption != consumption_policy.pattern:
