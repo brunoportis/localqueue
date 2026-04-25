@@ -13,6 +13,7 @@ Locality = Literal["local", "remote"]
 RoutingPattern = Literal["point-to-point", "publish-subscribe"]
 ConsumptionPattern = Literal["pull", "push"]
 OrderingGuarantee = Literal["fifo-ready", "priority", "best-effort"]
+CommitMode = Literal["local-atomic", "transactional-outbox", "two-phase", "saga"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +91,19 @@ class ResultPolicy:
         raise NotImplementedError
 
 
+class CommitPolicy(Protocol):
+    @property
+    def mode(self) -> CommitMode: ...
+
+    @property
+    def local_commit(self) -> bool: ...
+
+    @property
+    def coordinates_effects(self) -> bool: ...
+
+    def as_dict(self) -> dict[str, object]: ...
+
+
 @dataclass(frozen=True, slots=True)
 class NoResultPolicy(ResultPolicy):
     """Result policy that does not persist or return handler results."""
@@ -131,6 +145,63 @@ RETURN_STORED_RESULT = ReturnStoredResult()
 
 
 @dataclass(frozen=True, slots=True)
+class LocalAtomicCommit:
+    """Commit policy where result writes and queue acknowledgement stay local."""
+
+    mode: CommitMode = "local-atomic"
+    local_commit: bool = True
+    coordinates_effects: bool = False
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+LOCAL_ATOMIC_COMMIT = LocalAtomicCommit()
+
+
+@dataclass(frozen=True, slots=True)
+class TransactionalOutboxCommit:
+    """Commit policy that models the transactional-outbox pattern."""
+
+    mode: CommitMode = "transactional-outbox"
+    local_commit: bool = True
+    coordinates_effects: bool = True
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+TRANSACTIONAL_OUTBOX_COMMIT = TransactionalOutboxCommit()
+
+
+@dataclass(frozen=True, slots=True)
+class TwoPhaseCommit:
+    """Commit policy that models prepare/commit coordination."""
+
+    mode: CommitMode = "two-phase"
+    local_commit: bool = False
+    coordinates_effects: bool = True
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+TWO_PHASE_COMMIT = TwoPhaseCommit()
+
+
+@dataclass(frozen=True, slots=True)
+class SagaCommit:
+    """Commit policy that models compensating actions across steps."""
+
+    mode: CommitMode = "saga"
+    local_commit: bool = False
+    coordinates_effects: bool = True
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
 class EffectivelyOnceDelivery:
     """Delivery policy that requires idempotent enqueue keys."""
 
@@ -141,6 +212,7 @@ class EffectivelyOnceDelivery:
     requires_dedupe_key: bool = True
     idempotency_store: IdempotencyStore | None = None
     result_policy: ResultPolicy = NO_RESULT_POLICY
+    commit_policy: CommitPolicy = LOCAL_ATOMIC_COMMIT
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -155,6 +227,7 @@ class EffectivelyOnceDelivery:
                 else type(self.idempotency_store).__name__
             ),
             "result_policy": self.result_policy.as_dict(),
+            "commit_policy": self.commit_policy.as_dict(),
         }
 
 

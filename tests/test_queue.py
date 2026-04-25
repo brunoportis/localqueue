@@ -26,6 +26,7 @@ from localqueue import (
     FIFO_READY_ORDERING,
     IdempotencyRecord,
     IdempotencyStoreLockedError,
+    LOCAL_ATOMIC_COMMIT,
     LMDBResultStore,
     LMDBIdempotencyStore,
     POINT_TO_POINT_ROUTING,
@@ -52,9 +53,13 @@ from localqueue import (
     QueueStoreLockedError,
     RETURN_STORED_RESULT,
     ReturnStoredResult,
+    SagaCommit,
     SQLiteIdempotencyStore,
     SQLiteResultStore,
+    TransactionalOutboxCommit,
+    TWO_PHASE_COMMIT,
     SQLiteQueueStore,
+    LocalAtomicCommit,
     persistent_async_worker,
     persistent_worker,
 )
@@ -576,6 +581,7 @@ class QueueTests(unittest.TestCase):
                 "requires_dedupe_key": True,
                 "idempotency_store": None,
                 "result_policy": NO_RESULT_POLICY.as_dict(),
+                "commit_policy": LOCAL_ATOMIC_COMMIT.as_dict(),
             },
         )
 
@@ -602,6 +608,7 @@ class QueueTests(unittest.TestCase):
                 "requires_dedupe_key": True,
                 "idempotency_store": "MemoryIdempotencyStore",
                 "result_policy": NO_RESULT_POLICY.as_dict(),
+                "commit_policy": LOCAL_ATOMIC_COMMIT.as_dict(),
             },
         )
 
@@ -629,6 +636,7 @@ class QueueTests(unittest.TestCase):
                 "requires_dedupe_key": True,
                 "idempotency_store": "MemoryIdempotencyStore",
                 "result_policy": RETURN_STORED_RESULT.as_dict(),
+                "commit_policy": LOCAL_ATOMIC_COMMIT.as_dict(),
             },
         )
 
@@ -661,6 +669,68 @@ class QueueTests(unittest.TestCase):
                     "returns_cached_result": True,
                     "result_store": "MemoryResultStore",
                 },
+                "commit_policy": LOCAL_ATOMIC_COMMIT.as_dict(),
+            },
+        )
+
+    def test_constructor_accepts_explicit_commit_policy(self) -> None:
+        commit_policy = TransactionalOutboxCommit()
+        delivery_policy = EffectivelyOnceDelivery(
+            idempotency_store=MemoryIdempotencyStore(),
+            commit_policy=commit_policy,
+        )
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=delivery_policy,
+        )
+
+        self.assertIs(queue.delivery_policy, delivery_policy)
+        self.assertEqual(
+            queue.delivery_policy.as_dict(),
+            {
+                "guarantee": "effectively-once",
+                "ack_timing": "after-success",
+                "uses_leases": True,
+                "redelivers_expired_leases": True,
+                "requires_dedupe_key": True,
+                "idempotency_store": "MemoryIdempotencyStore",
+                "result_policy": NO_RESULT_POLICY.as_dict(),
+                "commit_policy": commit_policy.as_dict(),
+            },
+        )
+
+    def test_commit_policy_variants_have_expected_shape(self) -> None:
+        self.assertEqual(
+            LocalAtomicCommit().as_dict(),
+            {
+                "mode": "local-atomic",
+                "local_commit": True,
+                "coordinates_effects": False,
+            },
+        )
+        self.assertEqual(
+            TransactionalOutboxCommit().as_dict(),
+            {
+                "mode": "transactional-outbox",
+                "local_commit": True,
+                "coordinates_effects": True,
+            },
+        )
+        self.assertEqual(
+            TWO_PHASE_COMMIT.as_dict(),
+            {
+                "mode": "two-phase",
+                "local_commit": False,
+                "coordinates_effects": True,
+            },
+        )
+        self.assertEqual(
+            SagaCommit().as_dict(),
+            {
+                "mode": "saga",
+                "local_commit": False,
+                "coordinates_effects": True,
             },
         )
 
