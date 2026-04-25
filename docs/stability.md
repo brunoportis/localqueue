@@ -23,6 +23,7 @@ These names are treated as the main public contracts today:
 - `PullConsumption`
 - `PushConsumption`
 - `DispatchPolicy` and the built-in dispatch policies
+- `NotificationPolicy` and the built-in notification policies
 - `PointToPointRouting`
 - `PublishSubscribeRouting`
 - `SubscriptionPolicy` and the built-in subscription policies

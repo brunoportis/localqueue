@@ -332,6 +332,26 @@ different process or terminal window; cross-process push belongs in a
 notification adapter such as sockets, signals, webhooks, SSE, WebSockets, or
 Redis pub/sub.
 
+If you only want to wake a local consumer without calling the handler directly,
+attach `CallbackNotification` instead:
+
+```python
+from localqueue import CallbackNotification, PersistentQueue, PushConsumption
+
+def wake(message):
+    print("new work available:", message.id)
+
+queue = PersistentQueue(
+    "events",
+    consumption_policy=PushConsumption(),
+    notification_policy=CallbackNotification((wake,)),
+)
+```
+
+`CallbackNotification` is still in-process. It can wake a polling loop or a
+local subscriber, but it does not make SQLite or the queue store itself emit
+events across process boundaries.
+
 The routing behavior is available as a policy object:
 
 ```python

@@ -33,6 +33,7 @@ Constructor options:
 | `deduplication_policy` | deduplication behavior; defaults to `DEDUPE_KEY_SUPPORT` |
 | `consumption_policy` | consumption behavior; defaults to `PULL_CONSUMPTION` |
 | `dispatch_policy` | in-process dispatch behavior; defaults to `NO_DISPATCHER` |
+| `notification_policy` | wake-up notification behavior; defaults to `NO_NOTIFICATION` |
 | `delivery_policy` | delivery behavior; defaults to `AT_LEAST_ONCE_DELIVERY` |
 | `ordering_policy` | ready-message ordering behavior; defaults to `FIFO_READY_ORDERING` |
 | `routing_policy` | message routing behavior; defaults to `POINT_TO_POINT_ROUTING` |
@@ -71,23 +72,24 @@ Descriptive value object for the queueing concepts implemented by a
 configuration. The default `LOCAL_AT_LEAST_ONCE` describes the current
 `PersistentQueue` behavior: local storage, at-least-once delivery,
 point-to-point routing, pull consumption, ready-order delivery, leases,
-acknowledgements, dead letters, dedupe-key support, and no subscriptions.
+acknowledgements, dead letters, dedupe-key support, no subscriptions, and no
+notifications.
 
 #### `QueuePolicySet`
 
 Reusable bundle for queue policies. Pass `policy_set=` to `PersistentQueue` when
 you want to keep locality, leases, acknowledgements, dead letters, delivery,
-ordering, routing, consumption, dispatch, semantics, and backpressure choices
-together as one configuration object. Explicit constructor options remain
-available and conflict with the same option inside the policy set so
-configuration stays unambiguous.
+ordering, routing, consumption, dispatch, notifications, semantics, and
+backpressure choices together as one configuration object. Explicit constructor
+options remain available and conflict with the same option inside the policy set
+so configuration stays unambiguous.
 
 `QueuePolicySet.at_least_once(...)`, `QueuePolicySet.at_most_once(...)`, and
 `QueuePolicySet.effectively_once(...)` build common delivery bundles with
 optional locality, lease, acknowledgement, dead-letter, deduplication,
-consumption, dispatch, ordering, routing, subscription, and backpressure
-policies. The effectively-once factory also accepts idempotency, result, and
-commit policies.
+consumption, dispatch, notification, ordering, routing, subscription, and
+backpressure policies. The effectively-once factory also accepts idempotency,
+result, and commit policies.
 
 #### `LocalityPolicy`
 
@@ -253,6 +255,22 @@ callers still pull work explicitly.
 Dispatch policy for local push workflows. It calls one or more in-process
 handlers after `put()` persists a message. This is not cross-process
 notification; external wake-up mechanisms should be modeled by a notification
+adapter.
+
+#### `NotificationPolicy`
+
+Protocol for naming how a queue wakes listeners after a message is persisted.
+
+#### `NoNotification`
+
+Notification policy used by default. The queue remains quiet after `put()`
+unless an explicit notification policy is attached.
+
+#### `CallbackNotification`
+
+Notification policy for local push or polling hybrids. It calls in-process
+listeners after persistence, which can be used to wake a worker loop or refresh
+an in-memory subscriber. Cross-process wake-up still belongs in a separate
 adapter.
 
 #### `PointToPointRouting`

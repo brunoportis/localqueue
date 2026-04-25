@@ -34,6 +34,7 @@ class QueueSemantics:
     dead_letters: bool = True
     deduplication: bool = True
     subscriptions: bool = False
+    notifications: bool = False
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -529,6 +530,70 @@ class CallbackDispatcher:
         }
 
 
+class NotificationPolicy(Protocol):
+    @property
+    def notifies(self) -> bool: ...
+
+    @property
+    def notifies_on_put(self) -> bool: ...
+
+    @property
+    def listener_count(self) -> int: ...
+
+    def notify(self, message: QueueMessage) -> None: ...
+
+    def as_dict(self) -> dict[str, object]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class NoNotification:
+    """Notification policy where producers do not wake any listeners."""
+
+    notifies: bool = False
+    notifies_on_put: bool = False
+    listener_count: int = 0
+
+    def notify(self, message: QueueMessage) -> None:
+        _ = message
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+NO_NOTIFICATION = NoNotification()
+
+
+@dataclass(frozen=True, slots=True)
+class CallbackNotification:
+    """Notification policy that calls in-process listeners after enqueue."""
+
+    listeners: tuple[MessageHandler, ...]
+    notifies: bool = True
+    notifies_on_put: bool = True
+
+    def __post_init__(self) -> None:
+        listeners = tuple(self.listeners)
+        if not listeners:
+            raise ValueError("listeners cannot be empty")
+        object.__setattr__(self, "listeners", listeners)
+
+    @property
+    def listener_count(self) -> int:
+        return len(self.listeners)
+
+    def notify(self, message: QueueMessage) -> None:
+        for listener in self.listeners:
+            _ = listener(message)
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "type": "callback",
+            "notifies": self.notifies,
+            "notifies_on_put": self.notifies_on_put,
+            "listener_count": self.listener_count,
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class PushConsumption:
     """Consumption policy where producers or dispatchers invoke handlers."""
@@ -777,6 +842,7 @@ class QueuePolicySet:
     delivery_policy: DeliveryPolicy | None = None
     consumption_policy: ConsumptionPolicy | None = None
     dispatch_policy: DispatchPolicy | None = None
+    notification_policy: NotificationPolicy | None = None
     ordering_policy: OrderingPolicy | None = None
     routing_policy: RoutingPolicy | None = None
     subscription_policy: SubscriptionPolicy | None = None
@@ -793,6 +859,7 @@ class QueuePolicySet:
         deduplication_policy: DeduplicationPolicy | None = None,
         consumption_policy: ConsumptionPolicy | None = None,
         dispatch_policy: DispatchPolicy | None = None,
+        notification_policy: NotificationPolicy | None = None,
         ordering_policy: OrderingPolicy | None = None,
         routing_policy: RoutingPolicy | None = None,
         subscription_policy: SubscriptionPolicy | None = None,
@@ -807,6 +874,7 @@ class QueuePolicySet:
             delivery_policy=AT_LEAST_ONCE_DELIVERY,
             consumption_policy=consumption_policy,
             dispatch_policy=dispatch_policy,
+            notification_policy=notification_policy,
             ordering_policy=ordering_policy,
             routing_policy=routing_policy,
             subscription_policy=subscription_policy,
@@ -824,6 +892,7 @@ class QueuePolicySet:
         deduplication_policy: DeduplicationPolicy | None = None,
         consumption_policy: ConsumptionPolicy | None = None,
         dispatch_policy: DispatchPolicy | None = None,
+        notification_policy: NotificationPolicy | None = None,
         ordering_policy: OrderingPolicy | None = None,
         routing_policy: RoutingPolicy | None = None,
         subscription_policy: SubscriptionPolicy | None = None,
@@ -838,6 +907,7 @@ class QueuePolicySet:
             delivery_policy=AtMostOnceDelivery(),
             consumption_policy=consumption_policy,
             dispatch_policy=dispatch_policy,
+            notification_policy=notification_policy,
             ordering_policy=ordering_policy,
             routing_policy=routing_policy,
             subscription_policy=subscription_policy,
@@ -858,6 +928,7 @@ class QueuePolicySet:
         deduplication_policy: DeduplicationPolicy | None = None,
         consumption_policy: ConsumptionPolicy | None = None,
         dispatch_policy: DispatchPolicy | None = None,
+        notification_policy: NotificationPolicy | None = None,
         ordering_policy: OrderingPolicy | None = None,
         routing_policy: RoutingPolicy | None = None,
         subscription_policy: SubscriptionPolicy | None = None,
@@ -877,6 +948,7 @@ class QueuePolicySet:
             delivery_policy=delivery_policy,
             consumption_policy=consumption_policy,
             dispatch_policy=dispatch_policy,
+            notification_policy=notification_policy,
             ordering_policy=ordering_policy,
             routing_policy=routing_policy,
             subscription_policy=subscription_policy,
@@ -917,6 +989,11 @@ class QueuePolicySet:
             ),
             "dispatch_policy": (
                 None if self.dispatch_policy is None else self.dispatch_policy.as_dict()
+            ),
+            "notification_policy": (
+                None
+                if self.notification_policy is None
+                else self.notification_policy.as_dict()
             ),
             "ordering_policy": (
                 None if self.ordering_policy is None else self.ordering_policy.as_dict()
