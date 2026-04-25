@@ -60,6 +60,7 @@ from localqueue import (
     PublishSubscribeRouting,
     PullConsumption,
     PushConsumption,
+    RejectingBackpressure,
     NoDeduplication,
     QueuePolicySet,
     QueueSemantics,
@@ -325,6 +326,19 @@ class QueueTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "maxsize cannot be negative"):
             _ = BoundedBackpressure(-1)
+
+        with self.assertRaisesRegex(
+            ValueError, "backpressure overflow must be 'block' or 'reject'"
+        ):
+            _ = BoundedBackpressure(1, overflow=cast("Any", "drop-oldest"))
+
+        with self.assertRaisesRegex(ValueError, "maxsize cannot be negative"):
+            _ = RejectingBackpressure(-1)
+
+        with self.assertRaisesRegex(
+            ValueError, "rejecting backpressure overflow must be 'reject'"
+        ):
+            _ = RejectingBackpressure(1, overflow=cast("Any", "block"))
 
         queue = PersistentQueue("test", store=store)
         with self.assertRaisesRegex(TypeError, "priority must be an integer"):
@@ -1088,7 +1102,11 @@ class QueueTests(unittest.TestCase):
                     "single_consumer_per_message": True,
                     "fanout": False,
                 },
-                "backpressure": {"type": "bounded", "maxsize": 5},
+                "backpressure": {
+                    "type": "bounded",
+                    "maxsize": 5,
+                    "overflow": "block",
+                },
             },
         )
 
@@ -1636,10 +1654,27 @@ class QueueTests(unittest.TestCase):
 
         self.assertEqual(queue.maxsize, 1)
         self.assertEqual(
-            queue.backpressure.as_dict(), {"type": "bounded", "maxsize": 1}
+            queue.backpressure.as_dict(),
+            {"type": "bounded", "maxsize": 1, "overflow": "block"},
         )
         _ = queue.put("one")
         self.assertTrue(queue.full())
+
+    def test_constructor_accepts_rejecting_backpressure_strategy(self) -> None:
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            backpressure=RejectingBackpressure(1),
+        )
+
+        self.assertEqual(queue.maxsize, 1)
+        self.assertEqual(
+            queue.backpressure.as_dict(),
+            {"type": "rejecting", "maxsize": 1, "overflow": "reject"},
+        )
+        _ = queue.put("one")
+        with self.assertRaises(Full):
+            _ = queue.put("two")
 
     def test_constructor_copies_lease_timeout_and_defaults(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore(), lease_timeout=31.0)

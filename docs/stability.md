@@ -37,6 +37,7 @@ These names are treated as the main public contracts today:
 - `PriorityOrdering`
 - `BestEffortOrdering`
 - `BoundedBackpressure`
+- `RejectingBackpressure`
 - `QueueMessage`
 - `QueueStats`
 - `QueueStore` and the built-in queue stores
