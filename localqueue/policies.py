@@ -114,6 +114,62 @@ class FixedLeaseTimeout:
 FIXED_LEASE_TIMEOUT = FixedLeaseTimeout()
 
 
+class AcknowledgementPolicy(Protocol):
+    @property
+    def acknowledgements(self) -> bool: ...
+
+    @property
+    def explicit_ack(self) -> bool: ...
+
+    @property
+    def removes_on_ack(self) -> bool: ...
+
+    def as_dict(self) -> dict[str, object]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ExplicitAcknowledgement:
+    """Acknowledgement policy where consumers explicitly remove completed work."""
+
+    acknowledgements: bool = True
+    explicit_ack: bool = True
+    removes_on_ack: bool = True
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+EXPLICIT_ACKNOWLEDGEMENT = ExplicitAcknowledgement()
+
+
+class DeadLetterPolicy(Protocol):
+    @property
+    def dead_letters(self) -> bool: ...
+
+    @property
+    def stores_failures(self) -> bool: ...
+
+    @property
+    def supports_requeue(self) -> bool: ...
+
+    def as_dict(self) -> dict[str, object]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class DeadLetterQueue:
+    """Dead-letter policy where failed messages stay inspectable and requeueable."""
+
+    dead_letters: bool = True
+    stores_failures: bool = True
+    supports_requeue: bool = True
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+DEAD_LETTER_QUEUE = DeadLetterQueue()
+
+
 class DeliveryPolicy(Protocol):
     @property
     def guarantee(self) -> DeliveryGuarantee: ...
@@ -509,6 +565,8 @@ class QueuePolicySet:
     semantics: QueueSemantics | None = None
     locality_policy: LocalityPolicy | None = None
     lease_policy: LeasePolicy | None = None
+    acknowledgement_policy: AcknowledgementPolicy | None = None
+    dead_letter_policy: DeadLetterPolicy | None = None
     delivery_policy: DeliveryPolicy | None = None
     consumption_policy: ConsumptionPolicy | None = None
     ordering_policy: OrderingPolicy | None = None
@@ -521,6 +579,8 @@ class QueuePolicySet:
         *,
         locality_policy: LocalityPolicy | None = None,
         lease_policy: LeasePolicy | None = None,
+        acknowledgement_policy: AcknowledgementPolicy | None = None,
+        dead_letter_policy: DeadLetterPolicy | None = None,
         consumption_policy: ConsumptionPolicy | None = None,
         ordering_policy: OrderingPolicy | None = None,
         routing_policy: RoutingPolicy | None = None,
@@ -529,6 +589,8 @@ class QueuePolicySet:
         return cls(
             locality_policy=locality_policy,
             lease_policy=lease_policy,
+            acknowledgement_policy=acknowledgement_policy,
+            dead_letter_policy=dead_letter_policy,
             delivery_policy=AT_LEAST_ONCE_DELIVERY,
             consumption_policy=consumption_policy,
             ordering_policy=ordering_policy,
@@ -542,6 +604,8 @@ class QueuePolicySet:
         *,
         locality_policy: LocalityPolicy | None = None,
         lease_policy: LeasePolicy | None = None,
+        acknowledgement_policy: AcknowledgementPolicy | None = None,
+        dead_letter_policy: DeadLetterPolicy | None = None,
         consumption_policy: ConsumptionPolicy | None = None,
         ordering_policy: OrderingPolicy | None = None,
         routing_policy: RoutingPolicy | None = None,
@@ -550,6 +614,8 @@ class QueuePolicySet:
         return cls(
             locality_policy=locality_policy,
             lease_policy=lease_policy,
+            acknowledgement_policy=acknowledgement_policy,
+            dead_letter_policy=dead_letter_policy,
             delivery_policy=AtMostOnceDelivery(),
             consumption_policy=consumption_policy,
             ordering_policy=ordering_policy,
@@ -566,6 +632,8 @@ class QueuePolicySet:
         commit_policy: CommitPolicy = LOCAL_ATOMIC_COMMIT,
         locality_policy: LocalityPolicy | None = None,
         lease_policy: LeasePolicy | None = None,
+        acknowledgement_policy: AcknowledgementPolicy | None = None,
+        dead_letter_policy: DeadLetterPolicy | None = None,
         consumption_policy: ConsumptionPolicy | None = None,
         ordering_policy: OrderingPolicy | None = None,
         routing_policy: RoutingPolicy | None = None,
@@ -579,6 +647,8 @@ class QueuePolicySet:
         return cls(
             locality_policy=locality_policy,
             lease_policy=lease_policy,
+            acknowledgement_policy=acknowledgement_policy,
+            dead_letter_policy=dead_letter_policy,
             delivery_policy=delivery_policy,
             consumption_policy=consumption_policy,
             ordering_policy=ordering_policy,
@@ -594,6 +664,16 @@ class QueuePolicySet:
             ),
             "lease_policy": (
                 None if self.lease_policy is None else self.lease_policy.as_dict()
+            ),
+            "acknowledgement_policy": (
+                None
+                if self.acknowledgement_policy is None
+                else self.acknowledgement_policy.as_dict()
+            ),
+            "dead_letter_policy": (
+                None
+                if self.dead_letter_policy is None
+                else self.dead_letter_policy.as_dict()
             ),
             "delivery_policy": (
                 None if self.delivery_policy is None else self.delivery_policy.as_dict()

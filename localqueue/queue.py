@@ -10,11 +10,15 @@ from typing import Any, Generic, TypeVar, cast
 from .paths import default_queue_store_path
 from .policies import (
     AT_LEAST_ONCE_DELIVERY,
+    DEAD_LETTER_QUEUE,
+    EXPLICIT_ACKNOWLEDGEMENT,
     FIFO_READY_ORDERING,
     FIXED_LEASE_TIMEOUT,
     POINT_TO_POINT_ROUTING,
     PULL_CONSUMPTION,
+    AcknowledgementPolicy,
     ConsumptionPolicy,
+    DeadLetterPolicy,
     DeliveryPolicy,
     FixedLeaseTimeout,
     LOCAL_QUEUE_PLACEMENT,
@@ -38,6 +42,8 @@ class PersistentQueue(Generic[T]):
     name: str
     lease_timeout: float
     lease_policy: LeasePolicy
+    acknowledgement_policy: AcknowledgementPolicy
+    dead_letter_policy: DeadLetterPolicy
     maxsize: int
     semantics: QueueSemantics
     locality_policy: LocalityPolicy
@@ -60,6 +66,8 @@ class PersistentQueue(Generic[T]):
         store_path: str | Path | None = None,
         lease_timeout: float = 30.0,
         lease_policy: LeasePolicy | None = None,
+        acknowledgement_policy: AcknowledgementPolicy | None = None,
+        dead_letter_policy: DeadLetterPolicy | None = None,
         maxsize: int = 0,
         retry_defaults: Mapping[str, Any] | None = None,
         semantics: QueueSemantics | None = None,
@@ -77,6 +85,8 @@ class PersistentQueue(Generic[T]):
             semantics,
             locality_policy,
             lease_policy,
+            acknowledgement_policy,
+            dead_letter_policy,
             consumption_policy,
             delivery_policy,
             ordering_policy,
@@ -87,6 +97,8 @@ class PersistentQueue(Generic[T]):
             semantics=semantics,
             locality_policy=locality_policy,
             lease_policy=lease_policy,
+            acknowledgement_policy=acknowledgement_policy,
+            dead_letter_policy=dead_letter_policy,
             consumption_policy=consumption_policy,
             delivery_policy=delivery_policy,
             ordering_policy=ordering_policy,
@@ -114,6 +126,14 @@ class PersistentQueue(Generic[T]):
         resolved_lease = (
             FixedLeaseTimeout(lease_timeout) if lease_policy is None else lease_policy
         )
+        resolved_acknowledgement = (
+            EXPLICIT_ACKNOWLEDGEMENT
+            if acknowledgement_policy is None
+            else acknowledgement_policy
+        )
+        resolved_dead_letter = (
+            DEAD_LETTER_QUEUE if dead_letter_policy is None else dead_letter_policy
+        )
         resolved_consumption = (
             PULL_CONSUMPTION if consumption_policy is None else consumption_policy
         )
@@ -133,12 +153,16 @@ class PersistentQueue(Generic[T]):
                 ordering=resolved_ordering.guarantee,
                 routing=resolved_routing.pattern,
                 leases=resolved_lease.uses_leases,
+                acknowledgements=resolved_acknowledgement.acknowledgements,
+                dead_letters=resolved_dead_letter.dead_letters,
             )
         )
         _validate_semantics(
             resolved_semantics,
             locality_policy=resolved_locality,
             lease_policy=resolved_lease,
+            acknowledgement_policy=resolved_acknowledgement,
+            dead_letter_policy=resolved_dead_letter,
             delivery_policy=resolved_delivery,
             consumption_policy=resolved_consumption,
             ordering_policy=resolved_ordering,
@@ -147,6 +171,8 @@ class PersistentQueue(Generic[T]):
 
         self.name = name
         self.lease_policy = resolved_lease
+        self.acknowledgement_policy = resolved_acknowledgement
+        self.dead_letter_policy = resolved_dead_letter
         self.lease_timeout = resolved_lease.timeout
         self.backpressure = (
             BoundedBackpressure(maxsize) if backpressure is None else backpressure
@@ -408,6 +434,8 @@ def _apply_policy_set(
     semantics: QueueSemantics | None,
     locality_policy: LocalityPolicy | None,
     lease_policy: LeasePolicy | None,
+    acknowledgement_policy: AcknowledgementPolicy | None,
+    dead_letter_policy: DeadLetterPolicy | None,
     consumption_policy: ConsumptionPolicy | None,
     delivery_policy: DeliveryPolicy | None,
     ordering_policy: OrderingPolicy | None,
@@ -418,6 +446,8 @@ def _apply_policy_set(
     QueueSemantics | None,
     LocalityPolicy | None,
     LeasePolicy | None,
+    AcknowledgementPolicy | None,
+    DeadLetterPolicy | None,
     ConsumptionPolicy | None,
     DeliveryPolicy | None,
     OrderingPolicy | None,
@@ -429,6 +459,8 @@ def _apply_policy_set(
             semantics,
             locality_policy,
             lease_policy,
+            acknowledgement_policy,
+            dead_letter_policy,
             consumption_policy,
             delivery_policy,
             ordering_policy,
@@ -448,6 +480,16 @@ def _apply_policy_set(
             "lease_policy",
             lease_policy,
             policy_set.lease_policy,
+        ),
+        _policy_value(
+            "acknowledgement_policy",
+            acknowledgement_policy,
+            policy_set.acknowledgement_policy,
+        ),
+        _policy_value(
+            "dead_letter_policy",
+            dead_letter_policy,
+            policy_set.dead_letter_policy,
         ),
         _policy_value(
             "consumption_policy",
@@ -483,6 +525,8 @@ def _validate_semantics(
     *,
     locality_policy: LocalityPolicy,
     lease_policy: LeasePolicy,
+    acknowledgement_policy: AcknowledgementPolicy,
+    dead_letter_policy: DeadLetterPolicy,
     delivery_policy: DeliveryPolicy,
     consumption_policy: ConsumptionPolicy,
     ordering_policy: OrderingPolicy,
@@ -492,6 +536,15 @@ def _validate_semantics(
         raise ValueError("semantics locality must match locality_policy locality")
     if semantics.leases != lease_policy.uses_leases:
         raise ValueError("semantics leases must match lease_policy uses_leases")
+    if semantics.acknowledgements != acknowledgement_policy.acknowledgements:
+        raise ValueError(
+            "semantics acknowledgements must match acknowledgement_policy "
+            "acknowledgements"
+        )
+    if semantics.dead_letters != dead_letter_policy.dead_letters:
+        raise ValueError(
+            "semantics dead_letters must match dead_letter_policy dead_letters"
+        )
     if semantics.delivery != delivery_policy.guarantee:
         raise ValueError("semantics delivery must match delivery_policy guarantee")
     if semantics.consumption != consumption_policy.pattern:

@@ -23,6 +23,8 @@ from localqueue.results.stores import lmdb as _result_lmdb
 from localqueue.retry import MemoryAttemptStore, RetryRecord, SQLiteAttemptStore
 from localqueue import (
     AT_LEAST_ONCE_DELIVERY,
+    DEAD_LETTER_QUEUE,
+    EXPLICIT_ACKNOWLEDGEMENT,
     FIFO_READY_ORDERING,
     FIXED_LEASE_TIMEOUT,
     IdempotencyRecord,
@@ -34,12 +36,14 @@ from localqueue import (
     POINT_TO_POINT_ROUTING,
     PULL_CONSUMPTION,
     AtLeastOnceDelivery,
+    DeadLetterQueue,
     EffectivelyOnceDelivery,
     AtMostOnceDelivery,
     BestEffortOrdering,
     BoundedBackpressure,
     FixedLeaseTimeout,
     FifoReadyOrdering,
+    ExplicitAcknowledgement,
     LocalQueuePlacement,
     LMDBQueueStore,
     LOCAL_AT_LEAST_ONCE,
@@ -360,6 +364,28 @@ class QueueTests(unittest.TestCase):
             )
 
         with self.assertRaisesRegex(
+            ValueError,
+            "semantics acknowledgements must match acknowledgement_policy acknowledgements",
+        ):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                semantics=QueueSemantics(acknowledgements=False),
+                acknowledgement_policy=ExplicitAcknowledgement(),
+            )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "semantics dead_letters must match dead_letter_policy dead_letters",
+        ):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                semantics=QueueSemantics(dead_letters=False),
+                dead_letter_policy=DeadLetterQueue(),
+            )
+
+        with self.assertRaisesRegex(
             ValueError, "semantics delivery must match delivery_policy guarantee"
         ):
             _ = PersistentQueue(
@@ -453,6 +479,31 @@ class QueueTests(unittest.TestCase):
             )
 
         with self.assertRaisesRegex(
+            ValueError,
+            "pass either acknowledgement_policy= or "
+            "policy_set.acknowledgement_policy, not both",
+        ):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                acknowledgement_policy=ExplicitAcknowledgement(),
+                policy_set=QueuePolicySet(
+                    acknowledgement_policy=ExplicitAcknowledgement()
+                ),
+            )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "pass either dead_letter_policy= or policy_set.dead_letter_policy, not both",
+        ):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                dead_letter_policy=DeadLetterQueue(),
+                policy_set=QueuePolicySet(dead_letter_policy=DeadLetterQueue()),
+            )
+
+        with self.assertRaisesRegex(
             ValueError, "pass either maxsize= or policy_set.backpressure, not both"
         ):
             _ = PersistentQueue(
@@ -502,6 +553,8 @@ class QueueTests(unittest.TestCase):
 
             self.assertEqual(queue.lease_timeout, 30.0)
             self.assertEqual(queue.lease_policy, FIXED_LEASE_TIMEOUT)
+            self.assertEqual(queue.acknowledgement_policy, EXPLICIT_ACKNOWLEDGEMENT)
+            self.assertEqual(queue.dead_letter_policy, DEAD_LETTER_QUEUE)
             self.assertEqual(
                 queue.lease_policy.as_dict(),
                 {
@@ -509,6 +562,22 @@ class QueueTests(unittest.TestCase):
                     "timeout": 30.0,
                     "uses_leases": True,
                     "expires_inflight": True,
+                },
+            )
+            self.assertEqual(
+                queue.acknowledgement_policy.as_dict(),
+                {
+                    "acknowledgements": True,
+                    "explicit_ack": True,
+                    "removes_on_ack": True,
+                },
+            )
+            self.assertEqual(
+                queue.dead_letter_policy.as_dict(),
+                {
+                    "dead_letters": True,
+                    "stores_failures": True,
+                    "supports_requeue": True,
                 },
             )
             self.assertEqual(queue.maxsize, 0)
@@ -820,10 +889,14 @@ class QueueTests(unittest.TestCase):
         ordering_policy = BestEffortOrdering()
         locality_policy = RemoteQueuePlacement()
         lease_policy = FixedLeaseTimeout(15)
+        acknowledgement_policy = ExplicitAcknowledgement()
+        dead_letter_policy = DeadLetterQueue()
         backpressure = BoundedBackpressure(5)
         policy_set = QueuePolicySet(
             locality_policy=locality_policy,
             lease_policy=lease_policy,
+            acknowledgement_policy=acknowledgement_policy,
+            dead_letter_policy=dead_letter_policy,
             delivery_policy=delivery_policy,
             ordering_policy=ordering_policy,
             backpressure=backpressure,
@@ -837,6 +910,8 @@ class QueueTests(unittest.TestCase):
 
         self.assertIs(queue.locality_policy, locality_policy)
         self.assertIs(queue.lease_policy, lease_policy)
+        self.assertIs(queue.acknowledgement_policy, acknowledgement_policy)
+        self.assertIs(queue.dead_letter_policy, dead_letter_policy)
         self.assertIs(queue.delivery_policy, delivery_policy)
         self.assertIs(queue.ordering_policy, ordering_policy)
         self.assertIs(queue.backpressure, backpressure)
@@ -852,6 +927,8 @@ class QueueTests(unittest.TestCase):
         commit_policy = SagaCommit(saga_store=MemoryResultStore())
         locality_policy = RemoteQueuePlacement()
         lease_policy = FixedLeaseTimeout(45)
+        acknowledgement_policy = ExplicitAcknowledgement()
+        dead_letter_policy = DeadLetterQueue()
         consumption_policy = PushConsumption()
         ordering_policy = BestEffortOrdering()
         routing_policy = PointToPointRouting()
@@ -863,6 +940,8 @@ class QueueTests(unittest.TestCase):
             commit_policy=commit_policy,
             locality_policy=locality_policy,
             lease_policy=lease_policy,
+            acknowledgement_policy=acknowledgement_policy,
+            dead_letter_policy=dead_letter_policy,
             consumption_policy=consumption_policy,
             ordering_policy=ordering_policy,
             routing_policy=routing_policy,
@@ -871,6 +950,8 @@ class QueueTests(unittest.TestCase):
 
         self.assertIs(policy_set.locality_policy, locality_policy)
         self.assertIs(policy_set.lease_policy, lease_policy)
+        self.assertIs(policy_set.acknowledgement_policy, acknowledgement_policy)
+        self.assertIs(policy_set.dead_letter_policy, dead_letter_policy)
         self.assertIs(policy_set.consumption_policy, consumption_policy)
         self.assertIs(policy_set.ordering_policy, ordering_policy)
         self.assertIs(policy_set.routing_policy, routing_policy)
@@ -889,6 +970,16 @@ class QueueTests(unittest.TestCase):
                     "timeout": 45,
                     "uses_leases": True,
                     "expires_inflight": True,
+                },
+                "acknowledgement_policy": {
+                    "acknowledgements": True,
+                    "explicit_ack": True,
+                    "removes_on_ack": True,
+                },
+                "dead_letter_policy": {
+                    "dead_letters": True,
+                    "stores_failures": True,
+                    "supports_requeue": True,
                 },
                 "delivery_policy": {
                     "guarantee": "effectively-once",

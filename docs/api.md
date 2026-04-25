@@ -28,6 +28,8 @@ Constructor options:
 | `retry_defaults` | Tenacity retry keyword defaults inherited by workers |
 | `semantics` | descriptive queue semantics; defaults to `LOCAL_AT_LEAST_ONCE` |
 | `locality_policy` | locality behavior; defaults to `LOCAL_QUEUE_PLACEMENT` |
+| `acknowledgement_policy` | acknowledgement behavior; defaults to `EXPLICIT_ACKNOWLEDGEMENT` |
+| `dead_letter_policy` | dead-letter behavior; defaults to `DEAD_LETTER_QUEUE` |
 | `consumption_policy` | consumption behavior; defaults to `PULL_CONSUMPTION` |
 | `delivery_policy` | delivery behavior; defaults to `AT_LEAST_ONCE_DELIVERY` |
 | `ordering_policy` | ready-message ordering behavior; defaults to `FIFO_READY_ORDERING` |
@@ -71,16 +73,17 @@ acknowledgements, dead letters, and dedupe-key support.
 #### `QueuePolicySet`
 
 Reusable bundle for queue policies. Pass `policy_set=` to `PersistentQueue` when
-you want to keep locality, leases, delivery, ordering, routing, consumption,
-semantics, and backpressure choices together as one configuration object. Explicit
-constructor options remain available and conflict with the same option inside
-the policy set so configuration stays unambiguous.
+you want to keep locality, leases, acknowledgements, dead letters, delivery,
+ordering, routing, consumption, semantics, and backpressure choices together as
+one configuration object. Explicit constructor options remain available and
+conflict with the same option inside the policy set so configuration stays
+unambiguous.
 
 `QueuePolicySet.at_least_once(...)`, `QueuePolicySet.at_most_once(...)`, and
 `QueuePolicySet.effectively_once(...)` build common delivery bundles with
-optional locality, lease, consumption, ordering, routing, and backpressure
-policies. The effectively-once factory also accepts idempotency, result, and
-commit policies.
+optional locality, lease, acknowledgement, dead-letter, consumption, ordering,
+routing, and backpressure policies. The effectively-once factory also accepts
+idempotency, result, and commit policies.
 
 #### `LocalityPolicy`
 
@@ -110,6 +113,26 @@ Lease policy used by default. `FixedLeaseTimeout(timeout=30.0)` means an
 inflight message can be redelivered after the fixed visibility timeout expires.
 The `lease_timeout=` constructor option remains the simple shortcut for this
 policy.
+
+#### `AcknowledgementPolicy`
+
+Protocol for naming how completed messages are acknowledged.
+
+#### `ExplicitAcknowledgement`
+
+Acknowledgement policy used by default. It describes the current queue behavior:
+consumers explicitly acknowledge successful work, and acknowledged messages are
+removed from normal queue storage.
+
+#### `DeadLetterPolicy`
+
+Protocol for naming how failed messages leave normal delivery.
+
+#### `DeadLetterQueue`
+
+Dead-letter policy used by default. It describes the current queue behavior:
+failed messages can be moved to inspectable dead-letter storage and later
+requeued.
 
 #### `AtLeastOnceDelivery`
 
