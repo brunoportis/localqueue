@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import threading
-import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
+    import asyncio
     from .idempotency import IdempotencyStore
     from .results import ResultStore
     from .stores import QueueMessage

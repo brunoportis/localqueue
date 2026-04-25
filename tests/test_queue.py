@@ -987,6 +987,10 @@ class QueueTests(unittest.TestCase):
             },
         )
 
+    def test_threaded_dispatcher_requires_handlers(self) -> None:
+        with self.assertRaisesRegex(ValueError, "handlers cannot be empty"):
+            _ = ThreadedDispatcher(())
+
     def test_constructor_accepts_callback_notification_policy(self) -> None:
         notified: list[QueueMessage] = []
         notification_policy = CallbackNotification((notified.append,))
@@ -1096,6 +1100,94 @@ class QueueTests(unittest.TestCase):
             self.assertTrue(await queue.wait_for_notification_async(timeout=1.0))
             self.assertEqual(queue.get_nowait(), "item")
             await task
+
+        asyncio.run(scenario())
+
+    def test_wait_for_notification_fallback_with_no_notification(self) -> None:
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            notification_policy=NO_NOTIFICATION,
+        )
+
+        def producer() -> None:
+            time.sleep(0.1)
+            _ = queue.put("item")
+
+        t = threading.Thread(target=producer)
+        t.start()
+
+        self.assertTrue(queue.wait_for_notification(timeout=1.0))
+        self.assertEqual(queue.get_nowait(), "item")
+        t.join()
+
+    def test_wait_for_notification_timeout(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+        # InProcessNotification case
+        event = threading.Event()
+        queue_inproc = PersistentQueue(
+            "test-inproc",
+            store=MemoryQueueStore(),
+            notification_policy=InProcessNotification(event),
+        )
+        self.assertFalse(queue_inproc.wait_for_notification(timeout=0.01))
+
+        # Fallback case
+        self.assertFalse(queue.wait_for_notification(timeout=0.01))
+
+    def test_wait_for_notification_async_fallback(self) -> None:
+        async def scenario() -> None:
+            queue = PersistentQueue(
+                "test",
+                store=MemoryQueueStore(),
+                notification_policy=NO_NOTIFICATION,
+            )
+
+            async def producer() -> None:
+                await asyncio.sleep(0.1)
+                _ = queue.put("item")
+
+            task = asyncio.create_task(producer())
+
+            self.assertTrue(await queue.wait_for_notification_async(timeout=1.0))
+            self.assertEqual(queue.get_nowait(), "item")
+            await task
+
+        asyncio.run(scenario())
+
+    def test_wait_for_notification_async_timeout(self) -> None:
+        async def scenario() -> None:
+            # AsyncNotification case
+            event = asyncio.Event()
+            queue_async = PersistentQueue(
+                "test-async",
+                store=MemoryQueueStore(),
+                notification_policy=AsyncNotification(event),
+            )
+            self.assertFalse(await queue_async.wait_for_notification_async(timeout=0.01))
+
+            # Fallback case
+            queue = PersistentQueue("test", store=MemoryQueueStore())
+            self.assertFalse(await queue.wait_for_notification_async(timeout=0.01))
+
+        asyncio.run(scenario())
+
+    def test_wait_for_notification_async_no_timeout(self) -> None:
+        async def scenario() -> None:
+            event = asyncio.Event()
+            queue = PersistentQueue(
+                "test",
+                store=MemoryQueueStore(),
+                notification_policy=AsyncNotification(event),
+            )
+
+            async def producer() -> None:
+                await asyncio.sleep(0.01)
+                _ = queue.put("a")
+
+            asyncio.create_task(producer())
+            self.assertTrue(await queue.wait_for_notification_async(timeout=None))
+            self.assertEqual(queue.get_nowait(), "a")
 
         asyncio.run(scenario())
 
