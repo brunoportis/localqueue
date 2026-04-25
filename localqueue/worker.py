@@ -331,6 +331,11 @@ def _commit_store(queue: PersistentQueue) -> ResultStore | None:
     return cast("ResultStore | None", getattr(commit_policy, "commit_store", None))
 
 
+def _saga_store(queue: PersistentQueue) -> ResultStore | None:
+    commit_policy = _commit_policy(queue)
+    return cast("ResultStore | None", getattr(commit_policy, "saga_store", None))
+
+
 def _result_key(message: QueueMessage) -> str | None:
     if message.dedupe_key is None:
         return None
@@ -477,6 +482,36 @@ def _commit_two_phase(
     commit_store.save(f"commit:{phase_key}", commit_payload)
 
 
+def _commit_saga(
+    queue: PersistentQueue,
+    message: QueueMessage,
+    *,
+    phase: str,
+    result: Any = None,
+    error: BaseException | None = None,
+) -> None:
+    commit_policy = _commit_policy(queue)
+    if getattr(commit_policy, "mode", None) != "saga":
+        return
+    saga_store = _saga_store(queue)
+    if saga_store is None:
+        return
+    phase_key = _result_key(message)
+    if phase_key is None:
+        return
+    payload: dict[str, Any] = {
+        "queue": message.queue,
+        "message_id": message.id,
+        "dedupe_key": message.dedupe_key,
+        "phase": phase,
+    }
+    if result is not None:
+        payload["result"] = result
+    if error is not None:
+        payload["error"] = _error_payload(error)
+    saga_store.save(f"saga:{phase}:{phase_key}", payload)
+
+
 def persistent_worker(
     queue: PersistentQueue,
     *,
@@ -517,6 +552,7 @@ def persistent_worker(
                 _complete_idempotent_handling(
                     queue, message, status="failed", error=exc
                 )
+                _commit_saga(queue, message, phase="compensate", error=exc)
                 if is_permanent_failure(exc) or worker_config.dead_letter_on_failure:
                     queue.dead_letter(message, error=exc)
                 else:
@@ -542,6 +578,7 @@ def persistent_worker(
                 result_key = _result_key(message)
             _commit_outbox(queue, message, result=result, result_key=result_key)
             _commit_two_phase(queue, message, result=result, result_key=result_key)
+            _commit_saga(queue, message, phase="forward", result=result)
             queue.ack(message)
             return result
 
@@ -590,6 +627,7 @@ def persistent_async_worker(
                 _complete_idempotent_handling(
                     queue, message, status="failed", error=exc
                 )
+                _commit_saga(queue, message, phase="compensate", error=exc)
                 if is_permanent_failure(exc) or worker_config.dead_letter_on_failure:
                     queue.dead_letter(message, error=exc)
                 else:
@@ -619,6 +657,7 @@ def persistent_async_worker(
                 result_key = _result_key(message)
             _commit_outbox(queue, message, result=result, result_key=result_key)
             _commit_two_phase(queue, message, result=result, result_key=result_key)
+            _commit_saga(queue, message, phase="forward", result=result)
             queue.ack(message)
             return result
 

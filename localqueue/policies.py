@@ -218,9 +218,17 @@ class SagaCommit:
     mode: CommitMode = "saga"
     local_commit: bool = False
     coordinates_effects: bool = True
+    saga_store: ResultStore | None = None
 
     def as_dict(self) -> dict[str, object]:
-        return asdict(self)
+        return {
+            "mode": self.mode,
+            "local_commit": self.local_commit,
+            "coordinates_effects": self.coordinates_effects,
+            "saga_store": (
+                None if self.saga_store is None else type(self.saga_store).__name__
+            ),
+        }
 
 
 @dataclass(frozen=True, slots=True)

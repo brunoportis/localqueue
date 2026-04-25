@@ -123,6 +123,7 @@ variants are explicit ports for outbox, two-phase, and saga-style coordination.
 envelope.
 `TwoPhaseCommit` accepts `prepare_store=` and `commit_store=` for explicit
 prepare/commit envelopes.
+`SagaCommit` accepts `saga_store=` for forward and compensation envelopes.
 
 ## localqueue.results
 
