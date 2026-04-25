@@ -16,6 +16,7 @@ These names are treated as the main public contracts today:
 - `QueueSemantics`
 - `QueuePolicySet`
 - `PullConsumption`
+- `PushConsumption`
 - `PointToPointRouting`
 - `PublishSubscribeRouting`
 - `AtLeastOnceDelivery`

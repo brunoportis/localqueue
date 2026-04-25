@@ -233,6 +233,22 @@ queue.consumption_policy.as_dict()
 The default `PULL_CONSUMPTION` policy means workers explicitly request messages.
 Producers enqueue work, but they do not invoke handlers directly.
 
+Use `PushConsumption` when the queue definition should model push-based
+delivery:
+
+```python
+from localqueue import PersistentQueue, PushConsumption
+
+queue = PersistentQueue(
+    "events",
+    consumption_policy=PushConsumption(),
+)
+```
+
+This names the consumption contract in the queue configuration. The built-in
+worker helpers still use pull-based processing until a dispatcher port is
+attached.
+
 The routing behavior is available as a policy object:
 
 ```python

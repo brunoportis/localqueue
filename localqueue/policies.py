@@ -289,6 +289,18 @@ class PullConsumption:
 PULL_CONSUMPTION = PullConsumption()
 
 
+@dataclass(frozen=True, slots=True)
+class PushConsumption:
+    """Consumption policy where producers or dispatchers invoke handlers."""
+
+    pattern: ConsumptionPattern = "push"
+    consumer_requests_messages: bool = False
+    producer_invokes_handler: bool = True
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
 class RoutingPolicy(Protocol):
     @property
     def pattern(self) -> RoutingPattern: ...

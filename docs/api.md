@@ -156,6 +156,13 @@ Consumption policy used by default. It describes the current queue behavior:
 workers explicitly request messages with `get()`, `get_message()`, or the worker
 helpers. Producers only enqueue work; they do not invoke handlers directly.
 
+#### `PushConsumption`
+
+Consumption policy for workflows that model push-based delivery, where a
+producer or dispatcher invokes handlers instead of workers polling for messages.
+It names the concept with `pattern="push"` and can be used in policy sets while
+the current built-in worker helpers remain pull-based.
+
 #### `PointToPointRouting`
 
 Routing policy used by default. It describes the current queue behavior: each
