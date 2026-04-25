@@ -92,6 +92,34 @@ class PullConsumption:
 PULL_CONSUMPTION = PullConsumption()
 
 
+class RoutingPolicy(Protocol):
+    @property
+    def pattern(self) -> RoutingPattern: ...
+
+    @property
+    def single_consumer_per_message(self) -> bool: ...
+
+    @property
+    def fanout(self) -> bool: ...
+
+    def as_dict(self) -> dict[str, object]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class PointToPointRouting:
+    """Routing policy where each message is leased to one consumer at a time."""
+
+    pattern: RoutingPattern = "point-to-point"
+    single_consumer_per_message: bool = True
+    fanout: bool = False
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+POINT_TO_POINT_ROUTING = PointToPointRouting()
+
+
 class OrderingPolicy(Protocol):
     @property
     def guarantee(self) -> OrderingGuarantee: ...

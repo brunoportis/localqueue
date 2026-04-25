@@ -29,6 +29,7 @@ Constructor options:
 | `consumption_policy` | consumption behavior; defaults to `PULL_CONSUMPTION` |
 | `delivery_policy` | delivery behavior; defaults to `AT_LEAST_ONCE_DELIVERY` |
 | `ordering_policy` | ready-message ordering behavior; defaults to `FIFO_READY_ORDERING` |
+| `routing_policy` | message routing behavior; defaults to `POINT_TO_POINT_ROUTING` |
 | `backpressure` | strategy object for capacity checks; defaults from `maxsize` |
 
 Core methods:
@@ -75,6 +76,12 @@ redelivered if the lease expires before acknowledgement.
 Consumption policy used by default. It describes the current queue behavior:
 workers explicitly request messages with `get()`, `get_message()`, or the worker
 helpers. Producers only enqueue work; they do not invoke handlers directly.
+
+#### `PointToPointRouting`
+
+Routing policy used by default. It describes the current queue behavior: each
+message is leased to one consumer at a time, and publishing a message does not
+fan it out to multiple independent subscriber queues.
 
 #### `FifoReadyOrdering`
 

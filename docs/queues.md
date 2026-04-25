@@ -80,6 +80,16 @@ queue.consumption_policy.as_dict()
 The default `PULL_CONSUMPTION` policy means workers explicitly request messages.
 Producers enqueue work, but they do not invoke handlers directly.
 
+The routing behavior is available as a policy object:
+
+```python
+queue.routing_policy.as_dict()
+```
+
+The default `POINT_TO_POINT_ROUTING` policy means each message is leased to one
+consumer at a time. Enqueueing a message does not fan it out to multiple
+independent subscriber queues.
+
 The ready-message ordering is available as a policy object too:
 
 ```python
