@@ -15,6 +15,8 @@ from .policies import (
     PULL_CONSUMPTION,
     ConsumptionPolicy,
     DeliveryPolicy,
+    LOCAL_QUEUE_PLACEMENT,
+    LocalityPolicy,
     OrderingPolicy,
     RoutingPolicy,
     BackpressureStrategy,
@@ -34,6 +36,7 @@ class PersistentQueue(Generic[T]):
     lease_timeout: float
     maxsize: int
     semantics: QueueSemantics
+    locality_policy: LocalityPolicy
     consumption_policy: ConsumptionPolicy
     delivery_policy: DeliveryPolicy
     ordering_policy: OrderingPolicy
@@ -55,6 +58,7 @@ class PersistentQueue(Generic[T]):
         maxsize: int = 0,
         retry_defaults: Mapping[str, Any] | None = None,
         semantics: QueueSemantics | None = None,
+        locality_policy: LocalityPolicy | None = None,
         consumption_policy: ConsumptionPolicy | None = None,
         delivery_policy: DeliveryPolicy | None = None,
         ordering_policy: OrderingPolicy | None = None,
@@ -66,6 +70,7 @@ class PersistentQueue(Generic[T]):
             raise ValueError("pass either store= or store_path=, not both")
         (
             semantics,
+            locality_policy,
             consumption_policy,
             delivery_policy,
             ordering_policy,
@@ -74,6 +79,7 @@ class PersistentQueue(Generic[T]):
         ) = _apply_policy_set(
             policy_set=policy_set,
             semantics=semantics,
+            locality_policy=locality_policy,
             consumption_policy=consumption_policy,
             delivery_policy=delivery_policy,
             ordering_policy=ordering_policy,
@@ -93,6 +99,9 @@ class PersistentQueue(Generic[T]):
         resolved_delivery = (
             AT_LEAST_ONCE_DELIVERY if delivery_policy is None else delivery_policy
         )
+        resolved_locality = (
+            LOCAL_QUEUE_PLACEMENT if locality_policy is None else locality_policy
+        )
         resolved_consumption = (
             PULL_CONSUMPTION if consumption_policy is None else consumption_policy
         )
@@ -106,22 +115,21 @@ class PersistentQueue(Generic[T]):
             semantics
             if semantics is not None
             else QueueSemantics(
+                locality=resolved_locality.locality,
                 delivery=resolved_delivery.guarantee,
                 consumption=resolved_consumption.pattern,
                 ordering=resolved_ordering.guarantee,
                 routing=resolved_routing.pattern,
             )
         )
-        if resolved_semantics.delivery != resolved_delivery.guarantee:
-            raise ValueError("semantics delivery must match delivery_policy guarantee")
-        if resolved_semantics.consumption != resolved_consumption.pattern:
-            raise ValueError(
-                "semantics consumption must match consumption_policy pattern"
-            )
-        if resolved_semantics.ordering != resolved_ordering.guarantee:
-            raise ValueError("semantics ordering must match ordering_policy guarantee")
-        if resolved_semantics.routing != resolved_routing.pattern:
-            raise ValueError("semantics routing must match routing_policy pattern")
+        _validate_semantics(
+            resolved_semantics,
+            locality_policy=resolved_locality,
+            delivery_policy=resolved_delivery,
+            consumption_policy=resolved_consumption,
+            ordering_policy=resolved_ordering,
+            routing_policy=resolved_routing,
+        )
 
         self.name = name
         self.lease_timeout = lease_timeout
@@ -130,6 +138,7 @@ class PersistentQueue(Generic[T]):
         )
         self.maxsize = self.backpressure.maxsize
         self.semantics = resolved_semantics
+        self.locality_policy = resolved_locality
         self.consumption_policy = resolved_consumption
         self.delivery_policy = resolved_delivery
         self.ordering_policy = resolved_ordering
@@ -382,6 +391,7 @@ def _apply_policy_set(
     *,
     policy_set: QueuePolicySet | None,
     semantics: QueueSemantics | None,
+    locality_policy: LocalityPolicy | None,
     consumption_policy: ConsumptionPolicy | None,
     delivery_policy: DeliveryPolicy | None,
     ordering_policy: OrderingPolicy | None,
@@ -390,6 +400,7 @@ def _apply_policy_set(
     maxsize: int,
 ) -> tuple[
     QueueSemantics | None,
+    LocalityPolicy | None,
     ConsumptionPolicy | None,
     DeliveryPolicy | None,
     OrderingPolicy | None,
@@ -399,6 +410,7 @@ def _apply_policy_set(
     if policy_set is None:
         return (
             semantics,
+            locality_policy,
             consumption_policy,
             delivery_policy,
             ordering_policy,
@@ -409,6 +421,11 @@ def _apply_policy_set(
         raise ValueError("pass either maxsize= or policy_set.backpressure, not both")
     return (
         _policy_value("semantics", semantics, policy_set.semantics),
+        _policy_value(
+            "locality_policy",
+            locality_policy,
+            policy_set.locality_policy,
+        ),
         _policy_value(
             "consumption_policy",
             consumption_policy,
@@ -436,6 +453,27 @@ def _validate_retry_defaults(retry_defaults: Mapping[str, Any] | None) -> None:
         max_tries = retry_defaults["max_tries"]
         if not isinstance(max_tries, int) or max_tries <= 0:
             raise ValueError("retry_defaults max_tries must be a positive integer")
+
+
+def _validate_semantics(
+    semantics: QueueSemantics,
+    *,
+    locality_policy: LocalityPolicy,
+    delivery_policy: DeliveryPolicy,
+    consumption_policy: ConsumptionPolicy,
+    ordering_policy: OrderingPolicy,
+    routing_policy: RoutingPolicy,
+) -> None:
+    if semantics.locality != locality_policy.locality:
+        raise ValueError("semantics locality must match locality_policy locality")
+    if semantics.delivery != delivery_policy.guarantee:
+        raise ValueError("semantics delivery must match delivery_policy guarantee")
+    if semantics.consumption != consumption_policy.pattern:
+        raise ValueError("semantics consumption must match consumption_policy pattern")
+    if semantics.ordering != ordering_policy.guarantee:
+        raise ValueError("semantics ordering must match ordering_policy guarantee")
+    if semantics.routing != routing_policy.pattern:
+        raise ValueError("semantics routing must match routing_policy pattern")
 
 
 def _validate_priority(priority: int) -> None:

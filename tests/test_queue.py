@@ -27,6 +27,7 @@ from localqueue import (
     IdempotencyRecord,
     IdempotencyStoreLockedError,
     LOCAL_ATOMIC_COMMIT,
+    LOCAL_QUEUE_PLACEMENT,
     LMDBResultStore,
     LMDBIdempotencyStore,
     POINT_TO_POINT_ROUTING,
@@ -37,6 +38,7 @@ from localqueue import (
     BestEffortOrdering,
     BoundedBackpressure,
     FifoReadyOrdering,
+    LocalQueuePlacement,
     LMDBQueueStore,
     LOCAL_AT_LEAST_ONCE,
     MemoryIdempotencyStore,
@@ -57,6 +59,7 @@ from localqueue import (
     QueueStoreLockedError,
     RETURN_STORED_RESULT,
     ReturnStoredResult,
+    RemoteQueuePlacement,
     SagaCommit,
     SQLiteIdempotencyStore,
     SQLiteResultStore,
@@ -330,6 +333,16 @@ class QueueTests(unittest.TestCase):
             _ = effectively_once_queue.put("item")
 
         with self.assertRaisesRegex(
+            ValueError, "semantics locality must match locality_policy locality"
+        ):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                semantics=QueueSemantics(locality="remote"),
+                locality_policy=LocalQueuePlacement(),
+            )
+
+        with self.assertRaisesRegex(
             ValueError, "semantics delivery must match delivery_policy guarantee"
         ):
             _ = PersistentQueue(
@@ -391,6 +404,17 @@ class QueueTests(unittest.TestCase):
             )
 
         with self.assertRaisesRegex(
+            ValueError,
+            "pass either locality_policy= or policy_set.locality_policy, not both",
+        ):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                locality_policy=LocalQueuePlacement(),
+                policy_set=QueuePolicySet(locality_policy=RemoteQueuePlacement()),
+            )
+
+        with self.assertRaisesRegex(
             ValueError, "pass either maxsize= or policy_set.backpressure, not both"
         ):
             _ = PersistentQueue(
@@ -442,12 +466,40 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(queue.maxsize, 0)
             self.assertEqual(queue.backpressure, BoundedBackpressure())
             self.assertEqual(queue.semantics, LOCAL_AT_LEAST_ONCE)
+            self.assertEqual(queue.locality_policy, LOCAL_QUEUE_PLACEMENT)
+            self.assertEqual(
+                queue.locality_policy.as_dict(),
+                {
+                    "locality": "local",
+                    "co_located_state": True,
+                    "crosses_network_boundary": False,
+                },
+            )
             self.assertEqual(queue.consumption_policy, PULL_CONSUMPTION)
             self.assertEqual(queue.delivery_policy, AT_LEAST_ONCE_DELIVERY)
             self.assertEqual(queue.ordering_policy, FIFO_READY_ORDERING)
             self.assertEqual(queue.routing_policy, POINT_TO_POINT_ROUTING)
             self.assertIsNone(queue._store)
             self.assertEqual(queue._store_path, Path(tmpdir) / "queue.sqlite3")
+
+    def test_constructor_accepts_remote_locality_policy(self) -> None:
+        locality_policy = RemoteQueuePlacement()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            locality_policy=locality_policy,
+        )
+
+        self.assertIs(queue.locality_policy, locality_policy)
+        self.assertEqual(queue.semantics.locality, "remote")
+        self.assertEqual(
+            queue.locality_policy.as_dict(),
+            {
+                "locality": "remote",
+                "co_located_state": False,
+                "crosses_network_boundary": True,
+            },
+        )
 
     def test_constructor_accepts_explicit_queue_semantics(self) -> None:
         semantics = QueueSemantics(
@@ -706,8 +758,10 @@ class QueueTests(unittest.TestCase):
             commit_policy=SagaCommit(saga_store=MemoryResultStore()),
         )
         ordering_policy = BestEffortOrdering()
+        locality_policy = RemoteQueuePlacement()
         backpressure = BoundedBackpressure(5)
         policy_set = QueuePolicySet(
+            locality_policy=locality_policy,
             delivery_policy=delivery_policy,
             ordering_policy=ordering_policy,
             backpressure=backpressure,
@@ -719,10 +773,12 @@ class QueueTests(unittest.TestCase):
             policy_set=policy_set,
         )
 
+        self.assertIs(queue.locality_policy, locality_policy)
         self.assertIs(queue.delivery_policy, delivery_policy)
         self.assertIs(queue.ordering_policy, ordering_policy)
         self.assertIs(queue.backpressure, backpressure)
         self.assertEqual(queue.maxsize, 5)
+        self.assertEqual(queue.semantics.locality, "remote")
         self.assertEqual(queue.semantics.delivery, "effectively-once")
         self.assertEqual(queue.semantics.ordering, "best-effort")
 
@@ -730,6 +786,7 @@ class QueueTests(unittest.TestCase):
         idempotency_store = MemoryIdempotencyStore()
         result_policy = ReturnStoredResult(result_store=MemoryResultStore())
         commit_policy = SagaCommit(saga_store=MemoryResultStore())
+        locality_policy = RemoteQueuePlacement()
         consumption_policy = PushConsumption()
         ordering_policy = BestEffortOrdering()
         routing_policy = PointToPointRouting()
@@ -739,12 +796,14 @@ class QueueTests(unittest.TestCase):
             idempotency_store=idempotency_store,
             result_policy=result_policy,
             commit_policy=commit_policy,
+            locality_policy=locality_policy,
             consumption_policy=consumption_policy,
             ordering_policy=ordering_policy,
             routing_policy=routing_policy,
             backpressure=backpressure,
         )
 
+        self.assertIs(policy_set.locality_policy, locality_policy)
         self.assertIs(policy_set.consumption_policy, consumption_policy)
         self.assertIs(policy_set.ordering_policy, ordering_policy)
         self.assertIs(policy_set.routing_policy, routing_policy)
@@ -753,6 +812,11 @@ class QueueTests(unittest.TestCase):
             policy_set.as_dict(),
             {
                 "semantics": None,
+                "locality_policy": {
+                    "locality": "remote",
+                    "co_located_state": False,
+                    "crosses_network_boundary": True,
+                },
                 "delivery_policy": {
                     "guarantee": "effectively-once",
                     "ack_timing": "after-success",

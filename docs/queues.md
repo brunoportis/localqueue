@@ -61,6 +61,26 @@ delivery with leases, acknowledgements, dead letters, and optional dedupe keys.
 This is intentionally descriptive: it names the queueing concepts behind the
 small API without requiring users to configure them before they need to.
 
+The locality is also available as a policy object:
+
+```python
+queue.locality_policy.as_dict()
+```
+
+The default `LOCAL_QUEUE_PLACEMENT` policy means queue state is local to the
+process host. Use `RemoteQueuePlacement` when the queue definition should model
+a remote queue boundary:
+
+```python
+from localqueue import PersistentQueue, RemoteQueuePlacement
+
+queue = PersistentQueue("events", locality_policy=RemoteQueuePlacement())
+```
+
+This names the placement contract. It does not turn the built-in local stores
+into a distributed broker; a remote adapter can implement that boundary behind
+the same queue ports.
+
 The delivery behavior is also available as a policy object:
 
 ```python
