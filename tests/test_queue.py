@@ -56,6 +56,7 @@ from localqueue import (
     SagaCommit,
     SQLiteIdempotencyStore,
     SQLiteResultStore,
+    TwoPhaseCommit,
     TransactionalOutboxCommit,
     TWO_PHASE_COMMIT,
     SQLiteQueueStore,
@@ -69,6 +70,7 @@ from localqueue.worker import (
     _record_failure,
     _record_success,
     _commit_outbox,
+    _commit_two_phase,
     _result_key,
     _resolve_dead_letter_on_failure,
     _UNSET,
@@ -725,6 +727,8 @@ class QueueTests(unittest.TestCase):
                 "mode": "two-phase",
                 "local_commit": False,
                 "coordinates_effects": True,
+                "prepare_store": None,
+                "commit_store": None,
             },
         )
         self.assertEqual(
@@ -733,6 +737,174 @@ class QueueTests(unittest.TestCase):
                 "mode": "saga",
                 "local_commit": False,
                 "coordinates_effects": True,
+            },
+        )
+
+    def test_two_phase_commit_uses_prepare_and_commit_stores(self) -> None:
+        store = MemoryIdempotencyStore()
+        prepare_store = MemoryResultStore()
+        commit_store = MemoryResultStore()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=EffectivelyOnceDelivery(
+                idempotency_store=store,
+                result_policy=ReturnStoredResult(result_store=MemoryResultStore()),
+                commit_policy=TwoPhaseCommit(
+                    prepare_store=prepare_store,
+                    commit_store=commit_store,
+                ),
+            ),
+        )
+        message = queue.put("item", dedupe_key="job-1")
+
+        @persistent_worker(queue)
+        def handle(value: str) -> dict[str, str]:
+            return {"status": value.upper()}
+
+        self.assertEqual(cast("Any", handle)(), {"status": "ITEM"})
+        record = store.load("job-1")
+        assert record is not None
+        self.assertEqual(record.result_key, "dedupe:test:job-1")
+        self.assertEqual(
+            prepare_store.load("prepare:dedupe:test:job-1"),
+            {
+                "queue": "test",
+                "message_id": message.id,
+                "dedupe_key": "job-1",
+                "result_key": "dedupe:test:job-1",
+                "result": {"status": "ITEM"},
+                "phase": "prepare",
+            },
+        )
+        self.assertEqual(
+            commit_store.load("commit:dedupe:test:job-1"),
+            {
+                "queue": "test",
+                "message_id": message.id,
+                "dedupe_key": "job-1",
+                "result_key": "dedupe:test:job-1",
+                "result": {"status": "ITEM"},
+                "phase": "commit",
+            },
+        )
+
+    def test_two_phase_commit_failure_prevents_ack(self) -> None:
+        store = MemoryIdempotencyStore()
+
+        class FailingCommitStore:
+            def load(self, key: str) -> Any | None:
+                return None
+
+            def save(self, key: str, value: Any) -> None:
+                raise RuntimeError("commit phase failed")
+
+            def delete(self, key: str) -> None:
+                return None
+
+        prepare_store = MemoryResultStore()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=EffectivelyOnceDelivery(
+                idempotency_store=store,
+                result_policy=ReturnStoredResult(result_store=MemoryResultStore()),
+                commit_policy=TwoPhaseCommit(
+                    prepare_store=prepare_store,
+                    commit_store=FailingCommitStore(),
+                ),
+            ),
+        )
+        message = queue.put("item", dedupe_key="job-1")
+
+        @persistent_worker(queue)
+        def handle(value: str) -> dict[str, str]:
+            return {"status": value.upper()}
+
+        with self.assertRaisesRegex(RuntimeError, "commit phase failed"):
+            cast("Any", handle)()
+
+        record = store.load("job-1")
+        assert record is not None
+        self.assertEqual(record.status, "succeeded")
+        self.assertEqual(
+            prepare_store.load("prepare:dedupe:test:job-1"),
+            {
+                "queue": "test",
+                "message_id": message.id,
+                "dedupe_key": "job-1",
+                "result_key": "dedupe:test:job-1",
+                "result": {"status": "ITEM"},
+                "phase": "prepare",
+            },
+        )
+        self.assertIsNotNone(queue.inspect(message.id))
+
+    def test_commit_two_phase_without_stores_is_noop(self) -> None:
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=EffectivelyOnceDelivery(
+                idempotency_store=MemoryIdempotencyStore(),
+                result_policy=ReturnStoredResult(result_store=MemoryResultStore()),
+                commit_policy=TwoPhaseCommit(),
+            ),
+        )
+        message = QueueMessage(
+            id="message-1",
+            queue="test",
+            value="item",
+            dedupe_key="job-1",
+        )
+
+        _commit_two_phase(queue, message, result={"status": "ITEM"}, result_key=None)
+
+    def test_commit_two_phase_without_dedupe_key_is_noop(self) -> None:
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=EffectivelyOnceDelivery(
+                idempotency_store=MemoryIdempotencyStore(),
+                result_policy=ReturnStoredResult(result_store=MemoryResultStore()),
+                commit_policy=TwoPhaseCommit(
+                    prepare_store=MemoryResultStore(),
+                    commit_store=MemoryResultStore(),
+                ),
+            ),
+        )
+        message = QueueMessage(id="message-1", queue="test", value="item")
+
+        _commit_two_phase(queue, message, result={"status": "ITEM"}, result_key=None)
+
+    def test_commit_two_phase_without_commit_store_is_prepare_only(self) -> None:
+        prepare_store = MemoryResultStore()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=EffectivelyOnceDelivery(
+                idempotency_store=MemoryIdempotencyStore(),
+                result_policy=ReturnStoredResult(result_store=MemoryResultStore()),
+                commit_policy=TwoPhaseCommit(prepare_store=prepare_store),
+            ),
+        )
+        message = QueueMessage(
+            id="message-1",
+            queue="test",
+            value="item",
+            dedupe_key="job-1",
+        )
+
+        _commit_two_phase(queue, message, result={"status": "ITEM"}, result_key="rk")
+
+        self.assertEqual(
+            prepare_store.load("prepare:dedupe:test:job-1"),
+            {
+                "queue": "test",
+                "message_id": "message-1",
+                "dedupe_key": "job-1",
+                "result_key": "rk",
+                "result": {"status": "ITEM"},
+                "phase": "prepare",
             },
         )
 

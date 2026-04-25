@@ -189,9 +189,23 @@ class TwoPhaseCommit:
     mode: CommitMode = "two-phase"
     local_commit: bool = False
     coordinates_effects: bool = True
+    prepare_store: ResultStore | None = None
+    commit_store: ResultStore | None = None
 
     def as_dict(self) -> dict[str, object]:
-        return asdict(self)
+        return {
+            "mode": self.mode,
+            "local_commit": self.local_commit,
+            "coordinates_effects": self.coordinates_effects,
+            "prepare_store": (
+                None
+                if self.prepare_store is None
+                else type(self.prepare_store).__name__
+            ),
+            "commit_store": (
+                None if self.commit_store is None else type(self.commit_store).__name__
+            ),
+        }
 
 
 TWO_PHASE_COMMIT = TwoPhaseCommit()

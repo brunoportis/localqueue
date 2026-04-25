@@ -121,6 +121,8 @@ Built-in commit policy variants. `LocalAtomicCommit` is the default. The other
 variants are explicit ports for outbox, two-phase, and saga-style coordination.
 `TransactionalOutboxCommit` accepts `outbox_store=` for the durable outbox
 envelope.
+`TwoPhaseCommit` accepts `prepare_store=` and `commit_store=` for explicit
+prepare/commit envelopes.
 
 ## localqueue.results
 
