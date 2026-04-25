@@ -7,9 +7,12 @@ except importlib.metadata.PackageNotFoundError:
 
 from .queue import PersistentQueue
 from .policies import (
+    AT_LEAST_ONCE_DELIVERY,
     LOCAL_AT_LEAST_ONCE,
+    AtLeastOnceDelivery,
     BackpressureStrategy,
     BoundedBackpressure,
+    DeliveryPolicy,
     QueueSemantics,
 )
 from .retry import (
@@ -45,8 +48,11 @@ from .worker import PersistentWorkerConfig, persistent_async_worker, persistent_
 __all__ = [
     "AttemptStore",
     "AttemptStoreLockedError",
+    "AT_LEAST_ONCE_DELIVERY",
+    "AtLeastOnceDelivery",
     "BackpressureStrategy",
     "BoundedBackpressure",
+    "DeliveryPolicy",
     "LMDBAttemptStore",
     "LMDBQueueStore",
     "LOCAL_AT_LEAST_ONCE",

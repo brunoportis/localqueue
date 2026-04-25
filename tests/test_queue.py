@@ -18,6 +18,8 @@ import lmdb
 
 from localqueue.retry import MemoryAttemptStore, RetryRecord, SQLiteAttemptStore
 from localqueue import (
+    AT_LEAST_ONCE_DELIVERY,
+    AtLeastOnceDelivery,
     BoundedBackpressure,
     LMDBQueueStore,
     LOCAL_AT_LEAST_ONCE,
@@ -269,6 +271,16 @@ class QueueTests(unittest.TestCase):
             _ = BoundedBackpressure(-1)
 
         with self.assertRaisesRegex(
+            ValueError, "semantics delivery must match delivery_policy guarantee"
+        ):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                semantics=QueueSemantics(delivery="at-most-once"),
+                delivery_policy=AtLeastOnceDelivery(),
+            )
+
+        with self.assertRaisesRegex(
             ValueError, "pass either maxsize= or backpressure=, not both"
         ):
             _ = PersistentQueue(
@@ -320,6 +332,7 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(queue.maxsize, 0)
             self.assertEqual(queue.backpressure, BoundedBackpressure())
             self.assertEqual(queue.semantics, LOCAL_AT_LEAST_ONCE)
+            self.assertEqual(queue.delivery_policy, AT_LEAST_ONCE_DELIVERY)
             self.assertIsNone(queue._store)
             self.assertEqual(queue._store_path, Path(tmpdir) / "queue.sqlite3")
 
@@ -349,6 +362,25 @@ class QueueTests(unittest.TestCase):
                 "acknowledgements": True,
                 "dead_letters": True,
                 "deduplication": True,
+            },
+        )
+
+    def test_constructor_accepts_explicit_delivery_policy(self) -> None:
+        delivery_policy = AtLeastOnceDelivery()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=delivery_policy,
+        )
+
+        self.assertIs(queue.delivery_policy, delivery_policy)
+        self.assertEqual(
+            queue.delivery_policy.as_dict(),
+            {
+                "guarantee": "at-least-once",
+                "ack_timing": "after-success",
+                "uses_leases": True,
+                "redelivers_expired_leases": True,
             },
         )
 
