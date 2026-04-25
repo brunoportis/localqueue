@@ -16,10 +16,15 @@ from unittest import mock
 
 import lmdb
 
+from localqueue.idempotency.stores import _shared as _idempotency_shared
+from localqueue.idempotency.stores import lmdb as _idempotency_lmdb
 from localqueue.retry import MemoryAttemptStore, RetryRecord, SQLiteAttemptStore
 from localqueue import (
     AT_LEAST_ONCE_DELIVERY,
     FIFO_READY_ORDERING,
+    IdempotencyRecord,
+    IdempotencyStoreLockedError,
+    LMDBIdempotencyStore,
     POINT_TO_POINT_ROUTING,
     PULL_CONSUMPTION,
     AtLeastOnceDelivery,
@@ -29,6 +34,7 @@ from localqueue import (
     FifoReadyOrdering,
     LMDBQueueStore,
     LOCAL_AT_LEAST_ONCE,
+    MemoryIdempotencyStore,
     MemoryQueueStore,
     PersistentQueue,
     PersistentWorkerConfig,
@@ -38,6 +44,7 @@ from localqueue import (
     QueueSemantics,
     QueueMessage,
     QueueStoreLockedError,
+    SQLiteIdempotencyStore,
     SQLiteQueueStore,
     persistent_async_worker,
     persistent_worker,
@@ -557,6 +564,32 @@ class QueueTests(unittest.TestCase):
                 "uses_leases": True,
                 "redelivers_expired_leases": True,
                 "requires_dedupe_key": True,
+                "idempotency_store": None,
+            },
+        )
+
+    def test_constructor_accepts_effectively_once_delivery_policy_with_store(
+        self,
+    ) -> None:
+        delivery_policy = EffectivelyOnceDelivery(
+            idempotency_store=MemoryIdempotencyStore()
+        )
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=delivery_policy,
+        )
+
+        self.assertIs(queue.delivery_policy, delivery_policy)
+        self.assertEqual(
+            queue.delivery_policy.as_dict(),
+            {
+                "guarantee": "effectively-once",
+                "ack_timing": "after-success",
+                "uses_leases": True,
+                "redelivers_expired_leases": True,
+                "requires_dedupe_key": True,
+                "idempotency_store": "MemoryIdempotencyStore",
             },
         )
 
@@ -3309,6 +3342,204 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(heartbeats, ["worker-a", "worker-a"])
 
         asyncio.run(scenario())
+
+    def test_memory_idempotency_store_round_trip_and_prune(self) -> None:
+        store = MemoryIdempotencyStore()
+        pending = IdempotencyRecord.pending()
+        succeeded = IdempotencyRecord(
+            status="succeeded",
+            first_seen_at=100.0,
+            completed_at=120.0,
+            result_key="result-1",
+            metadata={"kind": "email"},
+        )
+
+        store.save("pending", pending)
+        store.save("done", succeeded)
+
+        loaded = store.load("done")
+        assert loaded is not None
+        self.assertEqual(loaded.status, "succeeded")
+        self.assertEqual(loaded.result_key, "result-1")
+        self.assertEqual(loaded.metadata, {"kind": "email"})
+        self.assertEqual(store.count_completed_older_than(older_than=50, now=200.0), 1)
+        self.assertEqual(store.prune_completed(older_than=50, now=200.0), 1)
+        store.delete("missing")
+        store.delete("pending")
+        self.assertIsNone(store.load("done"))
+        self.assertIsNone(store.load("pending"))
+
+    def test_idempotency_store_locked_error_uses_resolved_path(self) -> None:
+        error = IdempotencyStoreLockedError("./relative-idempotency")
+
+        self.assertIn("relative-idempotency", str(error))
+        self.assertTrue(error.path.endswith("relative-idempotency"))
+
+    def test_sqlite_idempotency_store_round_trip_and_schema_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "idempotency.sqlite3"
+            store = SQLiteIdempotencyStore(path)
+            succeeded = IdempotencyRecord(
+                status="succeeded",
+                first_seen_at=100.0,
+                completed_at=120.0,
+                result_key="result-1",
+                metadata={"kind": "email"},
+            )
+
+            store.save("done", succeeded)
+            loaded = store.load("done")
+            assert loaded is not None
+            self.assertEqual(loaded.metadata, {"kind": "email"})
+            self.assertEqual(
+                store.count_completed_older_than(older_than=50, now=200.0), 1
+            )
+            self.assertEqual(store.prune_completed(older_than=50, now=200.0), 1)
+            self.assertIsNone(store.load("done"))
+            store.close()
+
+            connection = sqlite3.connect(path)
+            version = connection.execute("PRAGMA user_version").fetchone()
+            connection.close()
+            assert version is not None
+            self.assertEqual(int(version[0]), 1)
+
+    def test_sqlite_idempotency_store_handles_missing_keys_and_delete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "idempotency.sqlite3"
+            store = SQLiteIdempotencyStore(path)
+
+            self.assertIsNone(store.load("missing"))
+            store.delete("missing")
+
+            store.save("done", IdempotencyRecord.pending())
+            store.delete("done")
+            self.assertIsNone(store.load("done"))
+            store.close()
+
+    def test_sqlite_idempotency_store_migrates_legacy_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "legacy.sqlite3"
+            connection = sqlite3.connect(path)
+            connection.execute(
+                "CREATE TABLE idempotency_records ("
+                "key TEXT PRIMARY KEY, "
+                "record_json TEXT NOT NULL"
+                ")"
+            )
+            payload = json.dumps(
+                {
+                    "status": "succeeded",
+                    "first_seen_at": 100.0,
+                    "completed_at": 120.0,
+                    "result_key": "result-1",
+                    "metadata": {"kind": "email"},
+                }
+            )
+            connection.execute(
+                "INSERT INTO idempotency_records(key, record_json) VALUES(?, ?)",
+                ("done", payload),
+            )
+            connection.execute("PRAGMA user_version = 0")
+            connection.commit()
+            connection.close()
+
+            store = SQLiteIdempotencyStore(path)
+            loaded = store.load("done")
+
+            assert loaded is not None
+            self.assertEqual(loaded.status, "succeeded")
+            self.assertEqual(loaded.completed_at, 120.0)
+            self.assertEqual(
+                store.count_completed_older_than(older_than=50, now=200.0), 1
+            )
+            store.close()
+
+    def test_sqlite_idempotency_store_rejects_newer_schema_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "future.sqlite3"
+            connection = sqlite3.connect(path)
+            connection.execute("PRAGMA user_version = 999")
+            connection.commit()
+            connection.close()
+
+            with self.assertRaisesRegex(
+                ValueError, "unsupported SQLite idempotency schema version"
+            ):
+                _ = SQLiteIdempotencyStore(path)
+
+    def test_sqlite_idempotency_store_closes_connection_on_init_failure(self) -> None:
+        connection = mock.Mock()
+        connection.execute.side_effect = sqlite3.OperationalError("boom")
+
+        with mock.patch(
+            "localqueue.idempotency.stores.sqlite.sqlite3.connect",
+            return_value=connection,
+        ):
+            with self.assertRaises(sqlite3.OperationalError):
+                _ = SQLiteIdempotencyStore("idempotency.sqlite3")
+
+        connection.close.assert_called_once_with()
+
+    def test_lmdb_idempotency_store_round_trip_and_prune(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LMDBIdempotencyStore(tmpdir)
+            succeeded = IdempotencyRecord(
+                status="succeeded",
+                first_seen_at=100.0,
+                completed_at=120.0,
+                result_key="result-1",
+                metadata={"kind": "email"},
+            )
+
+            store.save("done", succeeded)
+            loaded = store.load("done")
+            assert loaded is not None
+            self.assertEqual(loaded.result_key, "result-1")
+            self.assertEqual(
+                store.count_completed_older_than(older_than=50, now=200.0), 1
+            )
+            self.assertEqual(store.prune_completed(older_than=50, now=200.0), 1)
+            self.assertIsNone(store.load("done"))
+
+    def test_lmdb_idempotency_store_handles_missing_keys_and_delete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LMDBIdempotencyStore(tmpdir)
+
+            self.assertIsNone(store.load("missing"))
+            store.delete("missing")
+
+    def test_lmdb_idempotency_store_raises_locked_error(self) -> None:
+        fake_lmdb = mock.Mock()
+        fake_lmdb.LockError = lmdb.LockError
+        fake_lmdb.open.side_effect = lmdb.LockError("locked")
+
+        with mock.patch.object(
+            _idempotency_lmdb, "import_lmdb", return_value=fake_lmdb
+        ):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with self.assertRaises(IdempotencyStoreLockedError):
+                    _ = LMDBIdempotencyStore(Path(tmpdir) / "locked")
+
+    def test_import_lmdb_reports_missing_optional_dependency(self) -> None:
+        original_import = __import__
+
+        def raising_import(
+            name: str,
+            globals: dict[str, object] | None = None,
+            locals: dict[str, object] | None = None,
+            fromlist: tuple[str, ...] = (),
+            level: int = 0,
+        ) -> object:
+            if name == "lmdb":
+                raise ModuleNotFoundError("No module named 'lmdb'")
+            return original_import(name, globals, locals, fromlist, level)
+
+        with mock.patch("builtins.__import__", side_effect=raising_import):
+            with self.assertRaisesRegex(
+                RuntimeError, "LMDB support requires the optional dependency"
+            ):
+                _idempotency_shared.import_lmdb()
 
 
 if __name__ == "__main__":

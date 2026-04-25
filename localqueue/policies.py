@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
+
+if TYPE_CHECKING:
+    from .idempotency import IdempotencyStore
 
 AckTiming = Literal["before-delivery", "after-success", "manual"]
 DeliveryGuarantee = Literal["at-least-once", "at-most-once", "effectively-once"]
@@ -86,9 +89,21 @@ class EffectivelyOnceDelivery:
     uses_leases: bool = True
     redelivers_expired_leases: bool = True
     requires_dedupe_key: bool = True
+    idempotency_store: IdempotencyStore | None = None
 
     def as_dict(self) -> dict[str, object]:
-        return asdict(self)
+        return {
+            "guarantee": self.guarantee,
+            "ack_timing": self.ack_timing,
+            "uses_leases": self.uses_leases,
+            "redelivers_expired_leases": self.redelivers_expired_leases,
+            "requires_dedupe_key": self.requires_dedupe_key,
+            "idempotency_store": (
+                None
+                if self.idempotency_store is None
+                else type(self.idempotency_store).__name__
+            ),
+        }
 
 
 class ConsumptionPolicy(Protocol):

@@ -83,6 +83,8 @@ Delivery policy for idempotent workflows. It keeps the at-least-once processing
 mechanics, but requires `dedupe_key` on `put()` so producers always provide a
 stable identity for the work item. This is the base contract for higher-level
 effectively-once features such as idempotency ledgers or cached results.
+Pass `idempotency_store=` when you want to attach an explicit store interface for
+future dedupe/result coordination.
 
 #### `PullConsumption`
 
@@ -267,6 +269,25 @@ Raised when LMDB reports that the queue store is locked by another process.
 
 Install `localqueue[cli]` when you want the CLI entry points, and
 `localqueue[lmdb]` when you want the LMDB queue store backend.
+
+## localqueue.idempotency
+
+### `IdempotencyRecord`
+
+Value object stored by idempotency adapters. It tracks `status`,
+`first_seen_at`, optional `completed_at`, optional `result_key`, and free-form
+`metadata`.
+
+### `IdempotencyStore`
+
+Protocol for loading, saving, deleting, and pruning idempotency records by
+stable key.
+
+### Built-in stores
+
+- `MemoryIdempotencyStore`
+- `SQLiteIdempotencyStore`
+- `LMDBIdempotencyStore`
 
 ## localqueue.retry
 
