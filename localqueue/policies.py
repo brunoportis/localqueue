@@ -30,6 +30,7 @@ class QueueSemantics:
     acknowledgements: bool = True
     dead_letters: bool = True
     deduplication: bool = True
+    subscriptions: bool = False
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -486,6 +487,19 @@ class RoutingPolicy(Protocol):
     def as_dict(self) -> dict[str, object]: ...
 
 
+class SubscriptionPolicy(Protocol):
+    @property
+    def subscriptions(self) -> bool: ...
+
+    @property
+    def fanout(self) -> bool: ...
+
+    @property
+    def subscriber_count(self) -> int: ...
+
+    def as_dict(self) -> dict[str, object]: ...
+
+
 @dataclass(frozen=True, slots=True)
 class PointToPointRouting:
     """Routing policy where each message is leased to one consumer at a time."""
@@ -511,6 +525,58 @@ class PublishSubscribeRouting:
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class NoSubscriptions:
+    """Subscription policy where messages are not fanned out to subscribers."""
+
+    subscriptions: bool = False
+    fanout: bool = False
+    subscriber_count: int = 0
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+NO_SUBSCRIPTIONS = NoSubscriptions()
+
+
+@dataclass(frozen=True, slots=True)
+class StaticFanoutSubscriptions:
+    """Subscription policy with a fixed set of subscriber names."""
+
+    subscribers: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        subscribers = tuple(self.subscribers)
+        if not subscribers:
+            raise ValueError("subscribers cannot be empty")
+        if any(not subscriber for subscriber in subscribers):
+            raise ValueError("subscriber names cannot be empty")
+        if len(set(subscribers)) != len(subscribers):
+            raise ValueError("subscriber names must be unique")
+        object.__setattr__(self, "subscribers", subscribers)
+
+    @property
+    def subscriptions(self) -> bool:
+        return True
+
+    @property
+    def fanout(self) -> bool:
+        return True
+
+    @property
+    def subscriber_count(self) -> int:
+        return len(self.subscribers)
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "subscriptions": self.subscriptions,
+            "fanout": self.fanout,
+            "subscriber_count": self.subscriber_count,
+            "subscribers": list(self.subscribers),
+        }
 
 
 class OrderingPolicy(Protocol):
@@ -645,6 +711,7 @@ class QueuePolicySet:
     consumption_policy: ConsumptionPolicy | None = None
     ordering_policy: OrderingPolicy | None = None
     routing_policy: RoutingPolicy | None = None
+    subscription_policy: SubscriptionPolicy | None = None
     backpressure: BackpressureStrategy | None = None
 
     @classmethod
@@ -659,6 +726,7 @@ class QueuePolicySet:
         consumption_policy: ConsumptionPolicy | None = None,
         ordering_policy: OrderingPolicy | None = None,
         routing_policy: RoutingPolicy | None = None,
+        subscription_policy: SubscriptionPolicy | None = None,
         backpressure: BackpressureStrategy | None = None,
     ) -> "QueuePolicySet":
         return cls(
@@ -671,6 +739,7 @@ class QueuePolicySet:
             consumption_policy=consumption_policy,
             ordering_policy=ordering_policy,
             routing_policy=routing_policy,
+            subscription_policy=subscription_policy,
             backpressure=backpressure,
         )
 
@@ -686,6 +755,7 @@ class QueuePolicySet:
         consumption_policy: ConsumptionPolicy | None = None,
         ordering_policy: OrderingPolicy | None = None,
         routing_policy: RoutingPolicy | None = None,
+        subscription_policy: SubscriptionPolicy | None = None,
         backpressure: BackpressureStrategy | None = None,
     ) -> "QueuePolicySet":
         return cls(
@@ -698,6 +768,7 @@ class QueuePolicySet:
             consumption_policy=consumption_policy,
             ordering_policy=ordering_policy,
             routing_policy=routing_policy,
+            subscription_policy=subscription_policy,
             backpressure=backpressure,
         )
 
@@ -716,6 +787,7 @@ class QueuePolicySet:
         consumption_policy: ConsumptionPolicy | None = None,
         ordering_policy: OrderingPolicy | None = None,
         routing_policy: RoutingPolicy | None = None,
+        subscription_policy: SubscriptionPolicy | None = None,
         backpressure: BackpressureStrategy | None = None,
     ) -> "QueuePolicySet":
         delivery_policy = EffectivelyOnceDelivery(
@@ -733,6 +805,7 @@ class QueuePolicySet:
             consumption_policy=consumption_policy,
             ordering_policy=ordering_policy,
             routing_policy=routing_policy,
+            subscription_policy=subscription_policy,
             backpressure=backpressure,
         )
 
@@ -773,6 +846,11 @@ class QueuePolicySet:
             ),
             "routing_policy": (
                 None if self.routing_policy is None else self.routing_policy.as_dict()
+            ),
+            "subscription_policy": (
+                None
+                if self.subscription_policy is None
+                else self.subscription_policy.as_dict()
             ),
             "backpressure": (
                 None if self.backpressure is None else self.backpressure.as_dict()

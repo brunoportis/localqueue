@@ -35,6 +35,7 @@ Constructor options:
 | `delivery_policy` | delivery behavior; defaults to `AT_LEAST_ONCE_DELIVERY` |
 | `ordering_policy` | ready-message ordering behavior; defaults to `FIFO_READY_ORDERING` |
 | `routing_policy` | message routing behavior; defaults to `POINT_TO_POINT_ROUTING` |
+| `subscription_policy` | subscription fanout behavior; defaults to `NO_SUBSCRIPTIONS` |
 | `backpressure` | strategy object for capacity checks; defaults from `maxsize` |
 | `policy_set` | reusable bundle of queue policies; conflicts with explicit policy options |
 
@@ -69,7 +70,7 @@ Descriptive value object for the queueing concepts implemented by a
 configuration. The default `LOCAL_AT_LEAST_ONCE` describes the current
 `PersistentQueue` behavior: local storage, at-least-once delivery,
 point-to-point routing, pull consumption, ready-order delivery, leases,
-acknowledgements, dead letters, and dedupe-key support.
+acknowledgements, dead letters, dedupe-key support, and no subscriptions.
 
 #### `QueuePolicySet`
 
@@ -83,8 +84,8 @@ unambiguous.
 `QueuePolicySet.at_least_once(...)`, `QueuePolicySet.at_most_once(...)`, and
 `QueuePolicySet.effectively_once(...)` build common delivery bundles with
 optional locality, lease, acknowledgement, dead-letter, deduplication,
-consumption, ordering, routing, and backpressure policies. The effectively-once
-factory also accepts idempotency, result, and commit policies.
+consumption, ordering, routing, subscription, and backpressure policies. The
+effectively-once factory also accepts idempotency, result, and commit policies.
 
 #### `LocalityPolicy`
 
@@ -247,6 +248,22 @@ Routing policy for workflows that model publish/subscribe fanout. It names the
 concept explicitly with `pattern="publish-subscribe"` and `fanout=True`, so a
 queue configuration can advertise the routing contract even when the current
 local store is still responsible for one concrete queue at a time.
+
+#### `SubscriptionPolicy`
+
+Protocol for naming whether a queue definition has subscribers and whether
+messages should be fanned out.
+
+#### `NoSubscriptions`
+
+Subscription policy used by default. It keeps point-to-point queue definitions
+simple: there are no named subscribers and no fanout contract.
+
+#### `StaticFanoutSubscriptions`
+
+Subscription policy for publish/subscribe definitions with a fixed subscriber
+set. It records subscriber names in the queue configuration without duplicating
+messages into physical subscriber queues by itself.
 
 #### `FifoReadyOrdering`
 
