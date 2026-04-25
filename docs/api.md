@@ -26,6 +26,7 @@ Constructor options:
 | `maxsize` | maximum number of ready messages; `0` means unbounded |
 | `retry_defaults` | Tenacity retry keyword defaults inherited by workers |
 | `semantics` | descriptive queue semantics; defaults to `LOCAL_AT_LEAST_ONCE` |
+| `consumption_policy` | consumption behavior; defaults to `PULL_CONSUMPTION` |
 | `delivery_policy` | delivery behavior; defaults to `AT_LEAST_ONCE_DELIVERY` |
 | `ordering_policy` | ready-message ordering behavior; defaults to `FIFO_READY_ORDERING` |
 | `backpressure` | strategy object for capacity checks; defaults from `maxsize` |
@@ -68,6 +69,12 @@ acknowledgements, dead letters, and dedupe-key support.
 Delivery policy used by default. It describes the current queue behavior:
 messages are leased before handling, acknowledged after successful handling, and
 redelivered if the lease expires before acknowledgement.
+
+#### `PullConsumption`
+
+Consumption policy used by default. It describes the current queue behavior:
+workers explicitly request messages with `get()`, `get_message()`, or the worker
+helpers. Producers only enqueue work; they do not invoke handlers directly.
 
 #### `FifoReadyOrdering`
 

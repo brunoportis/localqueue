@@ -71,6 +71,15 @@ The default `AT_LEAST_ONCE_DELIVERY` policy means a message is leased before
 handling, acknowledged after successful handling, and redelivered if the lease
 expires before acknowledgement.
 
+The consumption behavior is available as a policy object:
+
+```python
+queue.consumption_policy.as_dict()
+```
+
+The default `PULL_CONSUMPTION` policy means workers explicitly request messages.
+Producers enqueue work, but they do not invoke handlers directly.
+
 The ready-message ordering is available as a policy object too:
 
 ```python

@@ -12,6 +12,8 @@ from .policies import (
     AT_LEAST_ONCE_DELIVERY,
     FIFO_READY_ORDERING,
     LOCAL_AT_LEAST_ONCE,
+    PULL_CONSUMPTION,
+    ConsumptionPolicy,
     DeliveryPolicy,
     OrderingPolicy,
     BackpressureStrategy,
@@ -29,6 +31,7 @@ class PersistentQueue(Generic[T]):
     lease_timeout: float
     maxsize: int
     semantics: QueueSemantics
+    consumption_policy: ConsumptionPolicy
     delivery_policy: DeliveryPolicy
     ordering_policy: OrderingPolicy
     backpressure: BackpressureStrategy
@@ -48,6 +51,7 @@ class PersistentQueue(Generic[T]):
         maxsize: int = 0,
         retry_defaults: Mapping[str, Any] | None = None,
         semantics: QueueSemantics | None = None,
+        consumption_policy: ConsumptionPolicy | None = None,
         delivery_policy: DeliveryPolicy | None = None,
         ordering_policy: OrderingPolicy | None = None,
         backpressure: BackpressureStrategy | None = None,
@@ -66,12 +70,19 @@ class PersistentQueue(Generic[T]):
         resolved_delivery = (
             AT_LEAST_ONCE_DELIVERY if delivery_policy is None else delivery_policy
         )
+        resolved_consumption = (
+            PULL_CONSUMPTION if consumption_policy is None else consumption_policy
+        )
         resolved_ordering = (
             FIFO_READY_ORDERING if ordering_policy is None else ordering_policy
         )
         resolved_semantics = semantics if semantics is not None else LOCAL_AT_LEAST_ONCE
         if resolved_semantics.delivery != resolved_delivery.guarantee:
             raise ValueError("semantics delivery must match delivery_policy guarantee")
+        if resolved_semantics.consumption != resolved_consumption.pattern:
+            raise ValueError(
+                "semantics consumption must match consumption_policy pattern"
+            )
         if resolved_semantics.ordering != resolved_ordering.guarantee:
             raise ValueError("semantics ordering must match ordering_policy guarantee")
 
@@ -82,6 +93,7 @@ class PersistentQueue(Generic[T]):
         )
         self.maxsize = self.backpressure.maxsize
         self.semantics = resolved_semantics
+        self.consumption_policy = resolved_consumption
         self.delivery_policy = resolved_delivery
         self.ordering_policy = resolved_ordering
         self._store = store

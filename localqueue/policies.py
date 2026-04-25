@@ -64,6 +64,34 @@ class AtLeastOnceDelivery:
 AT_LEAST_ONCE_DELIVERY = AtLeastOnceDelivery()
 
 
+class ConsumptionPolicy(Protocol):
+    @property
+    def pattern(self) -> ConsumptionPattern: ...
+
+    @property
+    def consumer_requests_messages(self) -> bool: ...
+
+    @property
+    def producer_invokes_handler(self) -> bool: ...
+
+    def as_dict(self) -> dict[str, object]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class PullConsumption:
+    """Consumption policy where workers request messages from the queue."""
+
+    pattern: ConsumptionPattern = "pull"
+    consumer_requests_messages: bool = True
+    producer_invokes_handler: bool = False
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+PULL_CONSUMPTION = PullConsumption()
+
+
 class OrderingPolicy(Protocol):
     @property
     def guarantee(self) -> OrderingGuarantee: ...
