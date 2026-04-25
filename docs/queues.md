@@ -189,6 +189,8 @@ commit policies are named ports for outbox, two-phase, and saga coordination.
 before the queue message is acknowledged.
 `TwoPhaseCommit(prepare_store=..., commit_store=...)` writes explicit prepare
 and commit envelopes before the queue message is acknowledged.
+`SagaCommit(saga_store=...)` writes forward or compensation envelopes around the
+queue acknowledgment path.
 
 The consumption behavior is available as a policy object:
 

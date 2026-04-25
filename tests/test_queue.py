@@ -71,6 +71,7 @@ from localqueue.worker import (
     _record_success,
     _commit_outbox,
     _commit_two_phase,
+    _commit_saga,
     _result_key,
     _resolve_dead_letter_on_failure,
     _UNSET,
@@ -737,6 +738,7 @@ class QueueTests(unittest.TestCase):
                 "mode": "saga",
                 "local_commit": False,
                 "coordinates_effects": True,
+                "saga_store": None,
             },
         )
 
@@ -839,6 +841,109 @@ class QueueTests(unittest.TestCase):
             },
         )
         self.assertIsNotNone(queue.inspect(message.id))
+
+    def test_saga_commit_uses_saga_store(self) -> None:
+        store = MemoryIdempotencyStore()
+        saga_store = MemoryResultStore()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=EffectivelyOnceDelivery(
+                idempotency_store=store,
+                result_policy=ReturnStoredResult(result_store=MemoryResultStore()),
+                commit_policy=SagaCommit(saga_store=saga_store),
+            ),
+        )
+        message = queue.put("item", dedupe_key="job-1")
+
+        @persistent_worker(queue)
+        def handle(value: str) -> dict[str, str]:
+            return {"status": value.upper()}
+
+        self.assertEqual(cast("Any", handle)(), {"status": "ITEM"})
+        self.assertEqual(
+            saga_store.load("saga:forward:dedupe:test:job-1"),
+            {
+                "queue": "test",
+                "message_id": message.id,
+                "dedupe_key": "job-1",
+                "phase": "forward",
+                "result": {"status": "ITEM"},
+            },
+        )
+
+    def test_saga_commit_failure_records_compensation(self) -> None:
+        store = MemoryIdempotencyStore()
+        saga_store = MemoryResultStore()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=EffectivelyOnceDelivery(
+                idempotency_store=store,
+                result_policy=ReturnStoredResult(result_store=MemoryResultStore()),
+                commit_policy=SagaCommit(saga_store=saga_store),
+            ),
+        )
+        message = queue.put("item", dedupe_key="job-1")
+
+        @persistent_worker(
+            queue,
+            config=PersistentWorkerConfig(dead_letter_on_failure=False, max_tries=1),
+        )
+        def handle(value: str) -> dict[str, str]:
+            raise RuntimeError(f"boom: {value}")
+
+        with self.assertRaisesRegex(RuntimeError, "boom: item"):
+            cast("Any", handle)()
+
+        self.assertEqual(
+            saga_store.load("saga:compensate:dedupe:test:job-1"),
+            {
+                "queue": "test",
+                "message_id": message.id,
+                "dedupe_key": "job-1",
+                "phase": "compensate",
+                "error": {
+                    "type": "RuntimeError",
+                    "module": "builtins",
+                    "message": "boom: item",
+                },
+            },
+        )
+        self.assertIsNotNone(queue.inspect(message.id))
+
+    def test_commit_saga_without_store_is_noop(self) -> None:
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=EffectivelyOnceDelivery(
+                idempotency_store=MemoryIdempotencyStore(),
+                result_policy=ReturnStoredResult(result_store=MemoryResultStore()),
+                commit_policy=SagaCommit(),
+            ),
+        )
+        message = QueueMessage(
+            id="message-1",
+            queue="test",
+            value="item",
+            dedupe_key="job-1",
+        )
+
+        _commit_saga(queue, message, phase="forward", result={"status": "ITEM"})
+
+    def test_commit_saga_without_dedupe_key_is_noop(self) -> None:
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=EffectivelyOnceDelivery(
+                idempotency_store=MemoryIdempotencyStore(),
+                result_policy=ReturnStoredResult(result_store=MemoryResultStore()),
+                commit_policy=SagaCommit(saga_store=MemoryResultStore()),
+            ),
+        )
+        message = QueueMessage(id="message-1", queue="test", value="item")
+
+        _commit_saga(queue, message, phase="forward", result={"status": "ITEM"})
 
     def test_commit_two_phase_without_stores_is_noop(self) -> None:
         queue = PersistentQueue(
