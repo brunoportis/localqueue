@@ -47,6 +47,7 @@ from localqueue import (
     PointToPointRouting,
     PriorityOrdering,
     PullConsumption,
+    QueuePolicySet,
     QueueSemantics,
     QueueMessage,
     ResultStoreLockedError,
@@ -375,6 +376,27 @@ class QueueTests(unittest.TestCase):
                 backpressure=BoundedBackpressure(1),
             )
 
+        with self.assertRaisesRegex(
+            ValueError,
+            "pass either delivery_policy= or policy_set.delivery_policy, not both",
+        ):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                delivery_policy=AtLeastOnceDelivery(),
+                policy_set=QueuePolicySet(delivery_policy=AtMostOnceDelivery()),
+            )
+
+        with self.assertRaisesRegex(
+            ValueError, "pass either maxsize= or policy_set.backpressure, not both"
+        ):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                maxsize=1,
+                policy_set=QueuePolicySet(backpressure=BoundedBackpressure(1)),
+            )
+
         with self.assertRaisesRegex(TypeError, "retry_defaults must be a mapping"):
             _ = PersistentQueue("test", store=store, retry_defaults=cast("Any", []))
 
@@ -613,6 +635,86 @@ class QueueTests(unittest.TestCase):
                 "idempotency_store": "MemoryIdempotencyStore",
                 "result_policy": NO_RESULT_POLICY.as_dict(),
                 "commit_policy": LOCAL_ATOMIC_COMMIT.as_dict(),
+            },
+        )
+
+    def test_constructor_accepts_policy_set(self) -> None:
+        delivery_policy = EffectivelyOnceDelivery(
+            idempotency_store=MemoryIdempotencyStore(),
+            result_policy=ReturnStoredResult(result_store=MemoryResultStore()),
+            commit_policy=SagaCommit(saga_store=MemoryResultStore()),
+        )
+        ordering_policy = PriorityOrdering()
+        backpressure = BoundedBackpressure(5)
+        policy_set = QueuePolicySet(
+            delivery_policy=delivery_policy,
+            ordering_policy=ordering_policy,
+            backpressure=backpressure,
+        )
+
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            policy_set=policy_set,
+        )
+
+        self.assertIs(queue.delivery_policy, delivery_policy)
+        self.assertIs(queue.ordering_policy, ordering_policy)
+        self.assertIs(queue.backpressure, backpressure)
+        self.assertEqual(queue.maxsize, 5)
+        self.assertEqual(queue.semantics.delivery, "effectively-once")
+        self.assertEqual(queue.semantics.ordering, "priority")
+
+    def test_effectively_once_policy_set_factory(self) -> None:
+        idempotency_store = MemoryIdempotencyStore()
+        result_policy = ReturnStoredResult(result_store=MemoryResultStore())
+        commit_policy = SagaCommit(saga_store=MemoryResultStore())
+        ordering_policy = PriorityOrdering()
+        backpressure = BoundedBackpressure(5)
+
+        policy_set = QueuePolicySet.effectively_once(
+            idempotency_store=idempotency_store,
+            result_policy=result_policy,
+            commit_policy=commit_policy,
+            ordering_policy=ordering_policy,
+            backpressure=backpressure,
+        )
+
+        self.assertIs(policy_set.ordering_policy, ordering_policy)
+        self.assertIs(policy_set.backpressure, backpressure)
+        self.assertEqual(
+            policy_set.as_dict(),
+            {
+                "semantics": None,
+                "delivery_policy": {
+                    "guarantee": "effectively-once",
+                    "ack_timing": "after-success",
+                    "uses_leases": True,
+                    "redelivers_expired_leases": True,
+                    "requires_dedupe_key": True,
+                    "idempotency_store": "MemoryIdempotencyStore",
+                    "result_policy": {
+                        "type": "return-stored",
+                        "stores_result": True,
+                        "returns_cached_result": True,
+                        "result_store": "MemoryResultStore",
+                    },
+                    "commit_policy": {
+                        "mode": "saga",
+                        "local_commit": False,
+                        "coordinates_effects": True,
+                        "saga_store": "MemoryResultStore",
+                    },
+                },
+                "consumption_policy": None,
+                "ordering_policy": {
+                    "guarantee": "priority",
+                    "ready_before_delayed": True,
+                    "stable_for_same_timestamp": True,
+                    "priority_before_sequence": True,
+                },
+                "routing_policy": None,
+                "backpressure": {"type": "bounded", "maxsize": 5},
             },
         )
 

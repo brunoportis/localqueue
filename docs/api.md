@@ -31,6 +31,7 @@ Constructor options:
 | `ordering_policy` | ready-message ordering behavior; defaults to `FIFO_READY_ORDERING` |
 | `routing_policy` | message routing behavior; defaults to `POINT_TO_POINT_ROUTING` |
 | `backpressure` | strategy object for capacity checks; defaults from `maxsize` |
+| `policy_set` | reusable bundle of queue policies; conflicts with explicit policy options |
 
 Core methods:
 
@@ -64,6 +65,17 @@ configuration. The default `LOCAL_AT_LEAST_ONCE` describes the current
 `PersistentQueue` behavior: local storage, at-least-once delivery,
 point-to-point routing, pull consumption, ready-order delivery, leases,
 acknowledgements, dead letters, and dedupe-key support.
+
+#### `QueuePolicySet`
+
+Reusable bundle for queue policies. Pass `policy_set=` to `PersistentQueue` when
+you want to keep delivery, ordering, routing, consumption, semantics, and
+backpressure choices together as one configuration object. Explicit constructor
+options remain available and conflict with the same option inside the policy set
+so configuration stays unambiguous.
+
+`QueuePolicySet.effectively_once(...)` builds the common effectively-once bundle
+with optional idempotency, result, commit, ordering, and backpressure policies.
 
 #### `AtLeastOnceDelivery`
 
