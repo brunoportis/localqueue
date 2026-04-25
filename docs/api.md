@@ -89,7 +89,8 @@ dedupe/result coordination. When an attached store already marks a
 skip handler execution. Until a future `ResultPolicy` exists, that short-circuit
 path returns `None` by default. Pass `result_policy=ReturnStoredResult()` to
 persist the successful handler result inline in the idempotency ledger and
-return it on duplicate delivery.
+return it on duplicate delivery. Pass `result_store=` to `ReturnStoredResult`
+when you want result storage to live outside the idempotency ledger.
 
 #### `NoResultPolicy`
 
@@ -100,7 +101,20 @@ does not persist or replay handler results.
 
 Result policy for `EffectivelyOnceDelivery` that stores successful handler
 results inline in the idempotency ledger and returns the cached value when a
-duplicate delivery is skipped.
+duplicate delivery is skipped. When `result_store=` is attached, the policy saves
+the handler result there and only keeps a `result_key` in the idempotency
+ledger.
+
+## localqueue.results
+
+#### `ResultStore`
+
+Protocol for loading, saving, and deleting cached worker results by key.
+
+#### `MemoryResultStore`, `SQLiteResultStore`, `LMDBResultStore`
+
+Built-in result store adapters for in-memory, SQLite, and LMDB-backed cached
+worker results.
 
 #### `PullConsumption`
 

@@ -138,6 +138,32 @@ queue = PersistentQueue(
 This first version stores the successful handler result inline in the
 idempotency ledger, so built-in stores expect it to be JSON-serializable.
 
+If you want the result payload stored separately from the ledger, attach a
+`result_store` to the result policy:
+
+```python
+from localqueue import (
+    EffectivelyOnceDelivery,
+    PersistentQueue,
+    ReturnStoredResult,
+    SQLiteIdempotencyStore,
+    SQLiteResultStore,
+)
+
+queue = PersistentQueue(
+    "payments",
+    delivery_policy=EffectivelyOnceDelivery(
+        idempotency_store=SQLiteIdempotencyStore("payments-idempotency.sqlite3"),
+        result_policy=ReturnStoredResult(
+            result_store=SQLiteResultStore("payments-results.sqlite3")
+        ),
+    ),
+)
+```
+
+In that mode, the idempotency ledger keeps the status and `result_key`, and the
+result payload itself lives in the configured result store.
+
 The consumption behavior is available as a policy object:
 
 ```python
