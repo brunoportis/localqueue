@@ -317,6 +317,18 @@ class PointToPointRouting:
 POINT_TO_POINT_ROUTING = PointToPointRouting()
 
 
+@dataclass(frozen=True, slots=True)
+class PublishSubscribeRouting:
+    """Routing policy where published messages fan out to subscribers."""
+
+    pattern: RoutingPattern = "publish-subscribe"
+    single_consumer_per_message: bool = False
+    fanout: bool = True
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
 class OrderingPolicy(Protocol):
     @property
     def guarantee(self) -> OrderingGuarantee: ...
