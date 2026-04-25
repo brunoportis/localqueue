@@ -42,6 +42,7 @@ from localqueue import (
     AtMostOnceDelivery,
     BestEffortOrdering,
     BoundedBackpressure,
+    CallbackDispatcher,
     DedupeKeySupport,
     FixedLeaseTimeout,
     FifoReadyOrdering,
@@ -52,6 +53,7 @@ from localqueue import (
     MemoryIdempotencyStore,
     MemoryResultStore,
     MemoryQueueStore,
+    NO_DISPATCHER,
     NO_RESULT_POLICY,
     NO_SUBSCRIPTIONS,
     PersistentQueue,
@@ -63,6 +65,7 @@ from localqueue import (
     PushConsumption,
     RejectingBackpressure,
     NoDeduplication,
+    NoDispatcher,
     QueuePolicySet,
     QueueSemantics,
     QueueMessage,
@@ -351,6 +354,9 @@ class QueueTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "subscriber names must be unique"):
             _ = StaticFanoutSubscriptions(("billing", "billing"))
 
+        with self.assertRaisesRegex(ValueError, "handlers cannot be empty"):
+            _ = CallbackDispatcher(())
+
         queue = PersistentQueue("test", store=store)
         with self.assertRaisesRegex(TypeError, "priority must be an integer"):
             _ = queue.put("item", priority=cast("Any", 1.5))
@@ -587,6 +593,19 @@ class QueueTests(unittest.TestCase):
             )
 
         with self.assertRaisesRegex(
+            ValueError,
+            "pass either dispatch_policy= or policy_set.dispatch_policy, not both",
+        ):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                dispatch_policy=NO_DISPATCHER,
+                policy_set=QueuePolicySet(
+                    dispatch_policy=CallbackDispatcher((lambda message: message,))
+                ),
+            )
+
+        with self.assertRaisesRegex(
             ValueError, "pass either maxsize= or policy_set.backpressure, not both"
         ):
             _ = PersistentQueue(
@@ -685,6 +704,18 @@ class QueueTests(unittest.TestCase):
             )
             self.assertEqual(queue.consumption_policy, PULL_CONSUMPTION)
             self.assertEqual(queue.delivery_policy, AT_LEAST_ONCE_DELIVERY)
+            self.assertEqual(queue.dispatch_policy, NO_DISPATCHER)
+            queue.dispatch_policy.dispatch(
+                QueueMessage(id="message-1", queue="test", value="item")
+            )
+            self.assertEqual(
+                queue.dispatch_policy.as_dict(),
+                {
+                    "dispatches": False,
+                    "dispatches_on_put": False,
+                    "handler_count": 0,
+                },
+            )
             self.assertEqual(queue.ordering_policy, FIFO_READY_ORDERING)
             self.assertEqual(queue.routing_policy, POINT_TO_POINT_ROUTING)
             self.assertEqual(queue.subscription_policy, NO_SUBSCRIPTIONS)
@@ -848,6 +879,29 @@ class QueueTests(unittest.TestCase):
                 "pattern": "pull",
                 "consumer_requests_messages": True,
                 "producer_invokes_handler": False,
+            },
+        )
+
+    def test_constructor_accepts_callback_dispatch_policy(self) -> None:
+        dispatched: list[QueueMessage] = []
+        dispatch_policy = CallbackDispatcher((dispatched.append,))
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            dispatch_policy=dispatch_policy,
+        )
+
+        message = queue.put("item")
+
+        self.assertIs(queue.dispatch_policy, dispatch_policy)
+        self.assertEqual(dispatched, [message])
+        self.assertEqual(
+            queue.dispatch_policy.as_dict(),
+            {
+                "type": "callback",
+                "dispatches": True,
+                "dispatches_on_put": True,
+                "handler_count": 1,
             },
         )
 
@@ -1031,6 +1085,7 @@ class QueueTests(unittest.TestCase):
         acknowledgement_policy = ExplicitAcknowledgement()
         dead_letter_policy = DeadLetterQueue()
         deduplication_policy = NoDeduplication()
+        dispatch_policy = NoDispatcher()
         subscription_policy = StaticFanoutSubscriptions(("billing", "audit"))
         backpressure = BoundedBackpressure(5)
         policy_set = QueuePolicySet(
@@ -1040,6 +1095,7 @@ class QueueTests(unittest.TestCase):
             dead_letter_policy=dead_letter_policy,
             deduplication_policy=deduplication_policy,
             delivery_policy=delivery_policy,
+            dispatch_policy=dispatch_policy,
             ordering_policy=ordering_policy,
             subscription_policy=subscription_policy,
             backpressure=backpressure,
@@ -1057,6 +1113,7 @@ class QueueTests(unittest.TestCase):
         self.assertIs(queue.dead_letter_policy, dead_letter_policy)
         self.assertIs(queue.deduplication_policy, deduplication_policy)
         self.assertIs(queue.delivery_policy, delivery_policy)
+        self.assertIs(queue.dispatch_policy, dispatch_policy)
         self.assertIs(queue.ordering_policy, ordering_policy)
         self.assertIs(queue.subscription_policy, subscription_policy)
         self.assertIs(queue.backpressure, backpressure)
@@ -1078,6 +1135,7 @@ class QueueTests(unittest.TestCase):
         dead_letter_policy = DeadLetterQueue()
         deduplication_policy = DedupeKeySupport()
         consumption_policy = PushConsumption()
+        dispatch_policy = NoDispatcher()
         ordering_policy = BestEffortOrdering()
         routing_policy = PointToPointRouting()
         subscription_policy = StaticFanoutSubscriptions(("billing", "audit"))
@@ -1093,6 +1151,7 @@ class QueueTests(unittest.TestCase):
             dead_letter_policy=dead_letter_policy,
             deduplication_policy=deduplication_policy,
             consumption_policy=consumption_policy,
+            dispatch_policy=dispatch_policy,
             ordering_policy=ordering_policy,
             routing_policy=routing_policy,
             subscription_policy=subscription_policy,
@@ -1105,6 +1164,7 @@ class QueueTests(unittest.TestCase):
         self.assertIs(policy_set.dead_letter_policy, dead_letter_policy)
         self.assertIs(policy_set.deduplication_policy, deduplication_policy)
         self.assertIs(policy_set.consumption_policy, consumption_policy)
+        self.assertIs(policy_set.dispatch_policy, dispatch_policy)
         self.assertIs(policy_set.ordering_policy, ordering_policy)
         self.assertIs(policy_set.routing_policy, routing_policy)
         self.assertIs(policy_set.subscription_policy, subscription_policy)
@@ -1162,6 +1222,11 @@ class QueueTests(unittest.TestCase):
                     "pattern": "push",
                     "consumer_requests_messages": False,
                     "producer_invokes_handler": True,
+                },
+                "dispatch_policy": {
+                    "dispatches": False,
+                    "dispatches_on_put": False,
+                    "handler_count": 0,
                 },
                 "ordering_policy": {
                     "guarantee": "best-effort",
