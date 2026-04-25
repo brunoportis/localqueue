@@ -48,6 +48,7 @@ from localqueue import (
     PriorityOrdering,
     PublishSubscribeRouting,
     PullConsumption,
+    PushConsumption,
     QueuePolicySet,
     QueueSemantics,
     QueueMessage,
@@ -529,6 +530,25 @@ class QueueTests(unittest.TestCase):
             },
         )
 
+    def test_constructor_accepts_push_consumption_policy(self) -> None:
+        consumption_policy = PushConsumption()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            consumption_policy=consumption_policy,
+        )
+
+        self.assertIs(queue.consumption_policy, consumption_policy)
+        self.assertEqual(queue.semantics.consumption, "push")
+        self.assertEqual(
+            queue.consumption_policy.as_dict(),
+            {
+                "pattern": "push",
+                "consumer_requests_messages": False,
+                "producer_invokes_handler": True,
+            },
+        )
+
     def test_constructor_accepts_explicit_ordering_policy(self) -> None:
         ordering_policy = FifoReadyOrdering()
         queue = PersistentQueue(
@@ -689,7 +709,7 @@ class QueueTests(unittest.TestCase):
         idempotency_store = MemoryIdempotencyStore()
         result_policy = ReturnStoredResult(result_store=MemoryResultStore())
         commit_policy = SagaCommit(saga_store=MemoryResultStore())
-        consumption_policy = PullConsumption()
+        consumption_policy = PushConsumption()
         ordering_policy = PriorityOrdering()
         routing_policy = PointToPointRouting()
         backpressure = BoundedBackpressure(5)
@@ -733,9 +753,9 @@ class QueueTests(unittest.TestCase):
                     },
                 },
                 "consumption_policy": {
-                    "pattern": "pull",
-                    "consumer_requests_messages": True,
-                    "producer_invokes_handler": False,
+                    "pattern": "push",
+                    "consumer_requests_messages": False,
+                    "producer_invokes_handler": True,
                 },
                 "ordering_policy": {
                     "guarantee": "priority",
