@@ -47,6 +47,7 @@ from localqueue import (
     DedupeKeySupport,
     FixedLeaseTimeout,
     FifoReadyOrdering,
+    InProcessNotification,
     ExplicitAcknowledgement,
     LocalQueuePlacement,
     LMDBQueueStore,
@@ -950,7 +951,7 @@ class QueueTests(unittest.TestCase):
 
     def test_constructor_accepts_callback_notification_policy(self) -> None:
         notified: list[QueueMessage] = []
-        notification_policy = CallbackNotification((notified.append,))
+        notification_policy = CallbackNotification(notified.append)
         queue = PersistentQueue(
             "test",
             store=MemoryQueueStore(),
@@ -965,11 +966,40 @@ class QueueTests(unittest.TestCase):
             queue.notification_policy.as_dict(),
             {
                 "type": "callback",
+                "scope": "in-process",
                 "notifies": True,
                 "notifies_on_put": True,
                 "listener_count": 1,
             },
         )
+
+    def test_constructor_accepts_in_process_notification_policy(self) -> None:
+        notification_policy = InProcessNotification()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            notification_policy=notification_policy,
+        )
+
+        self.assertFalse(notification_policy.wait(timeout=0))
+        message = queue.put("item")
+
+        self.assertIs(queue.notification_policy, notification_policy)
+        self.assertTrue(notification_policy.wait(timeout=0))
+        self.assertEqual(queue.inspect(message.id), message)
+        self.assertEqual(
+            queue.notification_policy.as_dict(),
+            {
+                "type": "thread-event",
+                "scope": "in-process",
+                "notifies": True,
+                "notifies_on_put": True,
+                "listener_count": 1,
+            },
+        )
+
+        notification_policy.clear()
+        self.assertFalse(notification_policy.wait(timeout=0))
 
     def test_constructor_accepts_push_consumption_policy(self) -> None:
         consumption_policy = PushConsumption()

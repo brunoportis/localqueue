@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Literal, Protocol
+from dataclasses import asdict, dataclass, field
+from collections.abc import Callable, Iterable
+from threading import Event
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 if TYPE_CHECKING:
     from .idempotency import IdempotencyStore
@@ -18,6 +19,7 @@ OrderingGuarantee = Literal["fifo-ready", "priority", "best-effort"]
 CommitMode = Literal["local-atomic", "transactional-outbox", "two-phase", "saga"]
 BackpressureOverflow = Literal["block", "reject"]
 MessageHandler = Callable[["QueueMessage"], object]
+MessageHandlers = MessageHandler | Iterable[MessageHandler]
 
 
 @dataclass(frozen=True, slots=True)
@@ -567,27 +569,59 @@ NO_NOTIFICATION = NoNotification()
 class CallbackNotification:
     """Notification policy that calls in-process listeners after enqueue."""
 
-    listeners: tuple[MessageHandler, ...]
+    listeners: MessageHandlers
     notifies: bool = True
     notifies_on_put: bool = True
 
     def __post_init__(self) -> None:
-        listeners = tuple(self.listeners)
+        listeners = (
+            (self.listeners,) if callable(self.listeners) else tuple(self.listeners)
+        )
         if not listeners:
             raise ValueError("listeners cannot be empty")
         object.__setattr__(self, "listeners", listeners)
 
     @property
     def listener_count(self) -> int:
-        return len(self.listeners)
+        return len(cast("tuple[MessageHandler, ...]", self.listeners))
 
     def notify(self, message: QueueMessage) -> None:
-        for listener in self.listeners:
+        for listener in cast("tuple[MessageHandler, ...]", self.listeners):
             _ = listener(message)
 
     def as_dict(self) -> dict[str, object]:
         return {
             "type": "callback",
+            "scope": "in-process",
+            "notifies": self.notifies,
+            "notifies_on_put": self.notifies_on_put,
+            "listener_count": self.listener_count,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class InProcessNotification:
+    """Notification policy that wakes local threads with a threading.Event."""
+
+    event: Event = field(default_factory=Event)
+    notifies: bool = True
+    notifies_on_put: bool = True
+    listener_count: int = 1
+
+    def notify(self, message: QueueMessage) -> None:
+        _ = message
+        self.event.set()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        return self.event.wait(timeout)
+
+    def clear(self) -> None:
+        self.event.clear()
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "type": "thread-event",
+            "scope": "in-process",
             "notifies": self.notifies,
             "notifies_on_put": self.notifies_on_put,
             "listener_count": self.listener_count,
