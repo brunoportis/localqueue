@@ -22,6 +22,7 @@ class QueueMessage:
     failed_at: float | None = None
     attempt_history: list[dict[str, Any]] = field(default_factory=list)
     dedupe_key: str | None = None
+    priority: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +63,7 @@ class QueueStore(Protocol):
         *,
         available_at: float,
         dedupe_key: str | None = None,
+        priority: int = 0,
     ) -> QueueMessage: ...
 
     def dequeue(

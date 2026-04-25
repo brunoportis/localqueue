@@ -43,6 +43,7 @@ class MemoryQueueStore:
         *,
         available_at: float,
         dedupe_key: str | None = None,
+        priority: int = 0,
     ):
         with self._lock:
             if dedupe_key is not None:
@@ -52,10 +53,15 @@ class MemoryQueueStore:
                     if record is not None:
                         return record.to_message()
                     _ = self._dedupe_keys.setdefault(queue, {}).pop(dedupe_key, None)
-            record = QueueRecord.new(queue, value, available_at, dedupe_key=dedupe_key)
+            record = QueueRecord.new(
+                queue, value, available_at, dedupe_key=dedupe_key, priority=priority
+            )
             seq = self._next_seq(queue)
             record = replace_record(
-                record, index_key=ready_key(queue, available_at, seq, record.id)
+                record,
+                index_key=ready_key(
+                    queue, available_at, seq, record.id, priority=record.priority
+                ),
             )
             self._records.setdefault(queue, {})[record.id] = record
             if dedupe_key is not None:
@@ -141,7 +147,9 @@ class MemoryQueueStore:
                 last_error=last_error if last_error is not None else record.last_error,
                 failed_at=failed_at if failed_at is not None else record.failed_at,
                 state=_READY,
-                index_key=ready_key(queue, available_at, seq, message_id),
+                index_key=ready_key(
+                    queue, available_at, seq, message_id, priority=record.priority
+                ),
                 attempt_history=record.attempt_history
                 + [
                     attempt_event(
@@ -244,7 +252,9 @@ class MemoryQueueStore:
                 leased_until=None,
                 leased_by=None,
                 state=_READY,
-                index_key=ready_key(queue, available_at, seq, message_id),
+                index_key=ready_key(
+                    queue, available_at, seq, message_id, priority=record.priority
+                ),
             )
             return True
 
@@ -305,7 +315,9 @@ class MemoryQueueStore:
                     leased_until=None,
                     leased_by=None,
                     state=_READY,
-                    index_key=ready_key(queue, now, seq, record.id),
+                    index_key=ready_key(
+                        queue, now, seq, record.id, priority=record.priority
+                    ),
                     attempt_history=record.attempt_history
                     + [
                         attempt_event(

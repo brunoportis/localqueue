@@ -55,6 +55,7 @@ class SQLiteQueueStore:
                 "leased_by TEXT, "
                 "last_leased_at REAL, "
                 "failed_at REAL, "
+                "priority INTEGER NOT NULL DEFAULT 0, "
                 "sequence INTEGER NOT NULL, "
                 "PRIMARY KEY(queue, id)"
                 ")"
@@ -92,7 +93,7 @@ class SQLiteQueueStore:
             self._migrate_sqlite_schema(current_schema_version)
             self._connection.execute(
                 "CREATE INDEX IF NOT EXISTS queue_messages_ready_idx "
-                "ON queue_messages(queue, state, available_at, sequence)"
+                "ON queue_messages(queue, state, available_at, priority DESC, sequence)"
             )
             self._connection.execute(
                 "CREATE INDEX IF NOT EXISTS queue_messages_inflight_idx "
@@ -124,6 +125,7 @@ class SQLiteQueueStore:
         *,
         available_at: float,
         dedupe_key: str | None = None,
+        priority: int = 0,
     ):
         validate_json_serializable(value)
         with self._transaction() as connection:
@@ -134,10 +136,15 @@ class SQLiteQueueStore:
                     if record is not None:
                         return record.to_message()
                     self._delete_dedupe_key(connection, queue, dedupe_key)
-            record = QueueRecord.new(queue, value, available_at, dedupe_key=dedupe_key)
+            record = QueueRecord.new(
+                queue, value, available_at, dedupe_key=dedupe_key, priority=priority
+            )
             seq = self._next_seq(connection, queue)
             record = replace_record(
-                record, index_key=ready_key(queue, available_at, seq, record.id)
+                record,
+                index_key=ready_key(
+                    queue, available_at, seq, record.id, priority=record.priority
+                ),
             )
             self._upsert_record(connection, record, sequence=seq)
             if dedupe_key is not None:
@@ -157,7 +164,7 @@ class SQLiteQueueStore:
             cursor = connection.execute(
                 "SELECT id, record_json FROM queue_messages "
                 "WHERE queue = ? AND state = ? AND available_at <= ? "
-                "ORDER BY available_at, sequence LIMIT 1",
+                "ORDER BY available_at, priority DESC, sequence LIMIT 1",
                 (queue, _READY, now),
             )
             row = cursor.fetchone()
@@ -228,7 +235,9 @@ class SQLiteQueueStore:
                 last_error=last_error if last_error is not None else record.last_error,
                 failed_at=failed_at if failed_at is not None else record.failed_at,
                 state=_READY,
-                index_key=ready_key(queue, available_at, seq, message_id),
+                index_key=ready_key(
+                    queue, available_at, seq, message_id, priority=record.priority
+                ),
                 attempt_history=record.attempt_history
                 + [
                     attempt_event(
@@ -416,7 +425,9 @@ class SQLiteQueueStore:
                 leased_until=None,
                 leased_by=None,
                 state=_READY,
-                index_key=ready_key(queue, available_at, seq, message_id),
+                index_key=ready_key(
+                    queue, available_at, seq, message_id, priority=record.priority
+                ),
             )
             self._upsert_record(connection, updated, sequence=seq)
             return True
@@ -585,8 +596,8 @@ class SQLiteQueueStore:
         connection.execute(
             "INSERT INTO queue_messages("
             "queue, id, record_json, state, created_at, available_at, "
-            "leased_until, leased_by, last_leased_at, failed_at, sequence"
-            ") VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "leased_until, leased_by, last_leased_at, failed_at, priority, sequence"
+            ") VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(queue, id) DO UPDATE SET "
             "record_json = excluded.record_json, "
             "state = excluded.state, "
@@ -596,6 +607,7 @@ class SQLiteQueueStore:
             "leased_by = excluded.leased_by, "
             "last_leased_at = excluded.last_leased_at, "
             "failed_at = excluded.failed_at, "
+            "priority = excluded.priority, "
             "sequence = excluded.sequence",
             (
                 record.queue,
@@ -608,6 +620,7 @@ class SQLiteQueueStore:
                 record.leased_by,
                 last_leased_at(record),
                 record.failed_at,
+                record.priority,
                 sequence,
             ),
         )
@@ -646,7 +659,9 @@ class SQLiteQueueStore:
                 leased_until=None,
                 leased_by=None,
                 state=_READY,
-                index_key=ready_key(queue, now, seq, message_id),
+                index_key=ready_key(
+                    queue, now, seq, message_id, priority=record.priority
+                ),
                 attempt_history=record.attempt_history
                 + [
                     attempt_event(
@@ -666,6 +681,7 @@ class SQLiteQueueStore:
             "leased_by": "TEXT",
             "last_leased_at": "REAL",
             "failed_at": "REAL",
+            "priority": "INTEGER NOT NULL DEFAULT 0",
         }
         for column, definition in columns_to_add.items():
             if column not in existing_columns:
@@ -681,13 +697,15 @@ class SQLiteQueueStore:
                 record = decode_record(raw)
                 self._connection.execute(
                     "UPDATE queue_messages SET "
-                    "created_at = ?, leased_by = ?, last_leased_at = ?, failed_at = ? "
+                    "created_at = ?, leased_by = ?, last_leased_at = ?, "
+                    "failed_at = ?, priority = ? "
                     "WHERE queue = ? AND id = ?",
                     (
                         record.created_at,
                         record.leased_by,
                         last_leased_at(record),
                         record.failed_at,
+                        record.priority,
                         queue,
                         message_id,
                     ),

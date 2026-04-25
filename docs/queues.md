@@ -99,6 +99,20 @@ queue.ordering_policy.as_dict()
 The default `FIFO_READY_ORDERING` policy means messages become eligible by
 `available_at`, and messages with the same availability keep enqueue order.
 
+Use `PriorityOrdering` when some ready messages should be delivered before
+others.
+
+```python
+from localqueue import PersistentQueue, PriorityOrdering
+
+queue = PersistentQueue("jobs", ordering_policy=PriorityOrdering())
+queue.put({"kind": "report"}, priority=10)
+queue.put({"kind": "cleanup"}, priority=1)
+```
+
+Higher priority values are delivered first when messages are available at the
+same time. Messages with the same priority keep enqueue order.
+
 ## Retry-aware workers
 
 `persistent_worker()` connects a queue to `localqueue`. The queue message id
