@@ -17,6 +17,7 @@ These names are treated as the main public contracts today:
 - `PullConsumption`
 - `PointToPointRouting`
 - `AtLeastOnceDelivery`
+- `AtMostOnceDelivery`
 - `FifoReadyOrdering`
 - `PriorityOrdering`
 - `BoundedBackpressure`

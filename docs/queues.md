@@ -71,6 +71,18 @@ The default `AT_LEAST_ONCE_DELIVERY` policy means a message is leased before
 handling, acknowledged after successful handling, and redelivered if the lease
 expires before acknowledgement.
 
+Use `AtMostOnceDelivery` when duplicate processing is worse than losing work.
+
+```python
+from localqueue import AtMostOnceDelivery, PersistentQueue
+
+queue = PersistentQueue("telemetry", delivery_policy=AtMostOnceDelivery())
+```
+
+With this policy, `get()` and `get_message()` remove the message before returning
+it. If the handler crashes after delivery, the message is not redelivered and is
+not moved to dead letters.
+
 The consumption behavior is available as a policy object:
 
 ```python
