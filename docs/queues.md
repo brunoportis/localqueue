@@ -50,6 +50,17 @@ Queue-level retry defaults are merged into worker retry kwargs before explicit
 worker overrides, so the same policy can be reused across several workers that
 consume the same queue.
 
+By default, a queue also exposes the semantics it implements:
+
+```python
+queue.semantics.as_dict()
+```
+
+The default semantics are local, at-least-once, point-to-point, pull-based
+delivery with leases, acknowledgements, dead letters, and optional dedupe keys.
+This is intentionally descriptive: it names the queueing concepts behind the
+small API without requiring users to configure them before they need to.
+
 ## Retry-aware workers
 
 `persistent_worker()` connects a queue to `localqueue`. The queue message id
@@ -445,6 +456,15 @@ Set `maxsize` to limit ready queue capacity.
 
 ```python
 queue = PersistentQueue("jobs", maxsize=1000)
+```
+
+For code that wants to make backpressure a named strategy, use the equivalent
+`BoundedBackpressure` object:
+
+```python
+from localqueue import BoundedBackpressure, PersistentQueue
+
+queue = PersistentQueue("jobs", backpressure=BoundedBackpressure(1000))
 ```
 
 Inspect and clean a queue with:

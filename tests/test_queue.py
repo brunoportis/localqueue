@@ -18,10 +18,13 @@ import lmdb
 
 from localqueue.retry import MemoryAttemptStore, RetryRecord, SQLiteAttemptStore
 from localqueue import (
+    BoundedBackpressure,
     LMDBQueueStore,
+    LOCAL_AT_LEAST_ONCE,
     MemoryQueueStore,
     PersistentQueue,
     PersistentWorkerConfig,
+    QueueSemantics,
     QueueMessage,
     QueueStoreLockedError,
     SQLiteQueueStore,
@@ -262,6 +265,19 @@ class QueueTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "maxsize cannot be negative"):
             _ = PersistentQueue("test", store=store, maxsize=-1)
 
+        with self.assertRaisesRegex(ValueError, "maxsize cannot be negative"):
+            _ = BoundedBackpressure(-1)
+
+        with self.assertRaisesRegex(
+            ValueError, "pass either maxsize= or backpressure=, not both"
+        ):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                maxsize=1,
+                backpressure=BoundedBackpressure(1),
+            )
+
         with self.assertRaisesRegex(TypeError, "retry_defaults must be a mapping"):
             _ = PersistentQueue("test", store=store, retry_defaults=cast("Any", []))
 
@@ -302,8 +318,53 @@ class QueueTests(unittest.TestCase):
 
             self.assertEqual(queue.lease_timeout, 30.0)
             self.assertEqual(queue.maxsize, 0)
+            self.assertEqual(queue.backpressure, BoundedBackpressure())
+            self.assertEqual(queue.semantics, LOCAL_AT_LEAST_ONCE)
             self.assertIsNone(queue._store)
             self.assertEqual(queue._store_path, Path(tmpdir) / "queue.sqlite3")
+
+    def test_constructor_accepts_explicit_queue_semantics(self) -> None:
+        semantics = QueueSemantics(
+            locality="local",
+            delivery="at-least-once",
+            routing="publish-subscribe",
+            consumption="push",
+        )
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            semantics=semantics,
+        )
+
+        self.assertIs(queue.semantics, semantics)
+        self.assertEqual(
+            queue.semantics.as_dict(),
+            {
+                "locality": "local",
+                "delivery": "at-least-once",
+                "routing": "publish-subscribe",
+                "consumption": "push",
+                "ordering": "fifo-ready",
+                "leases": True,
+                "acknowledgements": True,
+                "dead_letters": True,
+                "deduplication": True,
+            },
+        )
+
+    def test_constructor_accepts_backpressure_strategy(self) -> None:
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            backpressure=BoundedBackpressure(1),
+        )
+
+        self.assertEqual(queue.maxsize, 1)
+        self.assertEqual(
+            queue.backpressure.as_dict(), {"type": "bounded", "maxsize": 1}
+        )
+        _ = queue.put("one")
+        self.assertTrue(queue.full())
 
     def test_constructor_copies_lease_timeout_and_defaults(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore(), lease_timeout=31.0)

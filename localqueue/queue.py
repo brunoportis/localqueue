@@ -8,6 +8,12 @@ from threading import Condition
 from typing import Any, Generic, TypeVar, cast
 
 from .paths import default_queue_store_path
+from .policies import (
+    LOCAL_AT_LEAST_ONCE,
+    BackpressureStrategy,
+    BoundedBackpressure,
+    QueueSemantics,
+)
 from .stores import QueueMessage, QueueStats, QueueStore, SQLiteQueueStore
 
 T = TypeVar("T")
@@ -18,6 +24,8 @@ class PersistentQueue(Generic[T]):
     name: str
     lease_timeout: float
     maxsize: int
+    semantics: QueueSemantics
+    backpressure: BackpressureStrategy
     _store: QueueStore | None
     _store_path: Path | None
     retry_defaults: dict[str, Any]
@@ -33,9 +41,13 @@ class PersistentQueue(Generic[T]):
         lease_timeout: float = 30.0,
         maxsize: int = 0,
         retry_defaults: Mapping[str, Any] | None = None,
+        semantics: QueueSemantics | None = None,
+        backpressure: BackpressureStrategy | None = None,
     ) -> None:
         if store is not None and store_path is not None:
             raise ValueError("pass either store= or store_path=, not both")
+        if backpressure is not None and maxsize != 0:
+            raise ValueError("pass either maxsize= or backpressure=, not both")
         if lease_timeout <= 0:
             raise ValueError("lease_timeout must be greater than zero")
         if maxsize < 0:
@@ -46,7 +58,11 @@ class PersistentQueue(Generic[T]):
 
         self.name = name
         self.lease_timeout = lease_timeout
-        self.maxsize = maxsize
+        self.backpressure = (
+            BoundedBackpressure(maxsize) if backpressure is None else backpressure
+        )
+        self.maxsize = self.backpressure.maxsize
+        self.semantics = semantics if semantics is not None else LOCAL_AT_LEAST_ONCE
         self._store = store
         self._store_path = Path(store_path) if store_path is not None else None
         self.retry_defaults = dict(retry_defaults or {})
@@ -241,7 +257,9 @@ class PersistentQueue(Generic[T]):
         return self._get_store().empty(self.name, now=time.time())
 
     def full(self) -> bool:
-        return self.maxsize > 0 and self.qsize() >= self.maxsize
+        if self.backpressure.maxsize <= 0:
+            return False
+        return self.backpressure.is_full(qsize=self.qsize())
 
     def purge(self) -> int:
         with self._condition:
