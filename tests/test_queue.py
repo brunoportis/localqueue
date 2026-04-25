@@ -1164,7 +1164,9 @@ class QueueTests(unittest.TestCase):
                 store=MemoryQueueStore(),
                 notification_policy=AsyncNotification(event),
             )
-            self.assertFalse(await queue_async.wait_for_notification_async(timeout=0.01))
+            self.assertFalse(
+                await queue_async.wait_for_notification_async(timeout=0.01)
+            )
 
             # Fallback case
             queue = PersistentQueue("test", store=MemoryQueueStore())
