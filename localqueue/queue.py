@@ -21,8 +21,6 @@ from .policies import (
     NO_SUBSCRIPTIONS,
     POINT_TO_POINT_ROUTING,
     PULL_CONSUMPTION,
-    InProcessNotification,
-    AsyncNotification,
     AcknowledgementPolicy,
     ConsumptionPolicy,
     DeadLetterPolicy,
@@ -42,6 +40,7 @@ from .policies import (
     QueuePolicySet,
     QueueSemantics,
 )
+from .adapters import InProcessNotification, AsyncNotification
 from .stores import QueueMessage, QueueStats, QueueStore, SQLiteQueueStore
 
 T = TypeVar("T")

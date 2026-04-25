@@ -47,10 +47,7 @@ from .policies import (
     BackpressureStrategy,
     BoundedBackpressure,
     CallbackDispatcher,
-    ThreadedDispatcher,
     CallbackNotification,
-    InProcessNotification,
-    AsyncNotification,
     CommitPolicy,
     ConsumptionPolicy,
     DeadLetterPolicy,
@@ -92,6 +89,7 @@ from .policies import (
     RoutingPolicy,
     LocalAtomicCommit,
 )
+from .adapters import ThreadedDispatcher, InProcessNotification, AsyncNotification
 from .retry import (
     AttemptStore,
     AttemptStoreLockedError,
