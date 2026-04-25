@@ -43,7 +43,10 @@ from localqueue import (
     BestEffortOrdering,
     BoundedBackpressure,
     CallbackDispatcher,
+    ThreadedDispatcher,
     CallbackNotification,
+    InProcessNotification,
+    AsyncNotification,
     DedupeKeySupport,
     FixedLeaseTimeout,
     FifoReadyOrdering,
@@ -948,6 +951,42 @@ class QueueTests(unittest.TestCase):
             },
         )
 
+    def test_constructor_accepts_threaded_dispatch_policy(self) -> None:
+        dispatched: list[QueueMessage] = []
+        done = threading.Event()
+        current_thread = threading.current_thread()
+        handler_thread = [None]
+
+        def handler(message: QueueMessage) -> None:
+            handler_thread[0] = threading.current_thread()  # type: ignore[assignment]
+            dispatched.append(message)
+            done.set()
+
+        dispatch_policy = ThreadedDispatcher((handler,))
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            dispatch_policy=dispatch_policy,
+        )
+
+        message = queue.put("item")
+
+        self.assertIs(queue.dispatch_policy, dispatch_policy)
+        self.assertTrue(done.wait(timeout=1.0))
+        self.assertEqual(dispatched, [message])
+        self.assertIsNotNone(handler_thread[0])
+        self.assertNotEqual(handler_thread[0], current_thread)
+        self.assertEqual(
+            queue.dispatch_policy.as_dict(),
+            {
+                "type": "threaded",
+                "dispatches": True,
+                "dispatches_on_put": True,
+                "handler_count": 1,
+                "max_workers": None,
+            },
+        )
+
     def test_constructor_accepts_callback_notification_policy(self) -> None:
         notified: list[QueueMessage] = []
         notification_policy = CallbackNotification((notified.append,))
@@ -970,6 +1009,118 @@ class QueueTests(unittest.TestCase):
                 "listener_count": 1,
             },
         )
+
+    def test_constructor_accepts_in_process_notification_policy(self) -> None:
+        event = threading.Event()
+        notification_policy = InProcessNotification(event)
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            notification_policy=notification_policy,
+        )
+
+        _ = queue.put("item")
+
+        self.assertIs(queue.notification_policy, notification_policy)
+        self.assertTrue(event.is_set())
+        self.assertEqual(
+            queue.notification_policy.as_dict(),
+            {
+                "type": "in-process-event",
+                "notifies": True,
+                "notifies_on_put": True,
+                "listener_count": 1,
+            },
+        )
+
+    def test_constructor_accepts_async_notification_policy(self) -> None:
+        async def scenario() -> None:
+            event = asyncio.Event()
+            notification_policy = AsyncNotification(event)
+            queue = PersistentQueue(
+                "test",
+                store=MemoryQueueStore(),
+                notification_policy=notification_policy,
+            )
+
+            _ = queue.put("item")
+
+            self.assertIs(queue.notification_policy, notification_policy)
+            self.assertTrue(event.is_set())
+            self.assertEqual(
+                queue.notification_policy.as_dict(),
+                {
+                    "type": "async-event",
+                    "notifies": True,
+                    "notifies_on_put": True,
+                    "listener_count": 1,
+                },
+            )
+
+        asyncio.run(scenario())
+
+    def test_wait_for_notification(self) -> None:
+        event = threading.Event()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            notification_policy=InProcessNotification(event),
+        )
+
+        def producer() -> None:
+            time.sleep(0.1)
+            _ = queue.put("item")
+
+        t = threading.Thread(target=producer)
+        t.start()
+
+        self.assertTrue(queue.wait_for_notification(timeout=1.0))
+        self.assertEqual(queue.get_nowait(), "item")
+        t.join()
+
+    def test_wait_for_notification_async(self) -> None:
+        async def scenario() -> None:
+            event = asyncio.Event()
+            queue = PersistentQueue(
+                "test",
+                store=MemoryQueueStore(),
+                notification_policy=AsyncNotification(event),
+            )
+
+            async def producer() -> None:
+                await asyncio.sleep(0.1)
+                _ = queue.put("item")
+
+            task = asyncio.create_task(producer())
+
+            self.assertTrue(await queue.wait_for_notification_async(timeout=1.0))
+            self.assertEqual(queue.get_nowait(), "item")
+            await task
+
+        asyncio.run(scenario())
+
+    def test_dispatch_pending(self) -> None:
+        dispatched: list[QueueMessage] = []
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            dispatch_policy=CallbackDispatcher((dispatched.append,)),
+        )
+
+        # Disable auto-dispatch for manual test
+        object.__setattr__(queue.dispatch_policy, "dispatches_on_put", False)
+
+        _ = queue.put("a")
+        _ = queue.put("b")
+
+        self.assertEqual(len(dispatched), 0)
+        self.assertEqual(queue.dispatch_pending(limit=1), 1)
+        self.assertEqual(len(dispatched), 1)
+        self.assertEqual(dispatched[0].value, "a")
+
+        self.assertEqual(queue.dispatch_pending(), 1)
+        self.assertEqual(len(dispatched), 2)
+        self.assertEqual(dispatched[1].value, "b")
 
     def test_constructor_accepts_push_consumption_policy(self) -> None:
         consumption_policy = PushConsumption()

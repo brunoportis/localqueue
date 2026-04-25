@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import asyncio
 from pathlib import Path
 from collections.abc import Mapping
 from queue import Empty, Full
@@ -20,6 +21,8 @@ from .policies import (
     NO_SUBSCRIPTIONS,
     POINT_TO_POINT_ROUTING,
     PULL_CONSUMPTION,
+    InProcessNotification,
+    AsyncNotification,
     AcknowledgementPolicy,
     ConsumptionPolicy,
     DeadLetterPolicy,
@@ -281,6 +284,60 @@ class PersistentQueue(Generic[T]):
 
     def put_nowait(self, item: T) -> QueueMessage:
         return self.put(item, block=False)
+
+    def wait_for_notification(self, timeout: float | None = None) -> bool:
+        """Wait for producer activity using the active notification policy."""
+        policy = self.notification_policy
+        if isinstance(policy, InProcessNotification):
+            # Clear it first so we only wake for NEW activity
+            policy.event.clear()
+            return policy.event.wait(timeout=timeout)
+
+        # Fallback to polling or condition if no explicit event adapter is used
+        deadline = _deadline(timeout)
+        with self._condition:
+            while self.empty():
+                remaining = _remaining(deadline)
+                if remaining is not None and remaining <= 0:
+                    return False
+                _ = self._condition.wait(_wait_time(remaining))
+            return True
+
+    async def wait_for_notification_async(self, timeout: float | None = None) -> bool:
+        """Wait for producer activity asynchronously using the notification policy."""
+        policy = self.notification_policy
+        if isinstance(policy, AsyncNotification):
+            policy.event.clear()
+            try:
+                if timeout is not None:
+                    await asyncio.wait_for(policy.event.wait(), timeout=timeout)
+                else:
+                    await policy.event.wait()
+                return True
+            except asyncio.TimeoutError:
+                return False
+
+        # Fallback to polling
+        deadline = _deadline(timeout)
+        while self.empty():
+            remaining = _remaining(deadline)
+            if remaining is not None and remaining <= 0:
+                return False
+            await asyncio.sleep(_wait_time(remaining))
+        return True
+
+    def dispatch_pending(self, limit: int | None = None) -> int:
+        """Dequeue and dispatch pending messages using the active dispatch policy."""
+        count = 0
+        while limit is None or count < limit:
+            try:
+                message = self.get_message(block=False)
+                if self.dispatch_policy.dispatches:
+                    self.dispatch_policy.dispatch(message)
+                count += 1
+            except Empty:
+                break
+        return count
 
     def get(
         self,

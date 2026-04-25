@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal, Protocol
@@ -530,6 +533,62 @@ class CallbackDispatcher:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class ThreadedDispatcher:
+    """Dispatch policy that calls handlers in a thread pool after enqueue."""
+
+    handlers: tuple[MessageHandler, ...]
+    max_workers: int | None = None
+    dispatches: bool = True
+    dispatches_on_put: bool = True
+
+    def __post_init__(self) -> None:
+        handlers = tuple(self.handlers)
+        if not handlers:
+            raise ValueError("handlers cannot be empty")
+        object.__setattr__(self, "handlers", handlers)
+        # We don't create the executor here because it's a frozen dataclass
+        # and we want to avoid side effects in __init__.
+        # We'll use a lazy-initialized pool or a shared one.
+        # Actually, for a policy object, it's better if it's just a descriptor.
+        # But dispatch() needs to do work.
+
+    @property
+    def handler_count(self) -> int:
+        return len(self.handlers)
+
+    def dispatch(self, message: QueueMessage) -> None:
+        # Using a singleton-like pool for this policy type if not provided?
+        # Or just create a temporary one? (Inefficient).
+        # Standard approach for these policies is to have them be self-contained.
+        # Let's use a shared executor for all ThreadedDispatcher instances.
+        executor = _get_shared_executor(self.max_workers)
+        for handler in self.handlers:
+            executor.submit(handler, message)
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "type": "threaded",
+            "dispatches": self.dispatches,
+            "dispatches_on_put": self.dispatches_on_put,
+            "handler_count": self.handler_count,
+            "max_workers": self.max_workers,
+        }
+
+
+_shared_executors: dict[int | None, ThreadPoolExecutor] = {}
+_executor_lock = threading.Lock()
+
+
+def _get_shared_executor(max_workers: int | None) -> ThreadPoolExecutor:
+    with _executor_lock:
+        if max_workers not in _shared_executors:
+            _shared_executors[max_workers] = ThreadPoolExecutor(
+                max_workers=max_workers, thread_name_prefix="QueueThreadedDispatcher"
+            )
+        return _shared_executors[max_workers]
+
+
 class NotificationPolicy(Protocol):
     @property
     def notifies(self) -> bool: ...
@@ -588,6 +647,59 @@ class CallbackNotification:
     def as_dict(self) -> dict[str, object]:
         return {
             "type": "callback",
+            "notifies": self.notifies,
+            "notifies_on_put": self.notifies_on_put,
+            "listener_count": self.listener_count,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class InProcessNotification:
+    """Notification policy that signals a threading.Event after enqueue."""
+
+    event: threading.Event
+    notifies: bool = True
+    notifies_on_put: bool = True
+
+    @property
+    def listener_count(self) -> int:
+        return 1
+
+    def notify(self, message: QueueMessage) -> None:
+        _ = message
+        self.event.set()
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "type": "in-process-event",
+            "notifies": self.notifies,
+            "notifies_on_put": self.notifies_on_put,
+            "listener_count": self.listener_count,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AsyncNotification:
+    """Notification policy that signals an asyncio.Event after enqueue."""
+
+    event: asyncio.Event
+    notifies: bool = True
+    notifies_on_put: bool = True
+
+    @property
+    def listener_count(self) -> int:
+        return 1
+
+    def notify(self, message: QueueMessage) -> None:
+        _ = message
+        # We can't await here as notify is sync, but we can set the event
+        # because asyncio.Event.set() is not a coroutine.
+        # It must be called from the same loop as the event.
+        self.event.set()
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "type": "async-event",
             "notifies": self.notifies,
             "notifies_on_put": self.notifies_on_put,
             "listener_count": self.listener_count,
