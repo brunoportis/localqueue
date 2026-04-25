@@ -110,9 +110,11 @@ queue = PersistentQueue(
 )
 ```
 
-This PR only exposes the store interface and built-in adapters. The next layer
-can use that ledger to short-circuit already-succeeded work or return cached
-results.
+With an attached store, worker helpers now record `pending`, `succeeded`, and
+`failed` states keyed by `dedupe_key`. If a duplicate delivery arrives for a key
+already marked `succeeded`, the worker acknowledges it and skips handler
+execution. Until a future result policy exists, that short-circuit path returns
+`None` instead of a cached handler result.
 
 The consumption behavior is available as a policy object:
 

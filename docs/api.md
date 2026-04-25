@@ -84,7 +84,10 @@ mechanics, but requires `dedupe_key` on `put()` so producers always provide a
 stable identity for the work item. This is the base contract for higher-level
 effectively-once features such as idempotency ledgers or cached results.
 Pass `idempotency_store=` when you want to attach an explicit store interface for
-future dedupe/result coordination.
+dedupe/result coordination. When an attached store already marks a
+`dedupe_key` as succeeded, worker helpers acknowledge the duplicate delivery and
+skip handler execution. Until a future `ResultPolicy` exists, that short-circuit
+path returns `None`.
 
 #### `PullConsumption`
 
