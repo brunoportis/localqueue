@@ -185,6 +185,17 @@ queue = PersistentQueue("payments", policy_set=policies)
 around as one object. Direct constructor options still work for small examples
 and intentionally conflict with the same choice inside a policy set.
 
+The basic delivery choices have policy-set factories too:
+
+```python
+from localqueue import BoundedBackpressure, PriorityOrdering, QueuePolicySet
+
+policies = QueuePolicySet.at_least_once(
+    ordering_policy=PriorityOrdering(),
+    backpressure=BoundedBackpressure(1000),
+)
+```
+
 The commit policy is available too:
 
 ```python

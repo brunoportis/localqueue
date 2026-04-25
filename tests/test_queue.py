@@ -669,18 +669,24 @@ class QueueTests(unittest.TestCase):
         idempotency_store = MemoryIdempotencyStore()
         result_policy = ReturnStoredResult(result_store=MemoryResultStore())
         commit_policy = SagaCommit(saga_store=MemoryResultStore())
+        consumption_policy = PullConsumption()
         ordering_policy = PriorityOrdering()
+        routing_policy = PointToPointRouting()
         backpressure = BoundedBackpressure(5)
 
         policy_set = QueuePolicySet.effectively_once(
             idempotency_store=idempotency_store,
             result_policy=result_policy,
             commit_policy=commit_policy,
+            consumption_policy=consumption_policy,
             ordering_policy=ordering_policy,
+            routing_policy=routing_policy,
             backpressure=backpressure,
         )
 
+        self.assertIs(policy_set.consumption_policy, consumption_policy)
         self.assertIs(policy_set.ordering_policy, ordering_policy)
+        self.assertIs(policy_set.routing_policy, routing_policy)
         self.assertIs(policy_set.backpressure, backpressure)
         self.assertEqual(
             policy_set.as_dict(),
@@ -706,17 +712,53 @@ class QueueTests(unittest.TestCase):
                         "saga_store": "MemoryResultStore",
                     },
                 },
-                "consumption_policy": None,
+                "consumption_policy": {
+                    "pattern": "pull",
+                    "consumer_requests_messages": True,
+                    "producer_invokes_handler": False,
+                },
                 "ordering_policy": {
                     "guarantee": "priority",
                     "ready_before_delayed": True,
                     "stable_for_same_timestamp": True,
                     "priority_before_sequence": True,
                 },
-                "routing_policy": None,
+                "routing_policy": {
+                    "pattern": "point-to-point",
+                    "single_consumer_per_message": True,
+                    "fanout": False,
+                },
                 "backpressure": {"type": "bounded", "maxsize": 5},
             },
         )
+
+    def test_policy_set_delivery_factories(self) -> None:
+        at_least_once = QueuePolicySet.at_least_once(
+            ordering_policy=PriorityOrdering(),
+            backpressure=BoundedBackpressure(3),
+        )
+        at_most_once = QueuePolicySet.at_most_once(
+            routing_policy=PointToPointRouting(),
+            backpressure=BoundedBackpressure(1),
+        )
+
+        at_least_once_queue = PersistentQueue(
+            "at-least-once",
+            store=MemoryQueueStore(),
+            policy_set=at_least_once,
+        )
+        at_most_once_queue = PersistentQueue(
+            "at-most-once",
+            store=MemoryQueueStore(),
+            policy_set=at_most_once,
+        )
+
+        self.assertEqual(at_least_once_queue.semantics.delivery, "at-least-once")
+        self.assertEqual(at_least_once_queue.semantics.ordering, "priority")
+        self.assertIs(at_least_once_queue.delivery_policy, AT_LEAST_ONCE_DELIVERY)
+        self.assertEqual(at_least_once_queue.maxsize, 3)
+        self.assertEqual(at_most_once_queue.semantics.delivery, "at-most-once")
+        self.assertEqual(at_most_once_queue.maxsize, 1)
 
     def test_constructor_accepts_effectively_once_delivery_policy_with_result_policy(
         self,
