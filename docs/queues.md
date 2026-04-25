@@ -83,6 +83,19 @@ With this policy, `get()` and `get_message()` remove the message before returnin
 it. If the handler crashes after delivery, the message is not redelivered and is
 not moved to dead letters.
 
+Use `EffectivelyOnceDelivery` when producers can provide a stable idempotency key.
+
+```python
+from localqueue import EffectivelyOnceDelivery, PersistentQueue
+
+queue = PersistentQueue("payments", delivery_policy=EffectivelyOnceDelivery())
+queue.put({"payment_id": "pay_123"}, dedupe_key="payment:pay_123")
+```
+
+This policy currently makes `dedupe_key` mandatory on `put()`. It keeps the
+at-least-once delivery flow, but turns stable enqueue identity into an explicit
+contract so future idempotency/result stores can build on it.
+
 The consumption behavior is available as a policy object:
 
 ```python

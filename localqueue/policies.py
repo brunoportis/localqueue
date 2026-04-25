@@ -77,6 +77,20 @@ class AtMostOnceDelivery:
         return asdict(self)
 
 
+@dataclass(frozen=True, slots=True)
+class EffectivelyOnceDelivery:
+    """Delivery policy that requires idempotent enqueue keys."""
+
+    guarantee: DeliveryGuarantee = "effectively-once"
+    ack_timing: AckTiming = "after-success"
+    uses_leases: bool = True
+    redelivers_expired_leases: bool = True
+    requires_dedupe_key: bool = True
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
 class ConsumptionPolicy(Protocol):
     @property
     def pattern(self) -> ConsumptionPattern: ...
