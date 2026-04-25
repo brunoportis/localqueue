@@ -166,9 +166,17 @@ class TransactionalOutboxCommit:
     mode: CommitMode = "transactional-outbox"
     local_commit: bool = True
     coordinates_effects: bool = True
+    outbox_store: ResultStore | None = None
 
     def as_dict(self) -> dict[str, object]:
-        return asdict(self)
+        return {
+            "mode": self.mode,
+            "local_commit": self.local_commit,
+            "coordinates_effects": self.coordinates_effects,
+            "outbox_store": (
+                None if self.outbox_store is None else type(self.outbox_store).__name__
+            ),
+        }
 
 
 TRANSACTIONAL_OUTBOX_COMMIT = TransactionalOutboxCommit()

@@ -185,6 +185,8 @@ queue = PersistentQueue(
 
 `LocalAtomicCommit` matches the current local behavior. The other built-in
 commit policies are named ports for outbox, two-phase, and saga coordination.
+`TransactionalOutboxCommit(outbox_store=...)` writes a durable outbox envelope
+before the queue message is acknowledged.
 
 The consumption behavior is available as a policy object:
 
