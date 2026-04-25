@@ -92,6 +92,7 @@ from localqueue import (
     persistent_async_worker,
     persistent_worker,
 )
+from localqueue.adapters import shutdown_shared_executors
 from localqueue.worker import (
     WorkerPolicyState,
     _get_message_async,
@@ -1192,6 +1193,131 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(queue.get_nowait(), "a")
 
         asyncio.run(scenario())
+
+    def test_async_notification_with_explicit_loop(self) -> None:
+        async def scenario() -> None:
+            loop = asyncio.get_running_loop()
+            event = asyncio.Event()
+            notification_policy = AsyncNotification(event, loop=loop)
+            queue = PersistentQueue(
+                "test",
+                store=MemoryQueueStore(),
+                notification_policy=notification_policy,
+            )
+
+            def sync_producer() -> None:
+                time.sleep(0.05)
+                _ = queue.put("item")
+
+            t = threading.Thread(target=sync_producer)
+            t.start()
+
+            self.assertTrue(await queue.wait_for_notification_async(timeout=1.0))
+            self.assertEqual(queue.get_nowait(), "item")
+            t.join()
+
+        asyncio.run(scenario())
+
+    def test_async_notification_fallback_on_set(self) -> None:
+        async def scenario() -> None:
+            event = asyncio.Event()
+            notification_policy = AsyncNotification(event)
+            queue = PersistentQueue(
+                "test",
+                store=MemoryQueueStore(),
+                notification_policy=notification_policy,
+            )
+
+            # Manually call notify with no explicit loop; should fallback
+            _ = queue.put("item")
+            # notify was already called by put, so event should be set
+            self.assertTrue(event.is_set())
+
+        asyncio.run(scenario())
+
+    def test_async_notification_with_broken_loop(self) -> None:
+        async def scenario() -> None:
+            event = asyncio.Event()
+            # Create a broken loop mock that raises RuntimeError on call_soon_threadsafe
+            broken_loop = mock.Mock()
+            broken_loop.call_soon_threadsafe.side_effect = RuntimeError("loop closed")
+
+            notification_policy = AsyncNotification(event, loop=broken_loop)
+            
+            # Notify should fail silently (best-effort fallback)
+            msg_mock = mock.Mock()
+            notification_policy.notify(msg_mock)
+            
+            # No exception should be raised
+            self.assertTrue(True)
+
+        asyncio.run(scenario())
+
+    def test_async_notification_with_broken_event(self) -> None:
+        async def scenario() -> None:
+            # Create an event mock that raises RuntimeError on set
+            event_mock = mock.Mock()
+            event_mock.set.side_effect = RuntimeError("event error")
+            # Add a _loop attribute that is None so we skip the loop path
+            event_mock._loop = None
+
+            notification_policy = AsyncNotification(event_mock)
+            
+            # Notify should fail silently
+            msg_mock = mock.Mock()
+            notification_policy.notify(msg_mock)
+            
+            # Verify set was called
+            event_mock.set.assert_called_once()
+            # No exception should be raised
+            self.assertTrue(True)
+
+        asyncio.run(scenario())
+
+    def test_shutdown_shared_executors(self) -> None:
+        from localqueue.adapters.threaded import _shared_executors
+
+        # Create a dispatcher to initialize shared executor
+        handler = lambda m: None  # noqa: E731
+        dispatcher = ThreadedDispatcher((handler,), max_workers=2)
+        
+        # Create a message to dispatch (this creates the executor)
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            dispatch_policy=dispatcher,
+        )
+        msg = queue.put("item")
+        # Ensure dispatch was called (executor is now created)
+        _ = dispatcher.dispatch(msg)
+
+        # Verify executor was created
+        self.assertIn(2, _shared_executors)
+
+        # Shutdown
+        shutdown_shared_executors(wait=True)
+
+        # Verify executors are cleared
+        self.assertEqual(len(_shared_executors), 0)
+
+    def test_shutdown_shared_executors_with_exception(self) -> None:
+        from localqueue.adapters.threaded import (
+            _shared_executors,
+            _executor_lock,
+        )
+
+        # Manually add a broken executor to test exception handling
+        broken_executor = mock.Mock()
+        broken_executor.shutdown.side_effect = RuntimeError("shutdown error")
+
+        with _executor_lock:
+            _shared_executors[None] = broken_executor
+
+        # Should not raise despite exception
+        shutdown_shared_executors(wait=True)
+
+        # Verify it's still cleared
+        self.assertEqual(len(_shared_executors), 0)
 
     def test_dispatch_pending(self) -> None:
         dispatched: list[QueueMessage] = []

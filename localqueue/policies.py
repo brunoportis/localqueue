@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import threading
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
-    import asyncio
     from .idempotency import IdempotencyStore
     from .results import ResultStore
     from .stores import QueueMessage
@@ -531,9 +528,6 @@ class CallbackDispatcher:
             "dispatches_on_put": self.dispatches_on_put,
             "handler_count": self.handler_count,
         }
-
-
-from .adapters import ThreadedDispatcher, InProcessNotification, AsyncNotification
 
 
 class NotificationPolicy(Protocol):
