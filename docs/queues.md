@@ -113,8 +113,30 @@ queue = PersistentQueue(
 With an attached store, worker helpers now record `pending`, `succeeded`, and
 `failed` states keyed by `dedupe_key`. If a duplicate delivery arrives for a key
 already marked `succeeded`, the worker acknowledges it and skips handler
-execution. Until a future result policy exists, that short-circuit path returns
-`None` instead of a cached handler result.
+execution.
+
+By default, that short-circuit returns `None`. If you want the worker to replay
+the stored success value, attach `ReturnStoredResult()`:
+
+```python
+from localqueue import (
+    EffectivelyOnceDelivery,
+    PersistentQueue,
+    ReturnStoredResult,
+    SQLiteIdempotencyStore,
+)
+
+queue = PersistentQueue(
+    "payments",
+    delivery_policy=EffectivelyOnceDelivery(
+        idempotency_store=SQLiteIdempotencyStore("payments-idempotency.sqlite3"),
+        result_policy=ReturnStoredResult(),
+    ),
+)
+```
+
+This first version stores the successful handler result inline in the
+idempotency ledger, so built-in stores expect it to be JSON-serializable.
 
 The consumption behavior is available as a policy object:
 

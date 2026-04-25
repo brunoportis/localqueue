@@ -87,7 +87,20 @@ Pass `idempotency_store=` when you want to attach an explicit store interface fo
 dedupe/result coordination. When an attached store already marks a
 `dedupe_key` as succeeded, worker helpers acknowledge the duplicate delivery and
 skip handler execution. Until a future `ResultPolicy` exists, that short-circuit
-path returns `None`.
+path returns `None` by default. Pass `result_policy=ReturnStoredResult()` to
+persist the successful handler result inline in the idempotency ledger and
+return it on duplicate delivery.
+
+#### `NoResultPolicy`
+
+Default result policy for `EffectivelyOnceDelivery`. It keeps ledger state, but
+does not persist or replay handler results.
+
+#### `ReturnStoredResult`
+
+Result policy for `EffectivelyOnceDelivery` that stores successful handler
+results inline in the idempotency ledger and returns the cached value when a
+duplicate delivery is skipped.
 
 #### `PullConsumption`
 

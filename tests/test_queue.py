@@ -36,6 +36,7 @@ from localqueue import (
     LOCAL_AT_LEAST_ONCE,
     MemoryIdempotencyStore,
     MemoryQueueStore,
+    NO_RESULT_POLICY,
     PersistentQueue,
     PersistentWorkerConfig,
     PointToPointRouting,
@@ -44,6 +45,8 @@ from localqueue import (
     QueueSemantics,
     QueueMessage,
     QueueStoreLockedError,
+    RETURN_STORED_RESULT,
+    ReturnStoredResult,
     SQLiteIdempotencyStore,
     SQLiteQueueStore,
     persistent_async_worker,
@@ -565,6 +568,7 @@ class QueueTests(unittest.TestCase):
                 "redelivers_expired_leases": True,
                 "requires_dedupe_key": True,
                 "idempotency_store": None,
+                "result_policy": NO_RESULT_POLICY.as_dict(),
             },
         )
 
@@ -590,6 +594,34 @@ class QueueTests(unittest.TestCase):
                 "redelivers_expired_leases": True,
                 "requires_dedupe_key": True,
                 "idempotency_store": "MemoryIdempotencyStore",
+                "result_policy": NO_RESULT_POLICY.as_dict(),
+            },
+        )
+
+    def test_constructor_accepts_effectively_once_delivery_policy_with_result_policy(
+        self,
+    ) -> None:
+        delivery_policy = EffectivelyOnceDelivery(
+            idempotency_store=MemoryIdempotencyStore(),
+            result_policy=ReturnStoredResult(),
+        )
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=delivery_policy,
+        )
+
+        self.assertIs(queue.delivery_policy, delivery_policy)
+        self.assertEqual(
+            queue.delivery_policy.as_dict(),
+            {
+                "guarantee": "effectively-once",
+                "ack_timing": "after-success",
+                "uses_leases": True,
+                "redelivers_expired_leases": True,
+                "requires_dedupe_key": True,
+                "idempotency_store": "MemoryIdempotencyStore",
+                "result_policy": RETURN_STORED_RESULT.as_dict(),
             },
         )
 
@@ -3348,7 +3380,10 @@ class QueueTests(unittest.TestCase):
         queue = PersistentQueue(
             "test",
             store=MemoryQueueStore(),
-            delivery_policy=EffectivelyOnceDelivery(idempotency_store=store),
+            delivery_policy=EffectivelyOnceDelivery(
+                idempotency_store=store,
+                result_policy=ReturnStoredResult(),
+            ),
         )
         message = queue.put("item", dedupe_key="job-1")
 
@@ -3362,9 +3397,10 @@ class QueueTests(unittest.TestCase):
         assert record is not None
         self.assertEqual(record.status, "succeeded")
         self.assertIsNotNone(record.completed_at)
+        self.assertEqual(record.result_key, "inline")
         self.assertEqual(
             record.metadata,
-            {"queue": "test", "message_id": message.id},
+            {"queue": "test", "message_id": message.id, "result": "ITEM"},
         )
         self.assertTrue(queue.empty())
 
@@ -3429,6 +3465,43 @@ class QueueTests(unittest.TestCase):
         assert record is not None
         self.assertEqual(record.metadata["message_id"], "previous")
 
+    def test_effectively_once_worker_returns_cached_result(self) -> None:
+        store = MemoryIdempotencyStore()
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=EffectivelyOnceDelivery(
+                idempotency_store=store,
+                result_policy=ReturnStoredResult(),
+            ),
+        )
+        message = queue.put("item", dedupe_key="job-1")
+        store.save(
+            "job-1",
+            IdempotencyRecord(
+                status="succeeded",
+                first_seen_at=100.0,
+                completed_at=120.0,
+                result_key="inline",
+                metadata={
+                    "queue": "test",
+                    "message_id": "previous",
+                    "result": "CACHED",
+                },
+            ),
+        )
+        calls = {"count": 0}
+
+        @persistent_worker(queue)
+        def handle(value: str) -> str:
+            calls["count"] += 1
+            return value.upper()
+
+        self.assertEqual(cast("Any", handle)(), "CACHED")
+        self.assertEqual(calls["count"], 0)
+        self.assertTrue(queue.empty())
+        self.assertIsNone(queue.inspect(message.id))
+
     def test_effectively_once_async_worker_short_circuits_known_success(self) -> None:
         async def scenario() -> None:
             store = MemoryIdempotencyStore()
@@ -3455,6 +3528,46 @@ class QueueTests(unittest.TestCase):
                 return value.upper()
 
             self.assertIsNone(await cast("Any", handle)())
+            self.assertEqual(calls["count"], 0)
+            self.assertTrue(queue.empty())
+            self.assertIsNone(queue.inspect(message.id))
+
+        asyncio.run(scenario())
+
+    def test_effectively_once_async_worker_returns_cached_result(self) -> None:
+        async def scenario() -> None:
+            store = MemoryIdempotencyStore()
+            queue = PersistentQueue(
+                "test",
+                store=MemoryQueueStore(),
+                delivery_policy=EffectivelyOnceDelivery(
+                    idempotency_store=store,
+                    result_policy=ReturnStoredResult(),
+                ),
+            )
+            message = queue.put("item", dedupe_key="job-1")
+            store.save(
+                "job-1",
+                IdempotencyRecord(
+                    status="succeeded",
+                    first_seen_at=100.0,
+                    completed_at=120.0,
+                    result_key="inline",
+                    metadata={
+                        "queue": "test",
+                        "message_id": "previous",
+                        "result": {"status": "cached"},
+                    },
+                ),
+            )
+            calls = {"count": 0}
+
+            @persistent_async_worker(queue)
+            async def handle(value: str) -> dict[str, str]:
+                calls["count"] += 1
+                return {"status": value.upper()}
+
+            self.assertEqual(await cast("Any", handle)(), {"status": "cached"})
             self.assertEqual(calls["count"], 0)
             self.assertTrue(queue.empty())
             self.assertIsNone(queue.inspect(message.id))
