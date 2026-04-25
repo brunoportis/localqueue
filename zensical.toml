@@ -19,6 +19,10 @@ nav = [
       { "Operational maturity" = "operational-maturity.md" },
       { "Development guide" = "develop.md" },
       { "Release" = "release.md" },
+  ] },
+  { "Plans" = [
+    { "Notification policy PR" = "plans/notification-policy-pr.md" },
+    { "Queue architecture roadmap" = "plans/queue-architecture-roadmap.md" },
   ] }
 
 ]

@@ -344,13 +344,39 @@ def wake(message):
 queue = PersistentQueue(
     "events",
     consumption_policy=PushConsumption(),
-    notification_policy=CallbackNotification((wake,)),
+    notification_policy=CallbackNotification(wake),
 )
 ```
 
 `CallbackNotification` is still in-process. It can wake a polling loop or a
 local subscriber, but it does not make SQLite or the queue store itself emit
 events across process boundaries.
+
+For a thread-based worker loop, use `InProcessNotification`. It sets a local
+`threading.Event` after `put()` persists the message:
+
+```python
+from queue import Empty
+
+from localqueue import InProcessNotification, PersistentQueue
+
+notification = InProcessNotification()
+queue = PersistentQueue("events", notification_policy=notification)
+
+while True:
+    _ = notification.wait(timeout=5.0)
+    notification.clear()
+    try:
+        message = queue.get_message(block=False)
+    except Empty:
+        continue
+    process(message.value)
+    queue.ack(message)
+```
+
+This only coordinates threads inside the same process. Cross-process wake-up
+still belongs in a concrete socket, signal, webhook, SSE, WebSocket, or Redis
+adapter.
 
 The routing behavior is available as a policy object:
 
