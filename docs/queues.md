@@ -81,6 +81,24 @@ This names the placement contract. It does not turn the built-in local stores
 into a distributed broker; a remote adapter can implement that boundary behind
 the same queue ports.
 
+Lease behavior is available as a policy object too:
+
+```python
+queue.lease_policy.as_dict()
+```
+
+`lease_timeout=30.0` is the simple shortcut. Use `FixedLeaseTimeout` when the
+visibility timeout should travel inside a reusable policy set:
+
+```python
+from localqueue import FixedLeaseTimeout, PersistentQueue
+
+queue = PersistentQueue("events", lease_policy=FixedLeaseTimeout(60.0))
+```
+
+With the built-in stores, an inflight message becomes eligible for redelivery
+after the fixed timeout expires unless it is acknowledged first.
+
 The delivery behavior is also available as a policy object:
 
 ```python

@@ -23,6 +23,7 @@ Constructor options:
 | `store` | queue store instance |
 | `store_path` | explicit path for the SQLite queue store |
 | `lease_timeout` | seconds before an inflight message is redelivered |
+| `lease_policy` | lease and visibility-timeout behavior; defaults from `lease_timeout` |
 | `maxsize` | maximum number of ready messages; `0` means unbounded |
 | `retry_defaults` | Tenacity retry keyword defaults inherited by workers |
 | `semantics` | descriptive queue semantics; defaults to `LOCAL_AT_LEAST_ONCE` |
@@ -70,16 +71,16 @@ acknowledgements, dead letters, and dedupe-key support.
 #### `QueuePolicySet`
 
 Reusable bundle for queue policies. Pass `policy_set=` to `PersistentQueue` when
-you want to keep locality, delivery, ordering, routing, consumption, semantics,
-and backpressure choices together as one configuration object. Explicit
+you want to keep locality, leases, delivery, ordering, routing, consumption,
+semantics, and backpressure choices together as one configuration object. Explicit
 constructor options remain available and conflict with the same option inside
 the policy set so configuration stays unambiguous.
 
 `QueuePolicySet.at_least_once(...)`, `QueuePolicySet.at_most_once(...)`, and
 `QueuePolicySet.effectively_once(...)` build common delivery bundles with
-optional locality, consumption, ordering, routing, and backpressure policies.
-The effectively-once factory also accepts idempotency, result, and commit
-policies.
+optional locality, lease, consumption, ordering, routing, and backpressure
+policies. The effectively-once factory also accepts idempotency, result, and
+commit policies.
 
 #### `LocalityPolicy`
 
@@ -97,6 +98,18 @@ operate on the queue store.
 Locality policy for queue definitions backed by a remote boundary. It names
 `locality="remote"` in the queue configuration and makes the placement explicit
 without turning the built-in local store into a distributed broker.
+
+#### `LeasePolicy`
+
+Protocol for naming how messages are leased while a consumer is processing
+them.
+
+#### `FixedLeaseTimeout`
+
+Lease policy used by default. `FixedLeaseTimeout(timeout=30.0)` means an
+inflight message can be redelivered after the fixed visibility timeout expires.
+The `lease_timeout=` constructor option remains the simple shortcut for this
+policy.
 
 #### `AtLeastOnceDelivery`
 

@@ -77,6 +77,43 @@ class RemoteQueuePlacement:
         return asdict(self)
 
 
+class LeasePolicy(Protocol):
+    @property
+    def timeout(self) -> float: ...
+
+    @property
+    def uses_leases(self) -> bool: ...
+
+    @property
+    def expires_inflight(self) -> bool: ...
+
+    def as_dict(self) -> dict[str, object]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class FixedLeaseTimeout:
+    """Lease policy where inflight messages expire after a fixed timeout."""
+
+    timeout: float = 30.0
+    uses_leases: bool = True
+    expires_inflight: bool = True
+
+    def __post_init__(self) -> None:
+        if self.timeout <= 0:
+            raise ValueError("lease timeout must be greater than zero")
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "type": "fixed-timeout",
+            "timeout": self.timeout,
+            "uses_leases": self.uses_leases,
+            "expires_inflight": self.expires_inflight,
+        }
+
+
+FIXED_LEASE_TIMEOUT = FixedLeaseTimeout()
+
+
 class DeliveryPolicy(Protocol):
     @property
     def guarantee(self) -> DeliveryGuarantee: ...
@@ -471,6 +508,7 @@ class QueuePolicySet:
 
     semantics: QueueSemantics | None = None
     locality_policy: LocalityPolicy | None = None
+    lease_policy: LeasePolicy | None = None
     delivery_policy: DeliveryPolicy | None = None
     consumption_policy: ConsumptionPolicy | None = None
     ordering_policy: OrderingPolicy | None = None
@@ -482,6 +520,7 @@ class QueuePolicySet:
         cls,
         *,
         locality_policy: LocalityPolicy | None = None,
+        lease_policy: LeasePolicy | None = None,
         consumption_policy: ConsumptionPolicy | None = None,
         ordering_policy: OrderingPolicy | None = None,
         routing_policy: RoutingPolicy | None = None,
@@ -489,6 +528,7 @@ class QueuePolicySet:
     ) -> "QueuePolicySet":
         return cls(
             locality_policy=locality_policy,
+            lease_policy=lease_policy,
             delivery_policy=AT_LEAST_ONCE_DELIVERY,
             consumption_policy=consumption_policy,
             ordering_policy=ordering_policy,
@@ -501,6 +541,7 @@ class QueuePolicySet:
         cls,
         *,
         locality_policy: LocalityPolicy | None = None,
+        lease_policy: LeasePolicy | None = None,
         consumption_policy: ConsumptionPolicy | None = None,
         ordering_policy: OrderingPolicy | None = None,
         routing_policy: RoutingPolicy | None = None,
@@ -508,6 +549,7 @@ class QueuePolicySet:
     ) -> "QueuePolicySet":
         return cls(
             locality_policy=locality_policy,
+            lease_policy=lease_policy,
             delivery_policy=AtMostOnceDelivery(),
             consumption_policy=consumption_policy,
             ordering_policy=ordering_policy,
@@ -523,6 +565,7 @@ class QueuePolicySet:
         result_policy: ResultPolicy = NO_RESULT_POLICY,
         commit_policy: CommitPolicy = LOCAL_ATOMIC_COMMIT,
         locality_policy: LocalityPolicy | None = None,
+        lease_policy: LeasePolicy | None = None,
         consumption_policy: ConsumptionPolicy | None = None,
         ordering_policy: OrderingPolicy | None = None,
         routing_policy: RoutingPolicy | None = None,
@@ -535,6 +578,7 @@ class QueuePolicySet:
         )
         return cls(
             locality_policy=locality_policy,
+            lease_policy=lease_policy,
             delivery_policy=delivery_policy,
             consumption_policy=consumption_policy,
             ordering_policy=ordering_policy,
@@ -547,6 +591,9 @@ class QueuePolicySet:
             "semantics": None if self.semantics is None else self.semantics.as_dict(),
             "locality_policy": (
                 None if self.locality_policy is None else self.locality_policy.as_dict()
+            ),
+            "lease_policy": (
+                None if self.lease_policy is None else self.lease_policy.as_dict()
             ),
             "delivery_policy": (
                 None if self.delivery_policy is None else self.delivery_policy.as_dict()

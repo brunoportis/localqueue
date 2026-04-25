@@ -24,6 +24,7 @@ from localqueue.retry import MemoryAttemptStore, RetryRecord, SQLiteAttemptStore
 from localqueue import (
     AT_LEAST_ONCE_DELIVERY,
     FIFO_READY_ORDERING,
+    FIXED_LEASE_TIMEOUT,
     IdempotencyRecord,
     IdempotencyStoreLockedError,
     LOCAL_ATOMIC_COMMIT,
@@ -37,6 +38,7 @@ from localqueue import (
     AtMostOnceDelivery,
     BestEffortOrdering,
     BoundedBackpressure,
+    FixedLeaseTimeout,
     FifoReadyOrdering,
     LocalQueuePlacement,
     LMDBQueueStore,
@@ -306,6 +308,11 @@ class QueueTests(unittest.TestCase):
         ):
             _ = PersistentQueue("test", store=store, lease_timeout=0)
 
+        with self.assertRaisesRegex(
+            ValueError, "lease timeout must be greater than zero"
+        ):
+            _ = FixedLeaseTimeout(0)
+
         with self.assertRaisesRegex(ValueError, "maxsize cannot be negative"):
             _ = PersistentQueue("test", store=store, maxsize=-1)
 
@@ -340,6 +347,16 @@ class QueueTests(unittest.TestCase):
                 store=store,
                 semantics=QueueSemantics(locality="remote"),
                 locality_policy=LocalQueuePlacement(),
+            )
+
+        with self.assertRaisesRegex(
+            ValueError, "semantics leases must match lease_policy uses_leases"
+        ):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                semantics=QueueSemantics(leases=False),
+                lease_policy=FixedLeaseTimeout(),
             )
 
         with self.assertRaisesRegex(
@@ -393,6 +410,16 @@ class QueueTests(unittest.TestCase):
             )
 
         with self.assertRaisesRegex(
+            ValueError, "pass either lease_timeout= or lease_policy=, not both"
+        ):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                lease_timeout=10,
+                lease_policy=FixedLeaseTimeout(20),
+            )
+
+        with self.assertRaisesRegex(
             ValueError,
             "pass either delivery_policy= or policy_set.delivery_policy, not both",
         ):
@@ -412,6 +439,17 @@ class QueueTests(unittest.TestCase):
                 store=store,
                 locality_policy=LocalQueuePlacement(),
                 policy_set=QueuePolicySet(locality_policy=RemoteQueuePlacement()),
+            )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "pass either lease_policy= or policy_set.lease_policy, not both",
+        ):
+            _ = PersistentQueue(
+                "test",
+                store=store,
+                lease_policy=FixedLeaseTimeout(20),
+                policy_set=QueuePolicySet(lease_policy=FixedLeaseTimeout(10)),
             )
 
         with self.assertRaisesRegex(
@@ -463,6 +501,16 @@ class QueueTests(unittest.TestCase):
             queue = PersistentQueue("test", store_path=f"{tmpdir}/queue.sqlite3")
 
             self.assertEqual(queue.lease_timeout, 30.0)
+            self.assertEqual(queue.lease_policy, FIXED_LEASE_TIMEOUT)
+            self.assertEqual(
+                queue.lease_policy.as_dict(),
+                {
+                    "type": "fixed-timeout",
+                    "timeout": 30.0,
+                    "uses_leases": True,
+                    "expires_inflight": True,
+                },
+            )
             self.assertEqual(queue.maxsize, 0)
             self.assertEqual(queue.backpressure, BoundedBackpressure())
             self.assertEqual(queue.semantics, LOCAL_AT_LEAST_ONCE)
@@ -481,6 +529,18 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(queue.routing_policy, POINT_TO_POINT_ROUTING)
             self.assertIsNone(queue._store)
             self.assertEqual(queue._store_path, Path(tmpdir) / "queue.sqlite3")
+
+    def test_constructor_accepts_lease_policy(self) -> None:
+        lease_policy = FixedLeaseTimeout(12.5)
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            lease_policy=lease_policy,
+        )
+
+        self.assertIs(queue.lease_policy, lease_policy)
+        self.assertEqual(queue.lease_timeout, 12.5)
+        self.assertTrue(queue.semantics.leases)
 
     def test_constructor_accepts_remote_locality_policy(self) -> None:
         locality_policy = RemoteQueuePlacement()
@@ -759,9 +819,11 @@ class QueueTests(unittest.TestCase):
         )
         ordering_policy = BestEffortOrdering()
         locality_policy = RemoteQueuePlacement()
+        lease_policy = FixedLeaseTimeout(15)
         backpressure = BoundedBackpressure(5)
         policy_set = QueuePolicySet(
             locality_policy=locality_policy,
+            lease_policy=lease_policy,
             delivery_policy=delivery_policy,
             ordering_policy=ordering_policy,
             backpressure=backpressure,
@@ -774,10 +836,12 @@ class QueueTests(unittest.TestCase):
         )
 
         self.assertIs(queue.locality_policy, locality_policy)
+        self.assertIs(queue.lease_policy, lease_policy)
         self.assertIs(queue.delivery_policy, delivery_policy)
         self.assertIs(queue.ordering_policy, ordering_policy)
         self.assertIs(queue.backpressure, backpressure)
         self.assertEqual(queue.maxsize, 5)
+        self.assertEqual(queue.lease_timeout, 15)
         self.assertEqual(queue.semantics.locality, "remote")
         self.assertEqual(queue.semantics.delivery, "effectively-once")
         self.assertEqual(queue.semantics.ordering, "best-effort")
@@ -787,6 +851,7 @@ class QueueTests(unittest.TestCase):
         result_policy = ReturnStoredResult(result_store=MemoryResultStore())
         commit_policy = SagaCommit(saga_store=MemoryResultStore())
         locality_policy = RemoteQueuePlacement()
+        lease_policy = FixedLeaseTimeout(45)
         consumption_policy = PushConsumption()
         ordering_policy = BestEffortOrdering()
         routing_policy = PointToPointRouting()
@@ -797,6 +862,7 @@ class QueueTests(unittest.TestCase):
             result_policy=result_policy,
             commit_policy=commit_policy,
             locality_policy=locality_policy,
+            lease_policy=lease_policy,
             consumption_policy=consumption_policy,
             ordering_policy=ordering_policy,
             routing_policy=routing_policy,
@@ -804,6 +870,7 @@ class QueueTests(unittest.TestCase):
         )
 
         self.assertIs(policy_set.locality_policy, locality_policy)
+        self.assertIs(policy_set.lease_policy, lease_policy)
         self.assertIs(policy_set.consumption_policy, consumption_policy)
         self.assertIs(policy_set.ordering_policy, ordering_policy)
         self.assertIs(policy_set.routing_policy, routing_policy)
@@ -816,6 +883,12 @@ class QueueTests(unittest.TestCase):
                     "locality": "remote",
                     "co_located_state": False,
                     "crosses_network_boundary": True,
+                },
+                "lease_policy": {
+                    "type": "fixed-timeout",
+                    "timeout": 45,
+                    "uses_leases": True,
+                    "expires_inflight": True,
                 },
                 "delivery_policy": {
                     "guarantee": "effectively-once",
