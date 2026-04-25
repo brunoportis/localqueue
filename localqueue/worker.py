@@ -321,6 +321,16 @@ def _outbox_store(queue: PersistentQueue) -> ResultStore | None:
     return cast("ResultStore | None", getattr(commit_policy, "outbox_store", None))
 
 
+def _prepare_store(queue: PersistentQueue) -> ResultStore | None:
+    commit_policy = _commit_policy(queue)
+    return cast("ResultStore | None", getattr(commit_policy, "prepare_store", None))
+
+
+def _commit_store(queue: PersistentQueue) -> ResultStore | None:
+    commit_policy = _commit_policy(queue)
+    return cast("ResultStore | None", getattr(commit_policy, "commit_store", None))
+
+
 def _result_key(message: QueueMessage) -> str | None:
     if message.dedupe_key is None:
         return None
@@ -427,6 +437,46 @@ def _commit_outbox(
     )
 
 
+def _commit_two_phase(
+    queue: PersistentQueue,
+    message: QueueMessage,
+    *,
+    result: Any,
+    result_key: str | None,
+) -> None:
+    commit_policy = _commit_policy(queue)
+    if getattr(commit_policy, "mode", None) != "two-phase":
+        return
+    prepare_store = _prepare_store(queue)
+    commit_store = _commit_store(queue)
+    if prepare_store is None and commit_store is None:
+        return
+    phase_key = _result_key(message)
+    if phase_key is None:
+        return
+    prepare_payload = {
+        "queue": message.queue,
+        "message_id": message.id,
+        "dedupe_key": message.dedupe_key,
+        "result_key": result_key,
+        "result": result,
+        "phase": "prepare",
+    }
+    commit_payload = {
+        "queue": message.queue,
+        "message_id": message.id,
+        "dedupe_key": message.dedupe_key,
+        "result_key": result_key,
+        "result": result,
+        "phase": "commit",
+    }
+    if prepare_store is not None:
+        prepare_store.save(f"prepare:{phase_key}", prepare_payload)
+    if commit_store is None:
+        return
+    commit_store.save(f"commit:{phase_key}", commit_payload)
+
+
 def persistent_worker(
     queue: PersistentQueue,
     *,
@@ -491,6 +541,7 @@ def persistent_worker(
             if _result_store(queue) is not None:
                 result_key = _result_key(message)
             _commit_outbox(queue, message, result=result, result_key=result_key)
+            _commit_two_phase(queue, message, result=result, result_key=result_key)
             queue.ack(message)
             return result
 
@@ -567,6 +618,7 @@ def persistent_async_worker(
             if _result_store(queue) is not None:
                 result_key = _result_key(message)
             _commit_outbox(queue, message, result=result, result_key=result_key)
+            _commit_two_phase(queue, message, result=result, result_key=result_key)
             queue.ack(message)
             return result
 

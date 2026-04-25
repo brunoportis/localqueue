@@ -187,6 +187,8 @@ queue = PersistentQueue(
 commit policies are named ports for outbox, two-phase, and saga coordination.
 `TransactionalOutboxCommit(outbox_store=...)` writes a durable outbox envelope
 before the queue message is acknowledged.
+`TwoPhaseCommit(prepare_store=..., commit_store=...)` writes explicit prepare
+and commit envelopes before the queue message is acknowledged.
 
 The consumption behavior is available as a policy object:
 
