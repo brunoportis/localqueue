@@ -302,16 +302,27 @@ def _idempotency_store(queue: PersistentQueue) -> IdempotencyStore | None:
     )
 
 
+def _result_policy(queue: PersistentQueue) -> Any:
+    return getattr(queue.delivery_policy, "result_policy", None)
+
+
+def _cached_result(record: IdempotencyRecord) -> Any:
+    return record.metadata.get("result")
+
+
 def _begin_idempotent_handling(
     queue: PersistentQueue, message: QueueMessage
-) -> IdempotencyRecord | None:
+) -> tuple[bool, Any]:
     store = _idempotency_store(queue)
     if store is None or message.dedupe_key is None:
-        return None
+        return False, None
     record = store.load(message.dedupe_key)
     if record is not None and record.status == "succeeded":
         _ = queue.ack(message)
-        return record
+        result_policy = _result_policy(queue)
+        if bool(getattr(result_policy, "returns_cached_result", False)):
+            return True, _cached_result(record)
+        return True, None
     first_seen_at = time.time() if record is None else record.first_seen_at
     store.save(
         message.dedupe_key,
@@ -321,7 +332,7 @@ def _begin_idempotent_handling(
             metadata={"queue": message.queue, "message_id": message.id},
         ),
     )
-    return None
+    return False, None
 
 
 def _complete_idempotent_handling(
@@ -329,6 +340,7 @@ def _complete_idempotent_handling(
     message: QueueMessage,
     *,
     status: str,
+    result: Any = None,
     error: BaseException | None = None,
 ) -> None:
     store = _idempotency_store(queue)
@@ -337,6 +349,11 @@ def _complete_idempotent_handling(
     existing = store.load(message.dedupe_key)
     first_seen_at = time.time() if existing is None else existing.first_seen_at
     metadata: dict[str, Any] = {"queue": message.queue, "message_id": message.id}
+    result_policy = _result_policy(queue)
+    result_key = None if existing is None else existing.result_key
+    if bool(getattr(result_policy, "stores_result", False)) and status == "succeeded":
+        metadata["result"] = result
+        result_key = "inline"
     if error is not None:
         metadata["last_error"] = _error_payload(error)
     store.save(
@@ -345,7 +362,7 @@ def _complete_idempotent_handling(
             status=cast("Any", status),
             first_seen_at=first_seen_at,
             completed_at=time.time(),
-            result_key=None if existing is None else existing.result_key,
+            result_key=result_key,
             metadata=metadata,
         ),
     )
@@ -380,9 +397,10 @@ def persistent_worker(
                 queue.record_worker_heartbeat(worker_id)
             _sleep_for_policy(policy_state, worker_config)
             message = queue.get_message()
-            if _begin_idempotent_handling(queue, message) is not None:
+            short_circuited, cached_result = _begin_idempotent_handling(queue, message)
+            if short_circuited:
                 _record_success(policy_state)
-                return None
+                return cached_result
             retryer = PersistentRetrying(key=message.id, **retry_kwargs)
             try:
                 result = retryer(fn, message.value, *args, **kwargs)
@@ -404,7 +422,12 @@ def persistent_worker(
                 if worker_id is not None:
                     queue.record_worker_heartbeat(worker_id)
             _record_success(policy_state)
-            _complete_idempotent_handling(queue, message, status="succeeded")
+            _complete_idempotent_handling(
+                queue,
+                message,
+                status="succeeded",
+                result=result,
+            )
             queue.ack(message)
             return result
 
@@ -442,9 +465,10 @@ def persistent_async_worker(
                 queue.record_worker_heartbeat(worker_id)
             await _sleep_for_policy_async(policy_state, worker_config)
             message = await _get_message_async(queue)
-            if _begin_idempotent_handling(queue, message) is not None:
+            short_circuited, cached_result = _begin_idempotent_handling(queue, message)
+            if short_circuited:
                 _record_success(policy_state)
-                return None
+                return cached_result
             retryer = PersistentAsyncRetrying(key=message.id, **retry_kwargs)
             try:
                 result = await retryer(fn, message.value, *args, **kwargs)
@@ -470,7 +494,12 @@ def persistent_async_worker(
                 if worker_id is not None:
                     queue.record_worker_heartbeat(worker_id)
             _record_success(policy_state)
-            _complete_idempotent_handling(queue, message, status="succeeded")
+            _complete_idempotent_handling(
+                queue,
+                message,
+                status="succeeded",
+                result=result,
+            )
             queue.ack(message)
             return result
 

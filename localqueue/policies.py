@@ -81,6 +81,51 @@ class AtMostOnceDelivery:
 
 
 @dataclass(frozen=True, slots=True)
+class ResultPolicy:
+    stores_result: bool
+    returns_cached_result: bool
+
+    def as_dict(self) -> dict[str, object]:  # pragma: no cover
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, slots=True)
+class NoResultPolicy(ResultPolicy):
+    """Result policy that does not persist or return handler results."""
+
+    stores_result: bool = False
+    returns_cached_result: bool = False
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "type": "none",
+            "stores_result": self.stores_result,
+            "returns_cached_result": self.returns_cached_result,
+        }
+
+
+NO_RESULT_POLICY = NoResultPolicy()
+
+
+@dataclass(frozen=True, slots=True)
+class ReturnStoredResult(ResultPolicy):
+    """Result policy that stores successful results and returns them on duplicates."""
+
+    stores_result: bool = True
+    returns_cached_result: bool = True
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "type": "return-stored",
+            "stores_result": self.stores_result,
+            "returns_cached_result": self.returns_cached_result,
+        }
+
+
+RETURN_STORED_RESULT = ReturnStoredResult()
+
+
+@dataclass(frozen=True, slots=True)
 class EffectivelyOnceDelivery:
     """Delivery policy that requires idempotent enqueue keys."""
 
@@ -90,6 +135,7 @@ class EffectivelyOnceDelivery:
     redelivers_expired_leases: bool = True
     requires_dedupe_key: bool = True
     idempotency_store: IdempotencyStore | None = None
+    result_policy: ResultPolicy = NO_RESULT_POLICY
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -103,6 +149,7 @@ class EffectivelyOnceDelivery:
                 if self.idempotency_store is None
                 else type(self.idempotency_store).__name__
             ),
+            "result_policy": self.result_policy.as_dict(),
         }
 
 
