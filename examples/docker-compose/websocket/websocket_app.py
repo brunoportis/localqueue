@@ -29,9 +29,7 @@ def _serialize_message(message: Any) -> str:
     )
 
 
-async def handle_client(
-    websocket: ServerConnection, stop_event: asyncio.Event
-) -> None:
+async def handle_client(websocket: ServerConnection, stop_event: asyncio.Event) -> None:
     queue = PersistentQueue(
         QUEUE_NAME,
         store_path=QUEUE_STORE_PATH,
@@ -64,9 +62,7 @@ async def main() -> None:
         lambda websocket: handle_client(websocket, stop_event), WS_HOST, WS_PORT
     ):
         print(
-            json.dumps(
-                {"event": "server_ready", "ws_url": f"ws://{WS_HOST}:{WS_PORT}"}
-            )
+            json.dumps({"event": "server_ready", "ws_url": f"ws://{WS_HOST}:{WS_PORT}"})
         )
         await stop_event.wait()
 
