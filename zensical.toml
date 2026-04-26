@@ -6,6 +6,11 @@ copyright = "Copyright &copy; 2026 The authors"
 
 nav = [
   { "Overview" = "index.md" },
+  { "Examples" = [
+    { "Overview" = "examples.md" },
+    { "Docker Compose Push" = "examples/push-compose.md" },
+    { "Docker Compose Pull" = "examples/pull-compose.md" },
+  ] },
   { "Use cases" = [
     { "Local outbox" = "use-cases/local-outbox.md" },
     { "Operator recovery" = "use-cases/operator-recovery.md" },

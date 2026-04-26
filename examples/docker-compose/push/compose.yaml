@@ -1,0 +1,16 @@
+services:
+  app:
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+    user: "0:0"
+    entrypoint: ["python", "/examples/push_app.py"]
+    environment:
+      QUEUE_NAME: push-events
+      QUEUE_STORE_PATH: /data/queue.sqlite3
+    volumes:
+      - queue-data:/data
+      - .:/examples:ro
+
+volumes:
+  queue-data:

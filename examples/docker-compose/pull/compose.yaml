@@ -1,0 +1,40 @@
+services:
+  producer:
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+    user: "0:0"
+    entrypoint: ["python", "/examples/producer.py"]
+    environment:
+      QUEUE_NAME: emails
+      QUEUE_STORE_PATH: /data/queue.sqlite3
+    volumes:
+      - queue-data:/data
+      - .:/examples:ro
+
+  worker:
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+    user: "0:0"
+    command:
+      - queue
+      - exec
+      - emails
+      - --store-path
+      - /data/queue.sqlite3
+      - --retry-store-path
+      - /data/retries.sqlite3
+      - --forever
+      - --block
+      - --idle-sleep
+      - "1"
+      - --
+      - python
+      - /examples/worker.py
+    volumes:
+      - queue-data:/data
+      - .:/examples:ro
+
+volumes:
+  queue-data:
