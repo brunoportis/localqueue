@@ -27,6 +27,7 @@ These names are treated as the main public contracts today:
 - `PointToPointRouting`
 - `PublishSubscribeRouting`
 - `SubscriptionPolicy` and the built-in subscription policies
+- `subscriber_queue_name`
 - `AtLeastOnceDelivery`
 - `AtMostOnceDelivery`
 - `EffectivelyOnceDelivery`

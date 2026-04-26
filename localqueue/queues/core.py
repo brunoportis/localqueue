@@ -54,6 +54,18 @@ T = TypeVar("T")
 _NEGATIVE_DELAY_ERROR = "delay cannot be negative"
 
 
+def subscriber_queue_name(queue_name: str, subscriber: str) -> str:
+    if not subscriber:
+        raise ValueError("subscriber cannot be empty")
+    return f"{queue_name}.{subscriber}"
+
+
+def _fanout_dedupe_key(dedupe_key: str | None, subscriber: str) -> str | None:
+    if dedupe_key is None:
+        return None
+    return f"{dedupe_key}:{subscriber}"
+
+
 class PersistentQueue(Generic[T]):
     name: str
     lease_timeout: float
@@ -267,6 +279,15 @@ class PersistentQueue(Generic[T]):
         _validate_priority(priority)
         if priority > 0 and self.ordering_policy.guarantee != "priority":
             raise ValueError("priority requires PriorityOrdering")
+        if self.routing_policy.fanout:
+            return self._put_fanout(
+                item,
+                block=block,
+                timeout=timeout,
+                delay=delay,
+                dedupe_key=dedupe_key,
+                priority=priority,
+            )
         deadline = _deadline(timeout)
         with self._condition:
             while self.full():
@@ -306,6 +327,39 @@ class PersistentQueue(Generic[T]):
 
     def get_nowait(self) -> T:
         return self.get(block=False)
+
+    def subscriber_queue(self, subscriber: str) -> PersistentQueue[T]:
+        subscribers = self._subscriber_names()
+        if not subscribers:
+            raise ValueError("queue does not have configured subscribers")
+        if subscriber not in subscribers:
+            raise ValueError(f"unknown subscriber {subscriber!r}")
+        return PersistentQueue(
+            subscriber_queue_name(self.name, subscriber),
+            store=self._get_store(),
+            lease_policy=self.lease_policy,
+            acknowledgement_policy=self.acknowledgement_policy,
+            dead_letter_policy=self.dead_letter_policy,
+            deduplication_policy=self.deduplication_policy,
+            retry_defaults=self.retry_defaults,
+            locality_policy=self.locality_policy,
+            consumption_policy=self.consumption_policy,
+            delivery_policy=self.delivery_policy,
+            dispatch_policy=self.dispatch_policy,
+            notification_policy=self.notification_policy,
+            ordering_policy=self.ordering_policy,
+            routing_policy=POINT_TO_POINT_ROUTING,
+            subscription_policy=NO_SUBSCRIPTIONS,
+            backpressure=self.backpressure,
+        )
+
+    def subscriber_queue_name(self, subscriber: str) -> str:
+        subscribers = self._subscriber_names()
+        if not subscribers:
+            raise ValueError("queue does not have configured subscribers")
+        if subscriber not in subscribers:
+            raise ValueError(f"unknown subscriber {subscriber!r}")
+        return subscriber_queue_name(self.name, subscriber)
 
     def get_message(
         self,
@@ -471,8 +525,42 @@ class PersistentQueue(Generic[T]):
             self._store = queue_module.SQLiteQueueStore(path)
         return self._store
 
+    def _subscriber_names(self) -> tuple[str, ...]:
+        subscribers = getattr(self.subscription_policy, "subscribers", ())
+        return cast("tuple[str, ...]", tuple(subscribers))
+
     def _remove_unfinished(self, message_id: str) -> None:
         _ = self._unfinished.pop(message_id, None)
+
+    def _put_fanout(
+        self,
+        item: T,
+        *,
+        block: bool,
+        timeout: float | None,
+        delay: float,
+        dedupe_key: str | None,
+        priority: int,
+    ) -> QueueMessage:
+        subscribers = self._subscriber_names()
+        if not subscribers:
+            raise ValueError(
+                "publish-subscribe routing requires configured subscribers"
+            )
+        deadline = _deadline(timeout)
+        messages: list[QueueMessage] = []
+        for subscriber in subscribers:
+            remaining = _remaining(deadline)
+            message = self.subscriber_queue(subscriber).put(
+                item,
+                block=block,
+                timeout=remaining,
+                delay=delay,
+                dedupe_key=_fanout_dedupe_key(dedupe_key, subscriber),
+                priority=priority,
+            )
+            messages.append(message)
+        return messages[0]
 
     def _run_post_put_hooks(self, message: QueueMessage) -> None:
         if self.notification_policy.notifies_on_put:

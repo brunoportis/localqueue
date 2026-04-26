@@ -289,9 +289,9 @@ fan it out to multiple independent subscriber queues.
 #### `PublishSubscribeRouting`
 
 Routing policy for workflows that model publish/subscribe fanout. It names the
-concept explicitly with `pattern="publish-subscribe"` and `fanout=True`, so a
-queue configuration can advertise the routing contract even when the current
-local store is still responsible for one concrete queue at a time.
+concept explicitly with `pattern="publish-subscribe"` and `fanout=True`. When
+combined with a subscription policy that names subscribers, `put()` fans out
+one durable message into each physical subscriber queue.
 
 #### `SubscriptionPolicy`
 
@@ -306,8 +306,8 @@ simple: there are no named subscribers and no fanout contract.
 #### `StaticFanoutSubscriptions`
 
 Subscription policy for publish/subscribe definitions with a fixed subscriber
-set. It records subscriber names in the queue configuration without duplicating
-messages into physical subscriber queues by itself.
+set. Combined with `PublishSubscribeRouting`, it materializes one physical queue
+per subscriber, for example `events.billing` and `events.audit`.
 
 #### `FifoReadyOrdering`
 
