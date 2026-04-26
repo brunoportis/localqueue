@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+import concurrent.futures
 import json
 import sqlite3
 import tempfile
@@ -1087,6 +1088,118 @@ class QueueTests(unittest.TestCase):
                     "listener_count": 1,
                 },
             )
+
+        asyncio.run(scenario())
+
+    def test_asyncio_notification_without_running_loop_uses_local_event(self) -> None:
+        notification_policy = AsyncioNotification()
+
+        self.assertIsNone(notification_policy.loop)
+        self.assertFalse(notification_policy.event.is_set())
+
+        notification_policy.notify(
+            QueueMessage(id="message-1", queue="test", value="item")
+        )
+
+        self.assertTrue(notification_policy.event.is_set())
+
+        async def scenario() -> None:
+            notification_policy.clear()
+            waiter = asyncio.create_task(notification_policy.wait_async())
+            await asyncio.sleep(0)
+            notification_policy.notify(
+                QueueMessage(id="message-2", queue="test", value="item")
+            )
+            self.assertTrue(await waiter)
+
+        asyncio.run(scenario())
+
+    def test_websocket_notification_validates_and_uses_runtime_branches(self) -> None:
+        with self.assertRaisesRegex(ValueError, "connections cannot be empty"):
+            _ = WebSocketNotification(())
+
+        notification_policy = WebSocketNotification((cast("Any", object()),))
+        self.assertIsNone(notification_policy.loop)
+
+        with self.assertRaisesRegex(
+            RuntimeError, "WebSocketNotification requires an active event loop or loop="
+        ):
+            notification_policy.notify(
+                QueueMessage(id="message-1", queue="test", value="item")
+            )
+
+    def test_websocket_notification_supports_send_text_send_and_threadsafe_loop(
+        self,
+    ) -> None:
+        class _TextWebSocket:
+            def __init__(self) -> None:
+                self.sent_text: list[str] = []
+
+            async def send_text(self, data: str) -> None:
+                self.sent_text.append(data)
+
+        class _RawWebSocket:
+            def __init__(self) -> None:
+                self.sent: list[object] = []
+
+            async def send(self, data: object) -> None:
+                self.sent.append(data)
+
+        explicit_loop = asyncio.new_event_loop()
+        text_socket = _TextWebSocket()
+        raw_socket = _RawWebSocket()
+        recorded_loops: list[asyncio.AbstractEventLoop] = []
+
+        def run_threadsafe(
+            coroutine: Any, loop: asyncio.AbstractEventLoop
+        ) -> concurrent.futures.Future[object]:
+            recorded_loops.append(loop)
+            _ = asyncio.run(coroutine)
+            future: concurrent.futures.Future[object] = concurrent.futures.Future()
+            future.set_result(None)
+            return future
+
+        with mock.patch(
+            "localqueue.adapters.notification.asyncio.run_coroutine_threadsafe",
+            side_effect=run_threadsafe,
+        ):
+            WebSocketNotification(
+                (text_socket,),
+                serializer=lambda message: f"text:{message.id}",
+                loop=explicit_loop,
+            ).notify(QueueMessage(id="message-text", queue="test", value="item"))
+            WebSocketNotification(
+                (raw_socket,),
+                serializer=lambda message: {"message_id": message.id},
+                loop=explicit_loop,
+            ).notify(QueueMessage(id="message-raw", queue="test", value="item"))
+
+        self.assertEqual(recorded_loops, [explicit_loop, explicit_loop])
+        self.assertEqual(text_socket.sent_text, ["text:message-text"])
+        self.assertEqual(raw_socket.sent, [{"message_id": "message-raw"}])
+        explicit_loop.close()
+
+    def test_websocket_notification_uses_running_loop_without_bound_loop(self) -> None:
+        class _TextWebSocket:
+            def __init__(self) -> None:
+                self.sent_text: list[str] = []
+
+            async def send_text(self, data: str) -> None:
+                self.sent_text.append(data)
+
+        websocket = _TextWebSocket()
+        notification_policy = WebSocketNotification(
+            (websocket,),
+            serializer=lambda message: f"text:{message.id}",
+        )
+
+        async def scenario() -> None:
+            notification_policy.notify(
+                QueueMessage(id="message-1", queue="test", value="item")
+            )
+            await asyncio.sleep(0)
+
+            self.assertEqual(websocket.sent_text, ["text:message-1"])
 
         asyncio.run(scenario())
 

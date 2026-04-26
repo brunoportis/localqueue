@@ -174,22 +174,23 @@ class WebSocketNotification:
     def notify(self, message: QueueMessage) -> None:
         payload = self.serializer(message)
         for connection in cast("tuple[object, ...]", self.connections):
-            coroutine = self._send(connection, payload)
             try:
                 running_loop = asyncio.get_running_loop()
             except RuntimeError:
                 running_loop = None
             if self.loop is not None and running_loop is self.loop:
-                _ = self.loop.create_task(coroutine)
+                _ = self.loop.create_task(self._send(connection, payload))
                 continue
             if self.loop is not None:
-                _ = asyncio.run_coroutine_threadsafe(coroutine, self.loop)
+                _ = asyncio.run_coroutine_threadsafe(
+                    self._send(connection, payload), self.loop
+                )
                 continue
             if running_loop is None:
                 raise RuntimeError(
                     "WebSocketNotification requires an active event loop or loop="
                 )
-            _ = running_loop.create_task(coroutine)
+            _ = running_loop.create_task(self._send(connection, payload))
 
     async def _send(self, connection: object, payload: object) -> None:
         if hasattr(connection, "send_json"):
