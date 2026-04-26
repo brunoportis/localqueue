@@ -52,6 +52,12 @@ queue = spec.build_queue()
 worker_config = spec.build_worker_config()
 ```
 
+Or let the queue type build itself from the spec:
+
+```python
+queue = PersistentQueue.from_spec(spec)
+```
+
 For local publish/subscribe fanout, configure subscribers explicitly and
 consume each physical subscriber queue independently:
 

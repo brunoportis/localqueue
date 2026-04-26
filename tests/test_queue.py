@@ -4968,6 +4968,21 @@ class QueueTests(unittest.TestCase):
         ):
             queue.put({"id": "pay-1"})
 
+    def test_persistent_queue_can_be_built_from_spec(self) -> None:
+        spec = (
+            QueueSpec("orders.payment")
+            .with_qos(QoS.AT_LEAST_ONCE)
+            .with_retry(max_retries=2)
+            .with_dead_letter_queue()
+        )
+
+        queue = PersistentQueue.from_spec(spec, store=MemoryQueueStore())
+
+        self.assertEqual(queue.name, "orders.payment")
+        self.assertEqual(queue.delivery_policy.guarantee, "at-least-once")
+        self.assertEqual(queue.retry_defaults["max_tries"], 2)
+        self.assertTrue(queue.dead_letter_policy.dead_letters)
+
     def test_queue_spec_rejects_conflicting_retry_names(self) -> None:
         with self.assertRaisesRegex(
             ValueError, "pass either max_retries= or max_tries=, not both"

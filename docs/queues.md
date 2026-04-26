@@ -629,6 +629,14 @@ message back to the queue after final failure instead of dead-lettering it
 immediately. In that mode, `with_release_delay(...)` controls how long the
 message waits before the next delivery attempt.
 
+If you prefer the queue type to own instantiation, build it directly from the
+spec:
+
+```python
+queue = PersistentQueue.from_spec(spec)
+worker_config = spec.build_worker_config()
+```
+
 Use `persistent_async_worker()` for async handlers. Queue operations are performed
 off the event loop with `asyncio.to_thread()`.
 
