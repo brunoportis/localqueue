@@ -34,6 +34,9 @@ def send_email(job: dict[str, str]) -> None:
 
 Full docs live at [brunoportis.github.io/localqueue](https://brunoportis.github.io/localqueue/). The source docs are in [`docs/`](docs/).
 
+Container examples live in [`examples/docker-compose/`](examples/docker-compose/README.md).
+They show both pull-based workers across containers and in-process push dispatch.
+
 Start with [`docs/use-cases.md`](docs/use-cases.md) if you want the shortest
 path to deciding whether the project fits your workflow.
 
