@@ -4983,6 +4983,19 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(queue.retry_defaults["max_tries"], 2)
         self.assertTrue(queue.dead_letter_policy.dead_letters)
 
+    def test_queue_spec_supports_at_most_once_qos(self) -> None:
+        spec = QueueSpec("telemetry").with_qos(QoS.AT_MOST_ONCE)
+        queue = PersistentQueue.from_spec(spec, store=MemoryQueueStore())
+
+        self.assertEqual(queue.delivery_policy.guarantee, "at-most-once")
+
+    def test_queue_spec_build_queue_without_policies_uses_defaults(self) -> None:
+        queue = QueueSpec("jobs").build_queue(store=MemoryQueueStore())
+
+        self.assertEqual(queue.name, "jobs")
+        self.assertEqual(queue.delivery_policy.guarantee, "at-least-once")
+        self.assertEqual(queue.retry_defaults, {})
+
     def test_queue_spec_rejects_conflicting_retry_names(self) -> None:
         with self.assertRaisesRegex(
             ValueError, "pass either max_retries= or max_tries=, not both"
@@ -5027,7 +5040,9 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(config.circuit_breaker_cooldown, 0.0)
 
     def test_queue_spec_can_control_final_failure_policy(self) -> None:
-        config = QueueSpec("jobs").with_dead_letter_on_failure(False).build_worker_config()
+        config = (
+            QueueSpec("jobs").with_dead_letter_on_failure(False).build_worker_config()
+        )
 
         self.assertFalse(config.dead_letter_on_failure)
         self.assertFalse(config.dead_letter_on_exhaustion)

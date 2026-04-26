@@ -92,9 +92,7 @@ class PersistentQueue(Generic[T]):
     _unfinished: dict[str, QueueMessage]
 
     @classmethod
-    def from_spec(
-        cls, spec: QueueSpec, **kwargs: Any
-    ) -> "PersistentQueue[Any]":
+    def from_spec(cls, spec: QueueSpec, **kwargs: Any) -> "PersistentQueue[Any]":
         return spec.build_queue(**kwargs)
 
     def __init__(

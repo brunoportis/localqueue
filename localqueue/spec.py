@@ -90,7 +90,9 @@ class QueueSpec:
     def with_circuit_breaker(
         self, *, threshold: int, cooldown: float | None = None
     ) -> QueueSpec:
-        resolved_cooldown = 0.0 if threshold == 0 else (30.0 if cooldown is None else cooldown)
+        resolved_cooldown = (
+            0.0 if threshold == 0 else (30.0 if cooldown is None else cooldown)
+        )
         _ = PersistentWorkerConfig(
             release_delay=self.release_delay,
             min_interval=self.min_interval,
