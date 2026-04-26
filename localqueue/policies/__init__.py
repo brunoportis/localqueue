@@ -60,11 +60,13 @@ from .locality import (
     RemoteQueuePlacement,
 )
 from .notification import (
+    AsyncioNotification,
     CallbackNotification,
     InProcessNotification,
     NO_NOTIFICATION,
     NoNotification,
     NotificationPolicy,
+    WebSocketNotification,
 )
 from .ordering import (
     BestEffortOrdering,
@@ -105,6 +107,7 @@ __all__ = [
     "BackpressureStrategy",
     "BestEffortOrdering",
     "BoundedBackpressure",
+    "AsyncioNotification",
     "CallbackDispatcher",
     "CallbackNotification",
     "CommitMode",
@@ -174,4 +177,5 @@ __all__ = [
     "TWO_PHASE_COMMIT",
     "TransactionalOutboxCommit",
     "TwoPhaseCommit",
+    "WebSocketNotification",
 ]

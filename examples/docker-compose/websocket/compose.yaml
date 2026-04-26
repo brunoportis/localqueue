@@ -1,0 +1,32 @@
+services:
+  app:
+    build:
+      context: ../../..
+      dockerfile: examples/docker-compose/websocket/Dockerfile
+    entrypoint: ["python", "/examples/websocket_app.py"]
+    environment:
+      QUEUE_NAME: websocket-events
+      QUEUE_STORE_PATH: /data/queue.sqlite3
+      WS_HOST: 0.0.0.0
+      WS_PORT: "8765"
+    ports:
+      - "8765:8765"
+    volumes:
+      - queue-data:/data
+      - .:/examples:ro
+
+  client:
+    build:
+      context: ../../..
+      dockerfile: examples/docker-compose/websocket/Dockerfile
+    depends_on:
+      - app
+    entrypoint: ["python", "/examples/websocket_client.py"]
+    environment:
+      WS_URL: ws://app:8765
+      EXPECTED_MESSAGES: "2"
+    volumes:
+      - .:/examples:ro
+
+volumes:
+  queue-data:
