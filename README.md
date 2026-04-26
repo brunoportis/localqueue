@@ -32,6 +32,31 @@ def send_email(job: dict[str, str]) -> None:
     deliver(job["to"])
 ```
 
+For local publish/subscribe fanout, configure subscribers explicitly and
+consume each physical subscriber queue independently:
+
+```python
+from localqueue import (
+    PersistentQueue,
+    PublishSubscribeRouting,
+    StaticFanoutSubscriptions,
+)
+
+events = PersistentQueue(
+    "events",
+    routing_policy=PublishSubscribeRouting(),
+    subscription_policy=StaticFanoutSubscriptions(("billing", "audit")),
+)
+
+events.put({"kind": "invoice-paid", "invoice_id": "inv-1"})
+
+billing = events.subscriber_queue("billing")
+audit = events.subscriber_queue("audit")
+
+billing_message = billing.get_message()
+audit_message = audit.get_message()
+```
+
 Full docs live at [brunoportis.github.io/localqueue](https://brunoportis.github.io/localqueue/). The source docs are in [`docs/`](docs/).
 
 Container examples live in [`examples/docker-compose/`](examples/docker-compose/README.md).

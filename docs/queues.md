@@ -437,6 +437,39 @@ audit = queue.subscriber_queue("audit")
 Each physical queue has its own ack, retry, and dead-letter lifecycle.
 `NoSubscriptions` remains the default for the simple point-to-point queue path.
 
+End-to-end example:
+
+```python
+from localqueue import (
+    PersistentQueue,
+    PublishSubscribeRouting,
+    StaticFanoutSubscriptions,
+)
+
+events = PersistentQueue(
+    "events",
+    routing_policy=PublishSubscribeRouting(),
+    subscription_policy=StaticFanoutSubscriptions(("billing", "audit")),
+)
+
+events.put({"kind": "invoice-paid", "invoice_id": "inv-1"})
+
+billing = events.subscriber_queue("billing")
+audit = events.subscriber_queue("audit")
+
+billing_message = billing.get_message()
+audit_message = audit.get_message()
+
+process_billing(billing_message.value)
+process_audit(audit_message.value)
+
+billing.ack(billing_message)
+audit.ack(audit_message)
+```
+
+`events` acts as the publisher namespace. The durable queue copies live in
+`events.billing` and `events.audit`.
+
 The ready-message ordering is available as a policy object too:
 
 ```python
