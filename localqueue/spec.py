@@ -35,6 +35,7 @@ class QueueSpec:
     name: str
     delivery_policy: DeliveryPolicy | None = None
     dead_letter_policy: DeadLetterPolicy | None = None
+    dead_letter_on_failure: bool | None = None
     release_delay: float = 0.0
     min_interval: float = 0.0
     circuit_breaker_failures: int = 0
@@ -70,6 +71,9 @@ class QueueSpec:
         self, dead_letter_policy: DeadLetterPolicy = DEAD_LETTER_QUEUE
     ) -> QueueSpec:
         return replace(self, dead_letter_policy=dead_letter_policy)
+
+    def with_dead_letter_on_failure(self, enabled: bool = True) -> QueueSpec:
+        return replace(self, dead_letter_on_failure=enabled)
 
     def with_retry(
         self, *, max_retries: int | None = None, **retry_kwargs: Any
@@ -146,6 +150,8 @@ class QueueSpec:
             "circuit_breaker_failures": self.circuit_breaker_failures,
             "circuit_breaker_cooldown": self.circuit_breaker_cooldown,
         }
+        if self.dead_letter_on_failure is not None:
+            config_kwargs["dead_letter_on_failure"] = self.dead_letter_on_failure
         config_kwargs.update(overrides)
         return PersistentWorkerConfig(**config_kwargs)
 

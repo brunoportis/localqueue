@@ -32,6 +32,26 @@ def send_email(job: dict[str, str]) -> None:
     deliver(job["to"])
 ```
 
+If you prefer a fluent builder that keeps queue defaults and worker defaults in
+one place, use `QueueSpec` and build each runtime object explicitly:
+
+```python
+from localqueue import QoS, QueueSpec
+
+spec = (
+    QueueSpec("orders.payment")
+    .with_qos(QoS.AT_LEAST_ONCE)
+    .with_retry(max_retries=2)
+    .with_dead_letter_on_failure(False)
+    .with_release_delay(5.0)
+    .with_circuit_breaker(threshold=3, cooldown=30.0)
+    .with_dead_letter_queue()
+)
+
+queue = spec.build_queue()
+worker_config = spec.build_worker_config()
+```
+
 For local publish/subscribe fanout, configure subscribers explicitly and
 consume each physical subscriber queue independently:
 
