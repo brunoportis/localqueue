@@ -13,7 +13,7 @@ from .idempotency import (
     MemoryIdempotencyStore,
     SQLiteIdempotencyStore,
 )
-from .queue import PersistentQueue
+from .queue import PersistentQueue, subscriber_queue_name
 from .results import (
     LMDBResultStore,
     MemoryResultStore,
@@ -212,6 +212,7 @@ __all__ = [
     "SagaCommit",
     "StaticFanoutSubscriptions",
     "SubscriptionPolicy",
+    "subscriber_queue_name",
     "SQLiteAttemptStore",
     "SQLiteIdempotencyStore",
     "SQLiteQueueStore",

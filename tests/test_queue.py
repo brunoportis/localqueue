@@ -92,6 +92,7 @@ from localqueue import (
     WebSocketNotification,
     persistent_async_worker,
     persistent_worker,
+    subscriber_queue_name,
 )
 from localqueue.worker import (
     WorkerPolicyState,
@@ -910,6 +911,53 @@ class QueueTests(unittest.TestCase):
                 "subscribers": ["billing", "audit"],
             },
         )
+
+    def test_subscriber_queue_name_helper_and_lookup(self) -> None:
+        queue = PersistentQueue(
+            "events",
+            store=MemoryQueueStore(),
+            routing_policy=PublishSubscribeRouting(),
+            subscription_policy=StaticFanoutSubscriptions(("billing", "audit")),
+        )
+
+        self.assertEqual(subscriber_queue_name("events", "billing"), "events.billing")
+        self.assertEqual(queue.subscriber_queue_name("billing"), "events.billing")
+
+        billing = queue.subscriber_queue("billing")
+
+        self.assertEqual(billing.name, "events.billing")
+        self.assertIs(billing.routing_policy, POINT_TO_POINT_ROUTING)
+        self.assertIs(billing.subscription_policy, NO_SUBSCRIPTIONS)
+
+        with self.assertRaisesRegex(ValueError, "subscriber cannot be empty"):
+            _ = subscriber_queue_name("events", "")
+
+    def test_subscriber_queue_rejects_unknown_subscriber(self) -> None:
+        queue = PersistentQueue(
+            "events",
+            store=MemoryQueueStore(),
+            routing_policy=PublishSubscribeRouting(),
+            subscription_policy=StaticFanoutSubscriptions(("billing",)),
+        )
+
+        with self.assertRaisesRegex(ValueError, "unknown subscriber 'audit'"):
+            _ = queue.subscriber_queue("audit")
+
+        with self.assertRaisesRegex(ValueError, "unknown subscriber 'audit'"):
+            _ = queue.subscriber_queue_name("audit")
+
+    def test_subscriber_queue_rejects_queue_without_configured_subscribers(self) -> None:
+        queue = PersistentQueue("events", store=MemoryQueueStore())
+
+        with self.assertRaisesRegex(
+            ValueError, "queue does not have configured subscribers"
+        ):
+            _ = queue.subscriber_queue("billing")
+
+        with self.assertRaisesRegex(
+            ValueError, "queue does not have configured subscribers"
+        ):
+            _ = queue.subscriber_queue_name("billing")
 
     def test_constructor_accepts_explicit_consumption_policy(self) -> None:
         consumption_policy = PullConsumption()
@@ -2445,6 +2493,93 @@ class QueueTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "delay cannot be negative"):
             _ = queue.put("item", delay=-1)
+
+    def test_publish_subscribe_put_requires_configured_subscribers(self) -> None:
+        queue = PersistentQueue(
+            "events",
+            store=MemoryQueueStore(),
+            routing_policy=PublishSubscribeRouting(),
+        )
+
+        with self.assertRaisesRegex(
+            ValueError, "publish-subscribe routing requires configured subscribers"
+        ):
+            _ = queue.put("item")
+
+    def test_publish_subscribe_put_fans_out_to_subscriber_queues(self) -> None:
+        queue = PersistentQueue(
+            "events",
+            store=MemoryQueueStore(),
+            routing_policy=PublishSubscribeRouting(),
+            subscription_policy=StaticFanoutSubscriptions(("billing", "audit")),
+        )
+
+        message = queue.put(
+            {"kind": "invoice-paid"},
+            delay=0.1,
+            dedupe_key="invoice-1",
+        )
+
+        billing = queue.subscriber_queue("billing")
+        audit = queue.subscriber_queue("audit")
+
+        self.assertEqual(queue.stats().total, 0)
+        self.assertEqual(message.queue, "events.billing")
+
+        billing_message = billing.inspect(message.id)
+        self.assertIsNotNone(billing_message)
+        assert billing_message is not None
+        self.assertEqual(billing_message.value, {"kind": "invoice-paid"})
+        self.assertEqual(billing_message.dedupe_key, "invoice-1:billing")
+        self.assertEqual(billing_message.queue, "events.billing")
+        self.assertEqual(billing.stats().delayed, 1)
+
+        audit_message = audit.get_message(timeout=0.2)
+        self.assertEqual(audit_message.value, {"kind": "invoice-paid"})
+        self.assertEqual(audit_message.dedupe_key, "invoice-1:audit")
+        self.assertEqual(audit_message.queue, "events.audit")
+        self.assertTrue(audit.ack(audit_message))
+
+    def test_publish_subscribe_subscribers_are_operationally_independent(self) -> None:
+        queue = PersistentQueue(
+            "events",
+            store=MemoryQueueStore(),
+            routing_policy=PublishSubscribeRouting(),
+            subscription_policy=StaticFanoutSubscriptions(("billing", "audit")),
+        )
+        _ = queue.put("payload")
+
+        billing = queue.subscriber_queue("billing")
+        audit = queue.subscriber_queue("audit")
+
+        billing_message = billing.get_message()
+        audit_message = audit.get_message()
+
+        self.assertTrue(billing.release(billing_message, delay=1.0, error="retry"))
+        self.assertEqual(billing.stats().ready, 0)
+        self.assertEqual(billing.stats().delayed, 1)
+        self.assertEqual(audit.stats().inflight, 1)
+        self.assertTrue(audit.dead_letter(audit_message, error="failed"))
+        self.assertEqual(audit.stats().dead, 1)
+        self.assertEqual(billing.stats().dead, 0)
+
+    def test_publish_subscribe_dedupe_keys_are_subscriber_local(self) -> None:
+        queue = PersistentQueue(
+            "events",
+            store=MemoryQueueStore(),
+            routing_policy=PublishSubscribeRouting(),
+            subscription_policy=StaticFanoutSubscriptions(("billing", "audit")),
+        )
+
+        _ = queue.put("payload", dedupe_key="job-1")
+
+        billing = queue.subscriber_queue("billing")
+        audit = queue.subscriber_queue("audit")
+        billing_message = billing.get_message()
+        audit_message = audit.get_message()
+
+        self.assertEqual(billing_message.dedupe_key, "job-1:billing")
+        self.assertEqual(audit_message.dedupe_key, "job-1:audit")
 
     def test_stats_counts_messages_by_state(self) -> None:
         queue: PersistentQueue[str] = PersistentQueue("test", store=MemoryQueueStore())
