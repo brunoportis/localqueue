@@ -22,65 +22,25 @@ localqueue queue exec emails -- python scripts/send_email.py
 ```
 
 ```python
-from localqueue import PersistentQueue, persistent_worker
-
-queue = PersistentQueue("emails")
-queue.put({"to": "user@example.com"})
-
-@persistent_worker(queue)
-def send_email(job: dict[str, str]) -> None:
-    deliver(job["to"])
-```
-
-If you prefer a fluent builder that keeps queue defaults and worker defaults in
-one place, use `QueueSpec` and build each runtime object explicitly:
-
-```python
-from localqueue import QoS, QueueSpec
+from localqueue import PersistentQueue, QoS, QueueSpec, persistent_worker
 
 spec = (
-    QueueSpec("orders.payment")
+    QueueSpec("emails")
     .with_qos(QoS.AT_LEAST_ONCE)
-    .with_retry(max_retries=2)
+    .with_retry(max_retries=3)
     .with_dead_letter_on_failure(False)
-    .with_release_delay(5.0)
+    .with_release_delay(30.0)
     .with_circuit_breaker(threshold=3, cooldown=30.0)
     .with_dead_letter_queue()
 )
 
-queue = spec.build_queue()
-worker_config = spec.build_worker_config()
-```
-
-Or let the queue type build itself from the spec:
-
-```python
 queue = PersistentQueue.from_spec(spec)
-```
+worker_config = spec.build_worker_config()
+queue.put({"to": "user@example.com"})
 
-For local publish/subscribe fanout, configure subscribers explicitly and
-consume each physical subscriber queue independently:
-
-```python
-from localqueue import (
-    PersistentQueue,
-    PublishSubscribeRouting,
-    StaticFanoutSubscriptions,
-)
-
-events = PersistentQueue(
-    "events",
-    routing_policy=PublishSubscribeRouting(),
-    subscription_policy=StaticFanoutSubscriptions(("billing", "audit")),
-)
-
-events.put({"kind": "invoice-paid", "invoice_id": "inv-1"})
-
-billing = events.subscriber_queue("billing")
-audit = events.subscriber_queue("audit")
-
-billing_message = billing.get_message()
-audit_message = audit.get_message()
+@persistent_worker(queue, config=worker_config)
+def send_email(job: dict[str, str]) -> None:
+    deliver(job["to"])
 ```
 
 Full docs live at [brunoportis.github.io/localqueue](https://brunoportis.github.io/localqueue/). The source docs are in [`docs/`](docs/).
