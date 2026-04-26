@@ -3,7 +3,12 @@ from __future__ import annotations
 import json
 import os
 
-from localqueue import CallbackDispatcher, PersistentQueue, PushConsumption, QueueMessage
+from localqueue import (
+    CallbackDispatcher,
+    PersistentQueue,
+    PushConsumption,
+    QueueMessage,
+)
 
 
 QUEUE_NAME = os.environ.get("QUEUE_NAME", "push-events")
