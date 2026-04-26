@@ -544,7 +544,9 @@ class PersistentQueue(Generic[T]):
     ) -> QueueMessage:
         subscribers = self._subscriber_names()
         if not subscribers:
-            raise ValueError("publish-subscribe routing requires configured subscribers")
+            raise ValueError(
+                "publish-subscribe routing requires configured subscribers"
+            )
         deadline = _deadline(timeout)
         messages: list[QueueMessage] = []
         for subscriber in subscribers:

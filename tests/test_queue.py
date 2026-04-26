@@ -946,7 +946,9 @@ class QueueTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown subscriber 'audit'"):
             _ = queue.subscriber_queue_name("audit")
 
-    def test_subscriber_queue_rejects_queue_without_configured_subscribers(self) -> None:
+    def test_subscriber_queue_rejects_queue_without_configured_subscribers(
+        self,
+    ) -> None:
         queue = PersistentQueue("events", store=MemoryQueueStore())
 
         with self.assertRaisesRegex(
