@@ -68,11 +68,13 @@ from localqueue import (
     PublishSubscribeRouting,
     PullConsumption,
     PushConsumption,
+    QoS,
     RejectingBackpressure,
     NoDeduplication,
     NoDispatcher,
     NoNotification,
     QueuePolicySet,
+    QueueSpec,
     QueueSemantics,
     QueueMessage,
     ResultStoreLockedError,
@@ -4929,6 +4931,61 @@ class QueueTests(unittest.TestCase):
             self.assertEqual(attempts["count"], 2)
 
         asyncio.run(scenario())
+
+    def test_queue_spec_builds_queue_and_worker_config(self) -> None:
+        spec = (
+            QueueSpec("orders.payment")
+            .with_qos(QoS.AT_LEAST_ONCE)
+            .with_retry(max_retries=2, wait=lambda _: 0)
+            .with_circuit_breaker(threshold=3, cooldown=30.0)
+            .with_dead_letter_queue()
+        )
+
+        queue = spec.build_queue(store=MemoryQueueStore())
+        config = spec.build_worker_config(store=MemoryAttemptStore())
+
+        self.assertEqual(queue.name, "orders.payment")
+        self.assertEqual(queue.delivery_policy.guarantee, "at-least-once")
+        self.assertTrue(queue.dead_letter_policy.dead_letters)
+        self.assertEqual(queue.retry_defaults["max_tries"], 2)
+        self.assertEqual(config.retry_kwargs["max_tries"], 2)
+        self.assertEqual(config.circuit_breaker_failures, 3)
+        self.assertEqual(config.circuit_breaker_cooldown, 30.0)
+
+    def test_queue_spec_supports_effectively_once_qos(self) -> None:
+        spec = QueueSpec("payments").with_qos(QoS.EFFECTIVELY_ONCE)
+        queue = spec.build_queue(store=MemoryQueueStore())
+
+        self.assertEqual(queue.delivery_policy.guarantee, "effectively-once")
+        with self.assertRaisesRegex(
+            ValueError, "dedupe_key is required by the active delivery_policy"
+        ):
+            queue.put({"id": "pay-1"})
+
+    def test_queue_spec_rejects_conflicting_retry_names(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError, "pass either max_retries= or max_tries=, not both"
+        ):
+            _ = QueueSpec("jobs").with_retry(max_retries=2, max_tries=3)
+
+    def test_queue_spec_build_queue_rejects_conflicting_overrides(self) -> None:
+        spec = QueueSpec("jobs").with_retry(max_retries=2).with_qos(QoS.AT_LEAST_ONCE)
+
+        with self.assertRaisesRegex(
+            ValueError, "pass retry settings via QueueSpec.with_retry"
+        ):
+            _ = spec.build_queue(
+                store=MemoryQueueStore(),
+                retry_defaults={"max_tries": 1},
+            )
+
+        with self.assertRaisesRegex(
+            ValueError, "pass queue policies via QueueSpec or build_queue"
+        ):
+            _ = spec.build_queue(
+                store=MemoryQueueStore(),
+                policy_set=QueuePolicySet.at_most_once(),
+            )
 
     def test_worker_heartbeat_and_async_polling_paths(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())

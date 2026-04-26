@@ -21,6 +21,7 @@ from .results import (
     ResultStoreLockedError,
     SQLiteResultStore,
 )
+from .spec import QoS, QueueSpec
 from .policies import (
     AT_LEAST_ONCE_DELIVERY,
     DEAD_LETTER_QUEUE,
@@ -192,8 +193,10 @@ __all__ = [
     "PublishSubscribeRouting",
     "PullConsumption",
     "PushConsumption",
+    "QoS",
     "QueueMessage",
     "QueuePolicySet",
+    "QueueSpec",
     "QueueSemantics",
     "QueueStats",
     "RejectingBackpressure",
