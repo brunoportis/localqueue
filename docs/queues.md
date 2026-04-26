@@ -613,6 +613,8 @@ spec = (
     QueueSpec("orders.payment")
     .with_qos(QoS.AT_LEAST_ONCE)
     .with_retry(max_retries=2)
+    .with_release_delay(5.0)
+    .with_min_interval(0.5)
     .with_circuit_breaker(threshold=3, cooldown=30.0)
     .with_dead_letter_queue()
 )

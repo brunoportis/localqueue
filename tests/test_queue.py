@@ -4937,6 +4937,8 @@ class QueueTests(unittest.TestCase):
             QueueSpec("orders.payment")
             .with_qos(QoS.AT_LEAST_ONCE)
             .with_retry(max_retries=2, wait=lambda _: 0)
+            .with_release_delay(5.0)
+            .with_min_interval(0.5)
             .with_circuit_breaker(threshold=3, cooldown=30.0)
             .with_dead_letter_queue()
         )
@@ -4949,6 +4951,8 @@ class QueueTests(unittest.TestCase):
         self.assertTrue(queue.dead_letter_policy.dead_letters)
         self.assertEqual(queue.retry_defaults["max_tries"], 2)
         self.assertEqual(config.retry_kwargs["max_tries"], 2)
+        self.assertEqual(config.release_delay, 5.0)
+        self.assertEqual(config.min_interval, 0.5)
         self.assertEqual(config.circuit_breaker_failures, 3)
         self.assertEqual(config.circuit_breaker_cooldown, 30.0)
 
@@ -4986,6 +4990,24 @@ class QueueTests(unittest.TestCase):
                 store=MemoryQueueStore(),
                 policy_set=QueuePolicySet.at_most_once(),
             )
+
+    def test_queue_spec_validates_worker_pacing_settings(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError, "release_delay must be greater than or equal to zero"
+        ):
+            _ = QueueSpec("jobs").with_release_delay(-1)
+
+        with self.assertRaisesRegex(
+            ValueError, "min_interval must be greater than or equal to zero"
+        ):
+            _ = QueueSpec("jobs").with_min_interval(-1)
+
+    def test_queue_spec_can_disable_circuit_breaker(self) -> None:
+        spec = QueueSpec("jobs").with_circuit_breaker(threshold=0)
+        config = spec.build_worker_config()
+
+        self.assertEqual(config.circuit_breaker_failures, 0)
+        self.assertEqual(config.circuit_breaker_cooldown, 0.0)
 
     def test_worker_heartbeat_and_async_polling_paths(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())

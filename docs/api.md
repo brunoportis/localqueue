@@ -105,7 +105,8 @@ defaults, then build the runtime objects explicitly with `build_queue()` and
 
 `with_qos(...)` maps to the queue delivery policy, `with_dead_letter_queue()`
 maps to the queue dead-letter policy, `with_retry(...)` stores retry defaults
-for the queue and worker config, and `with_circuit_breaker(...)` maps to
+for the queue and worker config, and `with_release_delay(...)`,
+`with_min_interval(...)`, and `with_circuit_breaker(...)` map to
 `PersistentWorkerConfig`.
 
 #### `LocalityPolicy`

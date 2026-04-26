@@ -84,19 +84,38 @@ class QueueSpec:
         return replace(self, _retry_items=tuple(merged.items()))
 
     def with_circuit_breaker(
-        self, *, threshold: int, cooldown: float = 30.0
+        self, *, threshold: int, cooldown: float | None = None
     ) -> QueueSpec:
+        resolved_cooldown = 0.0 if threshold == 0 else (30.0 if cooldown is None else cooldown)
         _ = PersistentWorkerConfig(
             release_delay=self.release_delay,
             min_interval=self.min_interval,
             circuit_breaker_failures=threshold,
-            circuit_breaker_cooldown=cooldown,
+            circuit_breaker_cooldown=resolved_cooldown,
         )
         return replace(
             self,
             circuit_breaker_failures=threshold,
-            circuit_breaker_cooldown=cooldown,
+            circuit_breaker_cooldown=resolved_cooldown,
         )
+
+    def with_release_delay(self, delay: float) -> QueueSpec:
+        _ = PersistentWorkerConfig(
+            release_delay=delay,
+            min_interval=self.min_interval,
+            circuit_breaker_failures=self.circuit_breaker_failures,
+            circuit_breaker_cooldown=self.circuit_breaker_cooldown,
+        )
+        return replace(self, release_delay=delay)
+
+    def with_min_interval(self, interval: float) -> QueueSpec:
+        _ = PersistentWorkerConfig(
+            release_delay=self.release_delay,
+            min_interval=interval,
+            circuit_breaker_failures=self.circuit_breaker_failures,
+            circuit_breaker_cooldown=self.circuit_breaker_cooldown,
+        )
+        return replace(self, min_interval=interval)
 
     def build_queue(self, **kwargs: Any) -> PersistentQueue[Any]:
         if "policy_set" in kwargs and (
