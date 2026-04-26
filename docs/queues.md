@@ -601,6 +601,42 @@ bursts. Use the breaker when repeated recoverable failures should pause the
 worker long enough for the dependency to recover or for an operator to inspect
 the failure mode.
 
+For apps that want one fluent object describing both queue defaults and worker
+defaults, use `QueueSpec`. It keeps queue delivery choices on the queue side and
+worker timing/retry choices on the worker side, then builds each runtime object
+explicitly.
+
+```python
+from localqueue import QoS, QueueSpec
+
+spec = (
+    QueueSpec("orders.payment")
+    .with_qos(QoS.AT_LEAST_ONCE)
+    .with_retry(max_retries=2)
+    .with_dead_letter_on_failure(False)
+    .with_release_delay(5.0)
+    .with_min_interval(0.5)
+    .with_circuit_breaker(threshold=3, cooldown=30.0)
+    .with_dead_letter_queue()
+)
+
+queue = spec.build_queue()
+worker_config = spec.build_worker_config()
+```
+
+Use `with_dead_letter_on_failure(False)` when you want the worker to release the
+message back to the queue after final failure instead of dead-lettering it
+immediately. In that mode, `with_release_delay(...)` controls how long the
+message waits before the next delivery attempt.
+
+If you prefer the queue type to own instantiation, build it directly from the
+spec:
+
+```python
+queue = PersistentQueue.from_spec(spec)
+worker_config = spec.build_worker_config()
+```
+
 Use `persistent_async_worker()` for async handlers. Queue operations are performed
 off the event loop with `asyncio.to_thread()`.
 

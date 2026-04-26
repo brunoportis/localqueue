@@ -91,6 +91,26 @@ consumption, dispatch, notification, ordering, routing, subscription, and
 backpressure policies. The effectively-once factory also accepts idempotency,
 result, and commit policies.
 
+#### `QoS`
+
+Small enum for fluent queue specs. The built-in values are
+`QoS.AT_LEAST_ONCE`, `QoS.AT_MOST_ONCE`, and `QoS.EFFECTIVELY_ONCE`.
+
+#### `QueueSpec`
+
+Fluent builder for common queue and worker settings. Use it when you want one
+object to describe queue delivery defaults plus worker retry and pacing
+defaults, then build the runtime objects explicitly with `build_queue()` and
+`build_worker_config()`. `PersistentQueue.from_spec(spec)` is the matching queue
+entry point when you want the queue type to own construction.
+
+`with_qos(...)` maps to the queue delivery policy, `with_dead_letter_queue()`
+maps to the queue dead-letter policy, `with_retry(...)` stores retry defaults
+for the queue and worker config, and `with_dead_letter_on_failure(...)`,
+`with_release_delay(...)`, `with_min_interval(...)`, and
+`with_circuit_breaker(...)` map to
+`PersistentWorkerConfig`.
+
 #### `LocalityPolicy`
 
 Protocol for naming where queue state lives relative to the process using the

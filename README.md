@@ -22,39 +22,25 @@ localqueue queue exec emails -- python scripts/send_email.py
 ```
 
 ```python
-from localqueue import PersistentQueue, persistent_worker
+from localqueue import PersistentQueue, QoS, QueueSpec, persistent_worker
 
-queue = PersistentQueue("emails")
+spec = (
+    QueueSpec("emails")
+    .with_qos(QoS.AT_LEAST_ONCE)
+    .with_retry(max_retries=3)
+    .with_dead_letter_on_failure(False)
+    .with_release_delay(30.0)
+    .with_circuit_breaker(threshold=3, cooldown=30.0)
+    .with_dead_letter_queue()
+)
+
+queue = PersistentQueue.from_spec(spec)
+worker_config = spec.build_worker_config()
 queue.put({"to": "user@example.com"})
 
-@persistent_worker(queue)
+@persistent_worker(queue, config=worker_config)
 def send_email(job: dict[str, str]) -> None:
     deliver(job["to"])
-```
-
-For local publish/subscribe fanout, configure subscribers explicitly and
-consume each physical subscriber queue independently:
-
-```python
-from localqueue import (
-    PersistentQueue,
-    PublishSubscribeRouting,
-    StaticFanoutSubscriptions,
-)
-
-events = PersistentQueue(
-    "events",
-    routing_policy=PublishSubscribeRouting(),
-    subscription_policy=StaticFanoutSubscriptions(("billing", "audit")),
-)
-
-events.put({"kind": "invoice-paid", "invoice_id": "inv-1"})
-
-billing = events.subscriber_queue("billing")
-audit = events.subscriber_queue("audit")
-
-billing_message = billing.get_message()
-audit_message = audit.get_message()
 ```
 
 Full docs live at [brunoportis.github.io/localqueue](https://brunoportis.github.io/localqueue/). The source docs are in [`docs/`](docs/).

@@ -48,6 +48,7 @@ from .validation import (
 )
 
 if TYPE_CHECKING:
+    from ..spec import QueueSpec
     from ..stores import QueueMessage, QueueStats, QueueStore
 
 T = TypeVar("T")
@@ -89,6 +90,10 @@ class PersistentQueue(Generic[T]):
     retry_defaults: dict[str, Any]
     _condition: Condition
     _unfinished: dict[str, QueueMessage]
+
+    @classmethod
+    def from_spec(cls, spec: QueueSpec, **kwargs: Any) -> "PersistentQueue[Any]":
+        return spec.build_queue(**kwargs)
 
     def __init__(
         self,
