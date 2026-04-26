@@ -3,6 +3,7 @@ services:
     build:
       context: ../../..
       dockerfile: Dockerfile
+    user: "0:0"
     entrypoint: ["python", "/examples/push_app.py"]
     environment:
       QUEUE_NAME: push-events

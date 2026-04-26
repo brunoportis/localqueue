@@ -3,6 +3,7 @@ services:
     build:
       context: ../../..
       dockerfile: Dockerfile
+    user: "0:0"
     entrypoint: ["python", "/examples/producer.py"]
     environment:
       QUEUE_NAME: emails
@@ -15,6 +16,7 @@ services:
     build:
       context: ../../..
       dockerfile: Dockerfile
+    user: "0:0"
     command:
       - queue
       - exec
