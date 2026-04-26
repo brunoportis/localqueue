@@ -11,3 +11,4 @@ this repo's current Docker setup.
 
 - [Docker Compose push example](examples/push-compose.md)
 - [Docker Compose pull example](examples/pull-compose.md)
+- [Docker Compose WebSocket example](examples/websocket-compose.md)

@@ -4,8 +4,10 @@ from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from ..adapters.notification import (  # noqa: F401
+    AsyncioNotification,
     CallbackNotification,
     InProcessNotification,
+    WebSocketNotification,
 )
 
 if TYPE_CHECKING:
@@ -45,9 +47,11 @@ class NoNotification:
 NO_NOTIFICATION = NoNotification()
 
 __all__ = [
+    "AsyncioNotification",
     "CallbackNotification",
     "InProcessNotification",
     "NO_NOTIFICATION",
     "NoNotification",
     "NotificationPolicy",
+    "WebSocketNotification",
 ]

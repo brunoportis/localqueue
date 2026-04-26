@@ -42,6 +42,7 @@ from localqueue import (
     AtMostOnceDelivery,
     BestEffortOrdering,
     BoundedBackpressure,
+    AsyncioNotification,
     CallbackDispatcher,
     CallbackNotification,
     DedupeKeySupport,
@@ -87,6 +88,7 @@ from localqueue import (
     TWO_PHASE_COMMIT,
     SQLiteQueueStore,
     LocalAtomicCommit,
+    WebSocketNotification,
     persistent_async_worker,
     persistent_worker,
 )
@@ -1000,6 +1002,93 @@ class QueueTests(unittest.TestCase):
 
         notification_policy.clear()
         self.assertFalse(notification_policy.wait(timeout=0))
+
+    def test_constructor_accepts_asyncio_notification_policy(self) -> None:
+        async def scenario() -> None:
+            notification_policy = AsyncioNotification()
+            queue = PersistentQueue(
+                "test",
+                store=MemoryQueueStore(),
+                notification_policy=notification_policy,
+            )
+
+            waiter = asyncio.create_task(notification_policy.wait_async(timeout=0.1))
+            await asyncio.sleep(0)
+            message = queue.put("item")
+
+            self.assertIs(queue.notification_policy, notification_policy)
+            self.assertTrue(await waiter)
+            self.assertEqual(queue.inspect(message.id), message)
+            self.assertEqual(
+                queue.notification_policy.as_dict(),
+                {
+                    "type": "asyncio-event",
+                    "scope": "in-process",
+                    "notifies": True,
+                    "notifies_on_put": True,
+                    "listener_count": 1,
+                },
+            )
+
+            notification_policy.clear()
+            self.assertFalse(await notification_policy.wait_async(timeout=0.01))
+
+        asyncio.run(scenario())
+
+    def test_constructor_accepts_websocket_notification_policy(self) -> None:
+        class _FakeWebSocket:
+            def __init__(self) -> None:
+                self.sent_json: list[object] = []
+
+            async def send_json(self, data: object) -> None:
+                self.sent_json.append(data)
+
+        async def scenario() -> None:
+            websocket = _FakeWebSocket()
+            notification_policy = WebSocketNotification(websocket)
+            queue = PersistentQueue(
+                "test",
+                store=MemoryQueueStore(),
+                notification_policy=notification_policy,
+            )
+
+            message = queue.put({"kind": "signup"})
+            await asyncio.sleep(0)
+
+            self.assertIs(queue.notification_policy, notification_policy)
+            self.assertEqual(
+                websocket.sent_json,
+                [
+                    {
+                        "id": message.id,
+                        "queue": "test",
+                        "value": {"kind": "signup"},
+                        "state": "ready",
+                        "attempts": 0,
+                        "created_at": message.created_at,
+                        "available_at": message.available_at,
+                        "leased_until": None,
+                        "leased_by": None,
+                        "last_error": None,
+                        "failed_at": None,
+                        "attempt_history": [],
+                        "dedupe_key": None,
+                        "priority": 0,
+                    }
+                ],
+            )
+            self.assertEqual(
+                queue.notification_policy.as_dict(),
+                {
+                    "type": "websocket",
+                    "scope": "network",
+                    "notifies": True,
+                    "notifies_on_put": True,
+                    "listener_count": 1,
+                },
+            )
+
+        asyncio.run(scenario())
 
     def test_constructor_accepts_push_consumption_policy(self) -> None:
         consumption_policy = PushConsumption()
@@ -4637,6 +4726,52 @@ class QueueTests(unittest.TestCase):
                 message = await _get_message_async(cast("Any", EmptyThenReadyQueue()))
             self.assertEqual(message.id, "job-1")
             self.assertTrue(sleep.called)
+
+            class TrackingAsyncNotification:
+                def __init__(self) -> None:
+                    self.event = asyncio.Event()
+                    self.wait_calls = 0
+                    self.clear_calls = 0
+                    self.notifies = True
+                    self.notifies_on_put = True
+                    self.listener_count = 1
+
+                def notify(self, message: QueueMessage) -> None:
+                    _ = message
+                    self.event.set()
+
+                async def wait_async(self, timeout: float | None = None) -> bool:
+                    self.wait_calls += 1
+                    if timeout is None:
+                        await self.event.wait()
+                        return True
+                    try:
+                        await asyncio.wait_for(self.event.wait(), timeout)
+                    except TimeoutError:
+                        return False
+                    return True
+
+                def clear(self) -> None:
+                    self.clear_calls += 1
+                    self.event.clear()
+
+                def as_dict(self) -> dict[str, object]:
+                    return {}
+
+            notification = TrackingAsyncNotification()
+            queue = PersistentQueue(
+                "test",
+                store=MemoryQueueStore(),
+                notification_policy=cast("Any", notification),
+            )
+            task = asyncio.create_task(_get_message_async(cast("Any", queue)))
+            await asyncio.sleep(0)
+            _ = queue.put("payload")
+            message = await task
+
+            self.assertEqual(message.value, "payload")
+            self.assertGreaterEqual(notification.wait_calls, 1)
+            self.assertGreaterEqual(notification.clear_calls, 1)
 
             heartbeat_queue = PersistentQueue("test", store=MemoryQueueStore())
             _ = heartbeat_queue.put("item")

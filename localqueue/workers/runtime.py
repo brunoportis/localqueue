@@ -4,7 +4,7 @@ import asyncio
 import time
 import threading
 from dataclasses import dataclass
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from queue import Empty
 from typing import Any, TypeVar, cast, TYPE_CHECKING
 
@@ -670,4 +670,17 @@ async def _get_message_async(queue: PersistentQueue) -> QueueMessage:
         try:
             return await _run_in_daemon_thread(queue.get_message, False)
         except Empty:
+            notification = getattr(queue, "notification_policy", None)
+            clear = getattr(notification, "clear", None)
+            wait_async = cast(
+                "Callable[[], Awaitable[object]] | None",
+                getattr(notification, "wait_async", None),
+            )
+            if callable(clear) and callable(wait_async):
+                clear()
+                try:
+                    return await _run_in_daemon_thread(queue.get_message, False)
+                except Empty:
+                    _ = await wait_async()
+                    continue
             await asyncio.sleep(0.05)
