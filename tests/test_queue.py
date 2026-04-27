@@ -4999,6 +4999,33 @@ class QueueTests(unittest.TestCase):
         self.assertFalse(config.dead_letter_on_failure)
         self.assertEqual(config.retry_kwargs["max_tries"], 2)
 
+    def test_persistent_queue_name_overrides_spec_name(self) -> None:
+        spec = QueueSpec("orders.base").with_retry(max_retries=2)
+
+        queue = PersistentQueue("orders.payment", spec=spec, store=MemoryQueueStore())
+        config = queue.build_worker_config()
+
+        self.assertEqual(queue.name, "orders.payment")
+        self.assertEqual(config.retry_kwargs["max_tries"], 2)
+
+    def test_queue_spec_with_name_clones_config_for_another_queue(self) -> None:
+        base = (
+            QueueSpec("orders.base")
+            .with_qos(QoS.AT_LEAST_ONCE)
+            .with_retry(max_retries=2)
+            .with_dead_letter_on_failure(False)
+        )
+        payments = base.with_name("orders.payment")
+        refunds = base.with_name("orders.refund")
+
+        payment_queue = PersistentQueue(spec=payments, store=MemoryQueueStore())
+        refund_queue = PersistentQueue(spec=refunds, store=MemoryQueueStore())
+
+        self.assertEqual(payment_queue.name, "orders.payment")
+        self.assertEqual(refund_queue.name, "orders.refund")
+        self.assertEqual(payment_queue.retry_defaults["max_tries"], 2)
+        self.assertEqual(refund_queue.retry_defaults["max_tries"], 2)
+
     def test_queue_spec_supports_at_most_once_qos(self) -> None:
         spec = QueueSpec("telemetry").with_qos(QoS.AT_MOST_ONCE)
         queue = PersistentQueue.from_spec(spec, store=MemoryQueueStore())
@@ -5018,12 +5045,9 @@ class QueueTests(unittest.TestCase):
 
         self.assertEqual(config.retry_kwargs["max_tries"], 2)
 
-    def test_queue_constructor_rejects_missing_or_conflicting_spec_inputs(self) -> None:
+    def test_queue_constructor_rejects_missing_spec_inputs(self) -> None:
         with self.assertRaisesRegex(ValueError, "pass either name= or spec=$"):
             _ = PersistentQueue()
-
-        with self.assertRaisesRegex(ValueError, "pass either name= or spec=, not both"):
-            _ = PersistentQueue("jobs", spec=QueueSpec("jobs"))
 
     def test_queue_spec_rejects_conflicting_retry_names(self) -> None:
         with self.assertRaisesRegex(
