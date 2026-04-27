@@ -5450,10 +5450,8 @@ class QueueTests(unittest.TestCase):
     ) -> None:
         idempotency_store = MemoryIdempotencyStore()
         result_store = MemoryResultStore()
-        outbox_store = MemoryResultStore()
         prepare_store = MemoryResultStore()
         commit_store = MemoryResultStore()
-        saga_store = MemoryResultStore()
         delivery_policy = EffectivelyOnceDelivery(
             idempotency_store=idempotency_store,
             result_policy=ReturnStoredResult(result_store=result_store),
