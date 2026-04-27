@@ -67,6 +67,31 @@ def _fanout_dedupe_key(dedupe_key: str | None, subscriber: str) -> str | None:
     return f"{dedupe_key}:{subscriber}"
 
 
+def _resolve_spec_inputs(
+    *,
+    name: str | None,
+    spec: QueueSpec | None,
+    policy_set: QueuePolicySet | None,
+    retry_defaults: Mapping[str, Any] | None,
+) -> tuple[str, QueueSpec | None, QueuePolicySet | None, Mapping[str, Any] | None]:
+    if name is not None and spec is not None:
+        raise ValueError("pass either name= or spec=, not both")
+    if name is None and spec is None:
+        raise ValueError("pass either name= or spec=")
+    if spec is None:
+        assert name is not None
+        return name, None, policy_set, retry_defaults
+
+    resolved_name = spec.name
+    resolved_policy_set = (
+        policy_set if policy_set is not None else spec._build_policy_set()
+    )
+    resolved_retry_defaults = (
+        retry_defaults if retry_defaults is not None else spec.retry_kwargs
+    )
+    return resolved_name, spec, resolved_policy_set, resolved_retry_defaults
+
+
 class PersistentQueue(Generic[T]):
     name: str
     lease_timeout: float
@@ -87,18 +112,27 @@ class PersistentQueue(Generic[T]):
     backpressure: BackpressureStrategy
     _store: QueueStore | None
     _store_path: Path | None
+    _spec: QueueSpec | None
     retry_defaults: dict[str, Any]
     _condition: Condition
     _unfinished: dict[str, QueueMessage]
 
     @classmethod
     def from_spec(cls, spec: QueueSpec, **kwargs: Any) -> "PersistentQueue[Any]":
-        return spec.build_queue(**kwargs)
+        return cls(spec=spec, **kwargs)
+
+    def build_worker_config(self, **overrides: Any) -> Any:
+        if self._spec is not None:
+            return self._spec.build_worker_config(**overrides)
+        from ..worker import PersistentWorkerConfig
+
+        return PersistentWorkerConfig(**overrides)
 
     def __init__(
         self,
-        name: str,
+        name: str | None = None,
         *,
+        spec: QueueSpec | None = None,
         store: QueueStore | None = None,
         store_path: str | Path | None = None,
         lease_timeout: float = 30.0,
@@ -120,6 +154,12 @@ class PersistentQueue(Generic[T]):
         backpressure: BackpressureStrategy | None = None,
         policy_set: QueuePolicySet | None = None,
     ) -> None:
+        name, spec, policy_set, retry_defaults = _resolve_spec_inputs(
+            name=name,
+            spec=spec,
+            policy_set=policy_set,
+            retry_defaults=retry_defaults,
+        )
         if store is not None and store_path is not None:
             raise ValueError("pass either store= or store_path=, not both")
         (
@@ -257,6 +297,7 @@ class PersistentQueue(Generic[T]):
         self.subscription_policy = resolved_subscription
         self._store = store
         self._store_path = Path(store_path) if store_path is not None else None
+        self._spec = spec
         self.retry_defaults = dict(retry_defaults or {})
         self._condition = Condition()
         self._unfinished = {}

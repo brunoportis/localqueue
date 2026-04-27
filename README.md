@@ -35,7 +35,7 @@ spec = (
 )
 
 queue = PersistentQueue.from_spec(spec)
-worker_config = spec.build_worker_config()
+worker_config = queue.build_worker_config()
 queue.put({"to": "user@example.com"})
 
 @persistent_worker(queue, config=worker_config)

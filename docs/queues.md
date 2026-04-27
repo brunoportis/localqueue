@@ -621,7 +621,7 @@ spec = (
 )
 
 queue = spec.build_queue()
-worker_config = spec.build_worker_config()
+worker_config = queue.build_worker_config()
 ```
 
 Use `with_dead_letter_on_failure(False)` when you want the worker to release the
@@ -634,7 +634,14 @@ spec:
 
 ```python
 queue = PersistentQueue.from_spec(spec)
-worker_config = spec.build_worker_config()
+worker_config = queue.build_worker_config()
+```
+
+The constructor also accepts `spec=` directly:
+
+```python
+queue = PersistentQueue(spec=spec)
+worker_config = queue.build_worker_config()
 ```
 
 Use `persistent_async_worker()` for async handlers. Queue operations are performed
