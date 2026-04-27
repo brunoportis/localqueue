@@ -8,11 +8,10 @@ icon: lucide/inbox
 local filesystem by default and keeps retry state with Tenacity.
 
 It fits scripts, CLI tools, cron jobs, development helpers, and small workers
-that can safely share one local store. It is not a distributed broker and does
-not provide multi-host coordination.
+that can safely share one local store.
 
 !!! note
-    The default model is local-file storage, at-least-once delivery, and best-effort ordering under concurrency.
+    The default model is local-file storage on one machine, at-least-once delivery, and best-effort ordering under concurrency.
 
 ## Best-fit workflows
 
@@ -63,24 +62,14 @@ See [Persistent retries](retries.md) for the retry API and store options.
 - terminal-driven queues for jobs you want to inspect and requeue
 - retry state that must survive process restarts
 
-## When not to use
-
-- multi-host scheduling
-- high write concurrency
-- managed retention or broker-level metrics
-- strict global ordering
-- distributed coordination
-
-See [Compare](compare.md) for a short decision guide.
-
 ## Read more
 
 - [Use cases](use-cases.md)
 - [Persistent queues](queues.md)
 - [Persistent retries](retries.md)
-- [Stability](stability.md)
+- [API contracts](stability.md)
 - [Compare](compare.md)
 - [API reference](api.md)
-- [Operational maturity](operational-maturity.md)
+- [Operations guide](operational-maturity.md)
 - [Development guide](develop.md)
 - [Release checklist](release.md)

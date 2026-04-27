@@ -44,4 +44,5 @@ Before `1.0.0`, use this convention:
 
 ## Current Release
 
-The current planned release is `0.3.4`.
+This page documents the release process. Check GitHub Releases or PyPI for the
+latest published version.

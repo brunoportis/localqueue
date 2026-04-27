@@ -43,12 +43,3 @@ This is the best fit when you need durable attempt tracking but not a queue
 lifecycle.
 
 [Read the persistent retries guide](use-cases/persistent-retries.md)
-
-## When these use cases do not fit
-
-Use a broker or managed queue instead when:
-
-- producers and consumers run on different machines
-- strict global ordering matters
-- very high write concurrency is expected
-- queue retention, fan-out, or cross-service coordination is a first-class need

@@ -2,136 +2,77 @@
 icon: lucide/list-checks
 ---
 
-# Operational Maturity Checklist
+# Operations Guide
 
-This project is intentionally small: durable local queues for Python workers,
-plus persistent retry state powered by Tenacity. The checklist below tracks the
-work needed before describing it as a mature production queue system instead of
-a local worker library.
+This page focuses on day-to-day runtime behavior for `localqueue`: how it runs,
+what to measure, and which built-in tools help operate a queue on one machine.
 
-## Near-term focus
+## Concurrency and storage
 
-The next release should improve two things that matter for real local workers:
+The default queue store is SQLite. It works well for scripts, CLI tools, and
+small workers that share a local queue file.
 
-- performance, especially under multiple producers and consumers sharing one
-  SQLite file
-- guarantees, especially where the project is intentionally at-least-once and
-  best-effort rather than distributed or strongly ordered
+For local throughput and lock-contention checks, use:
 
-That means measuring the current ceiling before promising more:
+- `examples/sqlite_concurrency_benchmark.py`
+- `examples/sqlite_process_harness.py --mode throughput`
+- `examples/sqlite_process_harness.py --mode crash-recovery`
 
-- benchmark WAL contention and queue throughput with concurrent processes
-- use `examples/sqlite_concurrency_benchmark.py` to get a repeatable local
-  throughput snapshot
-- a quick local run on the development machine stayed in the low thousands of
-  messages per second and handled a few producers and consumers without failing
-  the queue, which is useful as a local ceiling check but not a production
-  guarantee
-- exercise abrupt consumer exit and lease recovery with
-  `examples/sqlite_process_harness.py --mode crash-recovery`
-- document the practical limits for a single host and a single SQLite file
-- keep ordering language explicit: best effort under concurrency, not strict
-  global ordering
-- keep delivery language explicit: at least once, not exactly once
-- keep recovery language explicit: inspection and requeue are local operations,
-  not cross-cluster coordination
+These exercises are useful when tuning producer and consumer counts, lease
+timeouts, and worker pacing for a concrete host.
 
-## Concurrency and locking
+## Delivery and recovery
 
-- [x] Document practical SQLite concurrency limits for producers and workers.
-- [x] Add stress tests for multiple producer and consumer processes sharing one
-  SQLite queue file.
-- [x] Measure throughput and lock contention under WAL mode.
-- [ ] Define guidance for when users should move to Postgres, Redis, SQS,
-  RabbitMQ, or another external broker.
+Queue delivery is at least once. Under concurrency, ready-message ordering is
+best effort. Design handlers to be idempotent and to tolerate retries after a
+successful side effect but before `ack()`.
 
-## Distributed operation
+The CLI provides the core local recovery loop:
 
-- [x] Decide whether multi-host operation is in scope.
-- [x] Add explicit documentation that the default model is local-file storage,
-  not distributed coordination.
-- [x] Evaluate worker heartbeats beyond lease expiration.
-- [x] Evaluate worker identity, liveness inspection, and stale-worker reporting.
-- [x] Evaluate sharding or namespacing guidance for independent queues.
+- `localqueue queue stats <queue>`
+- `localqueue queue health <queue>`
+- `localqueue queue dead <queue>`
+- `localqueue queue requeue-dead <queue>`
+- `localqueue queue inspect <queue>`
 
-`localqueue` does not try to coordinate work across multiple machines. The
-supported model is a single host, one local store, and local recovery through
-inspection, retry, and requeue. Heartbeats and stale-worker reporting are
-inspection tools for that local model, not a distributed liveness protocol.
+Use dead-letter inspection and requeue to recover failed work without losing
+the original payload or latest error details.
 
-## Delivery semantics
+## Worker policy tuning
 
-- [x] Document at-least-once delivery prominently in the README and queue docs.
-- [x] Add idempotency guidance for handlers.
-- [x] Provide examples for idempotent job keys and external side effects.
-- [x] Evaluate deduplication support for enqueue operations.
-- [x] Evaluate stronger ordering guarantees, or document why ordering is best
-  effort under concurrency.
-- [x] Document the failure window between a successful handler side effect and
-  `ack()`.
+`QueueSpec` and `PersistentWorkerConfig` cover the most common runtime tuning:
 
-## Retry and worker policies
+- retry budgets with `with_retry(...)`
+- delayed redelivery with `with_release_delay(...)`
+- pacing with `with_min_interval(...)`
+- breaker pauses with `with_circuit_breaker(...)`
+- dead-letter behavior with `with_dead_letter_on_failure(...)`
 
-- [x] Add examples for different policies by exception type.
-- [x] Evaluate built-in permanent-failure classification.
-- [x] Evaluate queue-level retry defaults that can be reused by many workers.
-- [x] Evaluate rate limiting for handlers that call external services.
-- [x] Evaluate circuit-breaker integration or documentation.
-- [x] Add clearer guidance for `release_delay`, Tenacity `wait`, and
-  `lease_timeout` interactions.
-- [x] Reject ambiguous worker-loop combinations such as `--forever` with
-  `--max-jobs`.
+Use queue-level defaults when several workers should share the same delivery and
+retry behavior. Override per worker only when one consumer needs different
+timing or error handling.
 
 ## Observability
 
-- [ ] Add optional Prometheus or OpenTelemetry metrics.
-- [x] Track per-message attempt history, not only the latest error.
-- [x] Track queue latency, handler duration, and time spent inflight.
-- [x] Track throughput by queue and worker id.
-- [x] Add aggregate failure summaries for dead-letter inspection.
-- [x] Evaluate structured event logging for enqueue, lease, ack, release, and
-  dead-letter transitions.
+The built-in queue state is designed to support inspection from Python and the
+CLI.
 
-## Storage operations
+- queue stats include ready, inflight, delayed, and dead-letter counts
+- message records keep attempt counters and latest error data
+- health output summarizes queue activity for routine checks
+- worker identity and inflight timing support lease and recovery inspection
 
-- [x] Define a schema migration strategy for SQLite stores.
-- [x] Document backup and restore expectations.
-- [x] Add maintenance guidance for `VACUUM`, WAL files, and long-lived stores.
-- [x] Add retention or cleanup controls for dead-letter records.
-- [x] Add cleanup controls for old retry records.
-- [x] Add preview mode before cleanup removes records.
-- [x] Add configurable retention defaults for dead letters and retry records.
-- [x] Add a one-shot queue health summary for day-to-day checks.
-- [x] Document recovery behavior for corrupted or partially written store files.
-- [x] Add compatibility tests for SQLite store files created by older package
-  versions.
+For long-lived deployments, pair these commands with host-level logging and
+process supervision.
 
-The SQLite store keeps a schema version in `PRAGMA user_version`. Current
-releases migrate older compatible versions and reject future versions they do
-not know how to migrate yet. That keeps upgrades explicit and leaves a clear
-path for future schema changes.
+## Maintenance
 
-## API stability
+The SQLite store keeps its schema version in `PRAGMA user_version`. Releases can
+migrate older compatible versions and reject newer unknown versions explicitly.
 
-- [x] Decide which APIs are stable before a `1.0` release.
-- [x] Document compatibility aliases and their planned lifetime.
-- [x] Add deprecation policy.
-- [ ] Increase coverage margin above the current 95% gate.
-- [x] Keep docs aligned with defaults for SQLite, optional LMDB, and CLI extras.
+For operational hygiene:
 
-## Guardrails against misuse
-
-- [x] Document recommended payload size limits.
-- [x] Add clearer lease-timeout guidance for slow jobs.
-- [x] Add examples for safe shutdown and long-running workers.
-- [x] Add health-check examples for worker processes.
-- [x] Add configuration validation for risky combinations where possible.
-- [x] Add warnings or docs for unbounded queue growth.
-
-## Positioning
-
-- [x] Keep public wording focused on durable local queues for scripts and small
-  workers.
-- [x] Avoid presenting the project as a replacement for distributed brokers.
-- [x] Add production-readiness notes that distinguish supported use cases from
-  future work.
+- back up queue files before host-level maintenance
+- vacuum long-lived SQLite files during maintenance windows
+- monitor dead-letter and retry retention over time
+- use preview modes before destructive cleanup commands
