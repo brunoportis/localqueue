@@ -2,11 +2,10 @@
 icon: lucide/shield-check
 ---
 
-# Stability
+# API Contracts
 
-`localqueue` is still a beta project, so the public surface is intentionally
-small. The goal is to keep the parts people already use predictable while leaving
-room to improve the rest.
+This page records the public API surface and the compatibility aliases that are
+currently supported.
 
 ## Stable surface
 
@@ -64,25 +63,18 @@ The CLI command families are also treated as part of the supported surface:
 
 ## Compatibility aliases
 
-Some options stay available as compatibility aliases while the project is still
-early:
+These aliases remain available for compatibility:
 
 - `dead_letter_on_exhaustion` remains accepted as an alias for
   `dead_letter_on_failure`
 - `max_tries` remains accepted as an alias for `stop_after_attempt(max_tries)`
 
-Aliases stay documented until they are removed. When an alias is planned for
-removal, the project should announce the change in the changelog and keep a
-compatibility window long enough for users to update their code.
+Aliases stay documented until they are removed.
 
 ## Deprecation policy
 
-Deprecation is simple on purpose:
+Deprecation follows a short documented cycle:
 
 1. announce the change in docs and changelog
 2. keep the old name working for one release cycle when practical
-3. prefer warning-free compatibility first, then removal later
-
-Because the project is beta, some internals can still change. The intent is not
-to promise permanent stability for every helper, but to avoid surprising users
-who already rely on the main queue, retry, and CLI entry points.
+3. remove it after that compatibility window

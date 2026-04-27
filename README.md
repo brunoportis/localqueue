@@ -90,6 +90,8 @@ docker pull ghcr.io/brunoportis/localqueue:latest
 docker run --rm ghcr.io/brunoportis/localqueue:latest --help
 ```
 
-## When not to use
+## Fit
 
-`localqueue` is not a distributed broker. If you need multi-host coordination, high write concurrency, managed retention, or strict cross-service ordering, use a system designed for that operating model.
+`localqueue` is a strong fit for single-host workers, local recovery flows, and
+durable retries that should stay close to the application. For a broader shape
+comparison, see [`docs/compare.md`](docs/compare.md).

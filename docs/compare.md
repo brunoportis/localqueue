@@ -4,7 +4,8 @@ icon: lucide/inbox
 
 # Compare
 
-`localqueue` is for local, durable queues on one machine. If your jobs need a broker, a cluster, or managed retention, pick a tool that is built for that shape.
+`localqueue` fits durable single-host workers. This page is a quick chooser
+between that model and common brokered alternatives.
 
 ## Use `localqueue` when
 
@@ -16,7 +17,7 @@ icon: lucide/inbox
 - you want worker-side controls like `min_interval`, queue-level retry defaults,
   and a simple circuit breaker without introducing a broker
 
-## Reach for something else when
+## Choose a brokered system when
 
 - producers and consumers must run on different machines
 - you need broker-managed delivery guarantees
@@ -45,6 +46,6 @@ If the queue itself is part of a distributed system boundary, use a broker or st
 
 See also:
 
-- [Operational maturity](operational-maturity.md)
+- [Operations guide](operational-maturity.md)
 - [Persistent queues](queues.md)
 - [Persistent retries](retries.md)
