@@ -21,3 +21,4 @@ site/
 /examples/*.sqlite3-*
 feedback.md
 /mutants
+/openspec
