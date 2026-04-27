@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.1](https://github.com/brunoportis/localqueue/compare/v0.5.0...v0.5.1) (2026-04-27)
+
+
+### Documentation
+
+* **queue-spec:** align examples and simplify positioning ([050550e](https://github.com/brunoportis/localqueue/commit/050550e67cc69ab29d1a5f1493f6d5ceae28ce99))
+* **queue-spec:** align examples and simplify positioning ([24cc191](https://github.com/brunoportis/localqueue/commit/24cc191f9fd66bbad3933d1486fe6cd5af8d3b69))
+
 ## [0.5.0](https://github.com/brunoportis/localqueue/compare/v0.4.1...v0.5.0) (2026-04-27)
 
 
