@@ -1,5 +1,8 @@
 # ruff: noqa: F401
 
+# Compatibility shim: keep historical imports routed through workers.runtime
+# while internal worker-domain behavior evolves behind that module boundary.
+
 from .workers.runtime import (
     PersistentWorkerConfig,
     WorkerPolicyState,

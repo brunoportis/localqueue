@@ -207,6 +207,9 @@ responsible for.
   dispatch, notification, retries, and dead letters.
 - Add optional structured event hooks for enqueue, lease, ack, release,
   dead-letter, notification, and dispatch transitions.
+- Decide whether private compatibility reexports in `localqueue.queue` and
+  `localqueue.worker` should remain indefinite shims or enter a documented
+  deprecation cycle once external usage is better understood.
 - Expand storage guidance and optional backends when SQLite or LMDB are no
   longer the right fit.
 - Evaluate batching as a separate consumption concern, not as a replacement for

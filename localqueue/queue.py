@@ -1,4 +1,7 @@
 from .paths import default_queue_store_path
+
+# Compatibility shim: keep legacy imports stable while queue internals move
+# behind the localqueue.queues package boundaries.
 from .queues import (
     PersistentQueue,
     _apply_policy_set,

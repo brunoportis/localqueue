@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 import concurrent.futures
+import importlib
 import json
 import sqlite3
 import tempfile
@@ -1055,6 +1056,27 @@ class QueueTests(unittest.TestCase):
 
         notification_policy.clear()
         self.assertFalse(notification_policy.wait(timeout=0))
+
+    def test_queue_module_compatibility_aliases_remain_available(self) -> None:
+        queue_module = importlib.import_module("localqueue.queue")
+
+        self.assertIs(queue_module.PersistentQueue, PersistentQueue)
+        self.assertIs(queue_module.subscriber_queue_name, subscriber_queue_name)
+        self.assertIs(queue_module._deadline, _deadline)
+        self.assertIs(queue_module._remaining, _remaining)
+        self.assertIs(queue_module._wait_time, _wait_time)
+        self.assertIs(queue_module._validate_retry_defaults, _validate_retry_defaults)
+
+    def test_worker_module_compatibility_aliases_remain_available(self) -> None:
+        worker_module = importlib.import_module("localqueue.worker")
+
+        self.assertIs(worker_module.PersistentWorkerConfig, PersistentWorkerConfig)
+        self.assertIs(worker_module.persistent_worker, persistent_worker)
+        self.assertIs(worker_module.persistent_async_worker, persistent_async_worker)
+        self.assertIs(worker_module._commit_outbox, _commit_outbox)
+        self.assertIs(worker_module._commit_two_phase, _commit_two_phase)
+        self.assertIs(worker_module._commit_saga, _commit_saga)
+        self.assertIs(worker_module._result_key, _result_key)
 
     def test_constructor_accepts_asyncio_notification_policy(self) -> None:
         async def scenario() -> None:
@@ -4493,6 +4515,31 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(message.last_error["type"], "RuntimeError")
         self.assertEqual(message.last_error["message"], "retry")
         self.assertIsNotNone(message.failed_at)
+
+    def test_worker_treats_permanent_failures_as_dead_letter(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+        _ = queue.put("bad")
+
+        @persistent_worker(
+            queue,
+            store=MemoryAttemptStore(),
+            max_tries=1,
+            wait=lambda _: 0,
+            dead_letter_on_failure=False,
+        )
+        def fail(value: str) -> None:
+            raise NameError(value)
+
+        with self.assertRaises(NameError):
+            cast("Any", fail)()
+
+        self.assertTrue(queue.empty())
+        dead_letters = queue.dead_letters()
+        self.assertEqual(len(dead_letters), 1)
+        last_error = dead_letters[0].last_error
+        self.assertIsNotNone(last_error)
+        assert last_error is not None
+        self.assertEqual(last_error["type"], "NameError")
 
     def test_worker_receives_message_value_when_called_without_arguments(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())
