@@ -74,22 +74,21 @@ def _resolve_spec_inputs(
     policy_set: QueuePolicySet | None,
     retry_defaults: Mapping[str, Any] | None,
 ) -> tuple[str, QueueSpec | None, QueuePolicySet | None, Mapping[str, Any] | None]:
-    if name is not None and spec is not None:
-        raise ValueError("pass either name= or spec=, not both")
     if name is None and spec is None:
         raise ValueError("pass either name= or spec=")
     if spec is None:
         assert name is not None
         return name, None, policy_set, retry_defaults
 
-    resolved_name = spec.name
+    resolved_name = spec.name if name is None else name
+    resolved_spec = spec if name is None else spec.with_name(name)
     resolved_policy_set = (
-        policy_set if policy_set is not None else spec._build_policy_set()
+        policy_set if policy_set is not None else resolved_spec._build_policy_set()
     )
     resolved_retry_defaults = (
-        retry_defaults if retry_defaults is not None else spec.retry_kwargs
+        retry_defaults if retry_defaults is not None else resolved_spec.retry_kwargs
     )
-    return resolved_name, spec, resolved_policy_set, resolved_retry_defaults
+    return resolved_name, resolved_spec, resolved_policy_set, resolved_retry_defaults
 
 
 class PersistentQueue(Generic[T]):
