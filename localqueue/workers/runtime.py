@@ -8,10 +8,15 @@ from collections.abc import Awaitable, Callable
 from queue import Empty
 from typing import Any, TypeVar, cast, TYPE_CHECKING
 
-from ..failure import is_permanent_failure
-from ..idempotency import IdempotencyRecord, IdempotencyStore
 from ..queue import _error_payload
 from ..retry import PersistentAsyncRetrying, PersistentRetrying
+from .domain import (
+    _CommitCoordinator,
+    _IdempotencyCoordinator,
+    _WorkerOutcomeCoordinator,
+    _WorkerPolicyAccess,
+    _result_key as _domain_result_key,
+)
 
 if TYPE_CHECKING:
     from ..queue import PersistentQueue
@@ -295,82 +300,50 @@ def _record_success(state: WorkerPolicyState) -> None:
     state.consecutive_failures = 0
 
 
-def _idempotency_store(queue: PersistentQueue) -> IdempotencyStore | None:
-    return cast(
-        "IdempotencyStore | None",
-        getattr(queue.delivery_policy, "idempotency_store", None),
-    )
+def _idempotency_store(queue: PersistentQueue) -> Any:
+    return _WorkerPolicyAccess(queue).idempotency_store()
 
 
 def _result_policy(queue: PersistentQueue) -> Any:
-    return getattr(queue.delivery_policy, "result_policy", None)
+    return _WorkerPolicyAccess(queue).result_policy()
 
 
 def _commit_policy(queue: PersistentQueue) -> Any:
-    return getattr(queue.delivery_policy, "commit_policy", None)
+    return _WorkerPolicyAccess(queue).commit_policy()
 
 
 def _result_store(queue: PersistentQueue) -> ResultStore | None:
-    result_policy = _result_policy(queue)
-    return cast("ResultStore | None", getattr(result_policy, "result_store", None))
+    return _WorkerPolicyAccess(queue).result_store()
 
 
 def _outbox_store(queue: PersistentQueue) -> ResultStore | None:
-    commit_policy = _commit_policy(queue)
-    return cast("ResultStore | None", getattr(commit_policy, "outbox_store", None))
+    return _WorkerPolicyAccess(queue).outbox_store()
 
 
 def _prepare_store(queue: PersistentQueue) -> ResultStore | None:
-    commit_policy = _commit_policy(queue)
-    return cast("ResultStore | None", getattr(commit_policy, "prepare_store", None))
+    return _WorkerPolicyAccess(queue).prepare_store()
 
 
 def _commit_store(queue: PersistentQueue) -> ResultStore | None:
-    commit_policy = _commit_policy(queue)
-    return cast("ResultStore | None", getattr(commit_policy, "commit_store", None))
+    return _WorkerPolicyAccess(queue).commit_store()
 
 
 def _saga_store(queue: PersistentQueue) -> ResultStore | None:
-    commit_policy = _commit_policy(queue)
-    return cast("ResultStore | None", getattr(commit_policy, "saga_store", None))
+    return _WorkerPolicyAccess(queue).saga_store()
 
 
 def _result_key(message: QueueMessage) -> str | None:
-    if message.dedupe_key is None:
-        return None
-    return f"dedupe:{message.queue}:{message.dedupe_key}"
-
-
-def _cached_result(queue: PersistentQueue, record: IdempotencyRecord) -> Any:
-    result_store = _result_store(queue)
-    if result_store is not None and record.result_key is not None:
-        return result_store.load(record.result_key)
-    return record.metadata.get("result")
+    return _domain_result_key(message)
 
 
 def _begin_idempotent_handling(
     queue: PersistentQueue, message: QueueMessage
 ) -> tuple[bool, Any]:
-    store = _idempotency_store(queue)
-    if store is None or message.dedupe_key is None:
-        return False, None
-    record = store.load(message.dedupe_key)
-    if record is not None and record.status == "succeeded":
-        _ = queue.ack(message)
-        result_policy = _result_policy(queue)
-        if bool(getattr(result_policy, "returns_cached_result", False)):
-            return True, _cached_result(queue, record)
-        return True, None
-    first_seen_at = time.time() if record is None else record.first_seen_at
-    store.save(
-        message.dedupe_key,
-        IdempotencyRecord(
-            status="pending",
-            first_seen_at=first_seen_at,
-            metadata={"queue": message.queue, "message_id": message.id},
-        ),
+    return _IdempotencyCoordinator(_WorkerPolicyAccess(queue)).begin(
+        message,
+        now_fn=time.time,
+        ack_duplicate=queue.ack,
     )
-    return False, None
 
 
 def _complete_idempotent_handling(
@@ -381,35 +354,12 @@ def _complete_idempotent_handling(
     result: Any = None,
     error: BaseException | None = None,
 ) -> None:
-    store = _idempotency_store(queue)
-    if store is None or message.dedupe_key is None:
-        return
-    existing = store.load(message.dedupe_key)
-    first_seen_at = time.time() if existing is None else existing.first_seen_at
-    metadata: dict[str, Any] = {"queue": message.queue, "message_id": message.id}
-    result_policy = _result_policy(queue)
-    result_key = None if existing is None else existing.result_key
-    if bool(getattr(result_policy, "stores_result", False)) and status == "succeeded":
-        result_store = _result_store(queue)
-        if result_store is None:
-            metadata["result"] = result
-            result_key = "inline"
-        else:
-            resolved_result_key = _result_key(message)
-            if resolved_result_key is not None:
-                result_store.save(resolved_result_key, result)
-                result_key = resolved_result_key
-    if error is not None:
-        metadata["last_error"] = _error_payload(error)
-    store.save(
-        message.dedupe_key,
-        IdempotencyRecord(
-            status=cast("Any", status),
-            first_seen_at=first_seen_at,
-            completed_at=time.time(),
-            result_key=result_key,
-            metadata=metadata,
-        ),
+    _IdempotencyCoordinator(_WorkerPolicyAccess(queue)).complete(
+        message,
+        status=status,
+        now_fn=time.time,
+        result=result,
+        error_payload=None if error is None else _error_payload(error),
     )
 
 
@@ -420,24 +370,10 @@ def _commit_outbox(
     result: Any,
     result_key: str | None,
 ) -> None:
-    commit_policy = _commit_policy(queue)
-    if getattr(commit_policy, "mode", None) != "transactional-outbox":
-        return
-    outbox_store = _outbox_store(queue)
-    if outbox_store is None:
-        return
-    outbox_key = _result_key(message)
-    if outbox_key is None:
-        return
-    outbox_store.save(
-        f"outbox:{outbox_key}",
-        {
-            "queue": message.queue,
-            "message_id": message.id,
-            "dedupe_key": message.dedupe_key,
-            "result_key": result_key,
-            "result": result,
-        },
+    _CommitCoordinator(_WorkerPolicyAccess(queue)).commit_outbox(
+        message,
+        result=result,
+        result_key=result_key,
     )
 
 
@@ -448,37 +384,11 @@ def _commit_two_phase(
     result: Any,
     result_key: str | None,
 ) -> None:
-    commit_policy = _commit_policy(queue)
-    if getattr(commit_policy, "mode", None) != "two-phase":
-        return
-    prepare_store = _prepare_store(queue)
-    commit_store = _commit_store(queue)
-    if prepare_store is None and commit_store is None:
-        return
-    phase_key = _result_key(message)
-    if phase_key is None:
-        return
-    prepare_payload = {
-        "queue": message.queue,
-        "message_id": message.id,
-        "dedupe_key": message.dedupe_key,
-        "result_key": result_key,
-        "result": result,
-        "phase": "prepare",
-    }
-    commit_payload = {
-        "queue": message.queue,
-        "message_id": message.id,
-        "dedupe_key": message.dedupe_key,
-        "result_key": result_key,
-        "result": result,
-        "phase": "commit",
-    }
-    if prepare_store is not None:
-        prepare_store.save(f"prepare:{phase_key}", prepare_payload)
-    if commit_store is None:
-        return
-    commit_store.save(f"commit:{phase_key}", commit_payload)
+    _CommitCoordinator(_WorkerPolicyAccess(queue)).commit_two_phase(
+        message,
+        result=result,
+        result_key=result_key,
+    )
 
 
 def _commit_saga(
@@ -489,26 +399,12 @@ def _commit_saga(
     result: Any = None,
     error: BaseException | None = None,
 ) -> None:
-    commit_policy = _commit_policy(queue)
-    if getattr(commit_policy, "mode", None) != "saga":
-        return
-    saga_store = _saga_store(queue)
-    if saga_store is None:
-        return
-    phase_key = _result_key(message)
-    if phase_key is None:
-        return
-    payload: dict[str, Any] = {
-        "queue": message.queue,
-        "message_id": message.id,
-        "dedupe_key": message.dedupe_key,
-        "phase": phase,
-    }
-    if result is not None:
-        payload["result"] = result
-    if error is not None:
-        payload["error"] = _error_payload(error)
-    saga_store.save(f"saga:{phase}:{phase_key}", payload)
+    _CommitCoordinator(_WorkerPolicyAccess(queue)).commit_saga(
+        message,
+        phase=phase,
+        result=result,
+        error_payload=None if error is None else _error_payload(error),
+    )
 
 
 def persistent_worker(
@@ -533,6 +429,10 @@ def persistent_worker(
     )
     retry_kwargs = _resolve_retry_kwargs(queue, worker_config.retry_kwargs)
     policy_state = WorkerPolicyState()
+    policy_access = _WorkerPolicyAccess(queue)
+    idempotency = _IdempotencyCoordinator(policy_access)
+    commits = _CommitCoordinator(policy_access)
+    outcomes = _WorkerOutcomeCoordinator(queue, worker_config)
 
     def decorator(fn: WrappedFn) -> Callable[..., Any]:
         def wrapped(*args: Any, **kwargs: Any) -> Any:
@@ -540,7 +440,11 @@ def persistent_worker(
                 queue.record_worker_heartbeat(worker_id)
             _sleep_for_policy(policy_state, worker_config)
             message = queue.get_message()
-            short_circuited, cached_result = _begin_idempotent_handling(queue, message)
+            short_circuited, cached_result = idempotency.begin(
+                message,
+                now_fn=time.time,
+                ack_duplicate=queue.ack,
+            )
             if short_circuited:
                 _record_success(policy_state)
                 return cached_result
@@ -548,37 +452,36 @@ def persistent_worker(
             try:
                 result = retryer(fn, message.value, *args, **kwargs)
             except Exception as exc:
-                _complete_idempotent_handling(
-                    queue, message, status="failed", error=exc
+                error_payload = _error_payload(exc)
+                idempotency.complete(
+                    message,
+                    status="failed",
+                    now_fn=time.time,
+                    error_payload=error_payload,
                 )
-                _commit_saga(queue, message, phase="compensate", error=exc)
-                if is_permanent_failure(exc) or worker_config.dead_letter_on_failure:
-                    queue.dead_letter(message, error=exc)
-                else:
-                    queue.release(message, delay=worker_config.release_delay, error=exc)
+                commits.compensate_failure(message, error_payload=error_payload)
+                permanent = outcomes.finish_failure(message, exc)
                 _record_failure(
                     policy_state,
                     worker_config,
-                    permanent=is_permanent_failure(exc),
+                    permanent=permanent,
                 )
                 raise
             finally:
                 if worker_id is not None:
                     queue.record_worker_heartbeat(worker_id)
             _record_success(policy_state)
-            _complete_idempotent_handling(
-                queue,
+            idempotency.complete(
                 message,
                 status="succeeded",
+                now_fn=time.time,
                 result=result,
             )
             result_key = None
-            if _result_store(queue) is not None:
+            if commits.result_store() is not None:
                 result_key = _result_key(message)
-            _commit_outbox(queue, message, result=result, result_key=result_key)
-            _commit_two_phase(queue, message, result=result, result_key=result_key)
-            _commit_saga(queue, message, phase="forward", result=result)
-            queue.ack(message)
+            commits.commit_success(message, result=result, result_key=result_key)
+            _ = outcomes.ack_success(message)
             return result
 
         return wrapped
@@ -608,6 +511,10 @@ def persistent_async_worker(
     )
     retry_kwargs = _resolve_retry_kwargs(queue, worker_config.retry_kwargs)
     policy_state = WorkerPolicyState()
+    policy_access = _WorkerPolicyAccess(queue)
+    idempotency = _IdempotencyCoordinator(policy_access)
+    commits = _CommitCoordinator(policy_access)
+    outcomes = _WorkerOutcomeCoordinator(queue, worker_config)
 
     def decorator(fn: WrappedFn) -> Callable[..., Any]:
         async def wrapped(*args: Any, **kwargs: Any) -> Any:
@@ -615,7 +522,11 @@ def persistent_async_worker(
                 queue.record_worker_heartbeat(worker_id)
             await _sleep_for_policy_async(policy_state, worker_config)
             message = await _get_message_async(queue)
-            short_circuited, cached_result = _begin_idempotent_handling(queue, message)
+            short_circuited, cached_result = idempotency.begin(
+                message,
+                now_fn=time.time,
+                ack_duplicate=queue.ack,
+            )
             if short_circuited:
                 _record_success(policy_state)
                 return cached_result
@@ -623,41 +534,36 @@ def persistent_async_worker(
             try:
                 result = await retryer(fn, message.value, *args, **kwargs)
             except Exception as exc:
-                _complete_idempotent_handling(
-                    queue, message, status="failed", error=exc
+                error_payload = _error_payload(exc)
+                idempotency.complete(
+                    message,
+                    status="failed",
+                    now_fn=time.time,
+                    error_payload=error_payload,
                 )
-                _commit_saga(queue, message, phase="compensate", error=exc)
-                if is_permanent_failure(exc) or worker_config.dead_letter_on_failure:
-                    queue.dead_letter(message, error=exc)
-                else:
-                    queue.release(
-                        message,
-                        delay=worker_config.release_delay,
-                        error=exc,
-                    )
+                commits.compensate_failure(message, error_payload=error_payload)
+                permanent = outcomes.finish_failure(message, exc)
                 _record_failure(
                     policy_state,
                     worker_config,
-                    permanent=is_permanent_failure(exc),
+                    permanent=permanent,
                 )
                 raise
             finally:
                 if worker_id is not None:
                     queue.record_worker_heartbeat(worker_id)
             _record_success(policy_state)
-            _complete_idempotent_handling(
-                queue,
+            idempotency.complete(
                 message,
                 status="succeeded",
+                now_fn=time.time,
                 result=result,
             )
             result_key = None
-            if _result_store(queue) is not None:
+            if commits.result_store() is not None:
                 result_key = _result_key(message)
-            _commit_outbox(queue, message, result=result, result_key=result_key)
-            _commit_two_phase(queue, message, result=result, result_key=result_key)
-            _commit_saga(queue, message, phase="forward", result=result)
-            queue.ack(message)
+            commits.commit_success(message, result=result, result_key=result_key)
+            _ = outcomes.ack_success(message)
             return result
 
         return wrapped

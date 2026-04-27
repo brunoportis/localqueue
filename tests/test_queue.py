@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 import concurrent.futures
+import importlib
 import json
 import sqlite3
 import tempfile
@@ -17,6 +18,7 @@ from unittest import mock
 
 import lmdb
 
+from localqueue.paths import data_dir
 from localqueue.idempotency.stores import _shared as _idempotency_shared
 from localqueue.idempotency.stores import lmdb as _idempotency_lmdb
 from localqueue.results.stores import _shared as _result_shared
@@ -99,13 +101,23 @@ from localqueue import (
 from localqueue.worker import (
     WorkerPolicyState,
     _get_message_async,
+    _begin_idempotent_handling,
+    _commit_policy,
+    _commit_store,
     _record_failure,
     _record_success,
     _commit_outbox,
     _commit_two_phase,
     _commit_saga,
+    _complete_idempotent_handling,
+    _idempotency_store,
+    _outbox_store,
+    _prepare_store,
+    _result_policy,
     _result_key,
+    _result_store,
     _resolve_dead_letter_on_failure,
+    _saga_store,
     _UNSET,
     _validate_circuit_breaker,
     _validate_min_interval,
@@ -1055,6 +1067,27 @@ class QueueTests(unittest.TestCase):
 
         notification_policy.clear()
         self.assertFalse(notification_policy.wait(timeout=0))
+
+    def test_queue_module_compatibility_aliases_remain_available(self) -> None:
+        queue_module = importlib.import_module("localqueue.queue")
+
+        self.assertIs(queue_module.PersistentQueue, PersistentQueue)
+        self.assertIs(queue_module.subscriber_queue_name, subscriber_queue_name)
+        self.assertIs(queue_module._deadline, _deadline)
+        self.assertIs(queue_module._remaining, _remaining)
+        self.assertIs(queue_module._wait_time, _wait_time)
+        self.assertIs(queue_module._validate_retry_defaults, _validate_retry_defaults)
+
+    def test_worker_module_compatibility_aliases_remain_available(self) -> None:
+        worker_module = importlib.import_module("localqueue.worker")
+
+        self.assertIs(worker_module.PersistentWorkerConfig, PersistentWorkerConfig)
+        self.assertIs(worker_module.persistent_worker, persistent_worker)
+        self.assertIs(worker_module.persistent_async_worker, persistent_async_worker)
+        self.assertIs(worker_module._commit_outbox, _commit_outbox)
+        self.assertIs(worker_module._commit_two_phase, _commit_two_phase)
+        self.assertIs(worker_module._commit_saga, _commit_saga)
+        self.assertIs(worker_module._result_key, _result_key)
 
     def test_constructor_accepts_asyncio_notification_policy(self) -> None:
         async def scenario() -> None:
@@ -3798,6 +3831,19 @@ class QueueTests(unittest.TestCase):
                 if close is not None:
                     close()
 
+    def test_default_sqlite_store_uses_home_directory_without_xdg_data_home(
+        self,
+    ) -> None:
+        fake_home = Path("/home/example")
+        with (
+            mock.patch.dict("os.environ", {}, clear=True),
+            mock.patch("pathlib.Path.home", return_value=fake_home),
+        ):
+            self.assertEqual(
+                data_dir(),
+                fake_home / ".local" / "share" / "localqueue",
+            )
+
     def test_lmdb_lock_error_is_reworded(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             fake_lmdb = mock.Mock()
@@ -4493,6 +4539,31 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(message.last_error["type"], "RuntimeError")
         self.assertEqual(message.last_error["message"], "retry")
         self.assertIsNotNone(message.failed_at)
+
+    def test_worker_treats_permanent_failures_as_dead_letter(self) -> None:
+        queue = PersistentQueue("test", store=MemoryQueueStore())
+        _ = queue.put("bad")
+
+        @persistent_worker(
+            queue,
+            store=MemoryAttemptStore(),
+            max_tries=1,
+            wait=lambda _: 0,
+            dead_letter_on_failure=False,
+        )
+        def fail(value: str) -> None:
+            raise NameError(value)
+
+        with self.assertRaises(NameError):
+            cast("Any", fail)()
+
+        self.assertTrue(queue.empty())
+        dead_letters = queue.dead_letters()
+        self.assertEqual(len(dead_letters), 1)
+        last_error = dead_letters[0].last_error
+        self.assertIsNotNone(last_error)
+        assert last_error is not None
+        self.assertEqual(last_error["type"], "NameError")
 
     def test_worker_receives_message_value_when_called_without_arguments(self) -> None:
         queue = PersistentQueue("test", store=MemoryQueueStore())
@@ -5373,6 +5444,87 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(record.result_key, "dedupe:test:job-1")
         self.assertEqual(record.metadata, {"queue": "test", "message_id": message.id})
         self.assertEqual(result_store.load("dedupe:test:job-1"), {"status": "ITEM"})
+
+    def test_worker_runtime_policy_wrappers_delegate_to_internal_collaborators(
+        self,
+    ) -> None:
+        idempotency_store = MemoryIdempotencyStore()
+        result_store = MemoryResultStore()
+        prepare_store = MemoryResultStore()
+        commit_store = MemoryResultStore()
+        delivery_policy = EffectivelyOnceDelivery(
+            idempotency_store=idempotency_store,
+            result_policy=ReturnStoredResult(result_store=result_store),
+            commit_policy=TwoPhaseCommit(
+                prepare_store=prepare_store,
+                commit_store=commit_store,
+            ),
+        )
+        queue = PersistentQueue(
+            "test",
+            store=MemoryQueueStore(),
+            delivery_policy=delivery_policy,
+        )
+        message = queue.put("item", dedupe_key="job-1")
+
+        self.assertIs(_idempotency_store(queue), idempotency_store)
+        self.assertIs(_result_policy(queue), delivery_policy.result_policy)
+        self.assertIs(_commit_policy(queue), delivery_policy.commit_policy)
+        self.assertIs(_result_store(queue), result_store)
+        self.assertIsNone(_outbox_store(queue))
+        self.assertIs(_prepare_store(queue), prepare_store)
+        self.assertIs(_commit_store(queue), commit_store)
+        self.assertIsNone(_saga_store(queue))
+
+        short_circuited, cached = _begin_idempotent_handling(queue, message)
+        self.assertFalse(short_circuited)
+        self.assertIsNone(cached)
+
+        _complete_idempotent_handling(queue, message, status="succeeded", result="ITEM")
+
+        record = idempotency_store.load("job-1")
+        assert record is not None
+        self.assertEqual(record.status, "succeeded")
+        self.assertEqual(record.result_key, "dedupe:test:job-1")
+        self.assertEqual(result_store.load("dedupe:test:job-1"), "ITEM")
+
+    def test_private_queue_post_put_and_fanout_delegates_remain_operational(
+        self,
+    ) -> None:
+        dispatched: list[QueueMessage] = []
+        notified: list[QueueMessage] = []
+        queue = PersistentQueue(
+            "events",
+            store=MemoryQueueStore(),
+            dispatch_policy=CallbackDispatcher((dispatched.append,)),
+            notification_policy=CallbackNotification(notified.append),
+            routing_policy=PublishSubscribeRouting(),
+            subscription_policy=StaticFanoutSubscriptions(("billing", "audit")),
+        )
+
+        message = queue._put_fanout(
+            "payload",
+            block=True,
+            timeout=None,
+            delay=0.0,
+            dedupe_key="job-1",
+            priority=0,
+        )
+        queue._run_post_put_hooks(message)
+
+        self.assertEqual(message.queue, "events.billing")
+        self.assertEqual(
+            queue.subscriber_queue("billing").get_message().value, "payload"
+        )
+        self.assertEqual(queue.subscriber_queue("audit").get_message().value, "payload")
+        self.assertEqual(
+            [queued_message.queue for queued_message in notified],
+            ["events.billing", "events.audit", "events.billing"],
+        )
+        self.assertEqual(
+            [queued_message.queue for queued_message in dispatched],
+            ["events.billing", "events.audit", "events.billing"],
+        )
 
     def test_effectively_once_worker_returns_cached_result_from_external_store(
         self,

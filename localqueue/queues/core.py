@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from queue import Empty, Full
+from queue import Empty
 from threading import Condition
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
@@ -38,6 +38,7 @@ from ..policies import (
     RoutingPolicy,
     SubscriptionPolicy,
 )
+from .puts import _QueuePutCoordinator
 from .policies import _apply_policy_set
 from .timing import _deadline, _remaining, _wait_time
 from .validation import (
@@ -59,12 +60,6 @@ def subscriber_queue_name(queue_name: str, subscriber: str) -> str:
     if not subscriber:
         raise ValueError("subscriber cannot be empty")
     return f"{queue_name}.{subscriber}"
-
-
-def _fanout_dedupe_key(dedupe_key: str | None, subscriber: str) -> str | None:
-    if dedupe_key is None:
-        return None
-    return f"{dedupe_key}:{subscriber}"
 
 
 def _resolve_spec_inputs(
@@ -324,34 +319,14 @@ class PersistentQueue(Generic[T]):
         _validate_priority(priority)
         if priority > 0 and self.ordering_policy.guarantee != "priority":
             raise ValueError("priority requires PriorityOrdering")
-        if self.routing_policy.fanout:
-            return self._put_fanout(
-                item,
-                block=block,
-                timeout=timeout,
-                delay=delay,
-                dedupe_key=dedupe_key,
-                priority=priority,
-            )
-        deadline = _deadline(timeout)
-        with self._condition:
-            while self.full():
-                if not block or self.backpressure.overflow == "reject":
-                    raise Full
-                remaining = _remaining(deadline)
-                if remaining is not None and remaining <= 0:
-                    raise Full
-                _ = self._condition.wait(remaining)
-            message = self._get_store().enqueue(
-                self.name,
-                item,
-                available_at=time.time() + delay,
-                dedupe_key=dedupe_key,
-                priority=priority,
-            )
-            self._condition.notify_all()
-        self._run_post_put_hooks(message)
-        return message
+        return _QueuePutCoordinator(self).put(
+            item,
+            block=block,
+            timeout=timeout,
+            delay=delay,
+            dedupe_key=dedupe_key,
+            priority=priority,
+        )
 
     def put_nowait(self, item: T) -> QueueMessage:
         return self.put(item, block=False)
@@ -587,31 +562,17 @@ class PersistentQueue(Generic[T]):
         dedupe_key: str | None,
         priority: int,
     ) -> QueueMessage:
-        subscribers = self._subscriber_names()
-        if not subscribers:
-            raise ValueError(
-                "publish-subscribe routing requires configured subscribers"
-            )
-        deadline = _deadline(timeout)
-        messages: list[QueueMessage] = []
-        for subscriber in subscribers:
-            remaining = _remaining(deadline)
-            message = self.subscriber_queue(subscriber).put(
-                item,
-                block=block,
-                timeout=remaining,
-                delay=delay,
-                dedupe_key=_fanout_dedupe_key(dedupe_key, subscriber),
-                priority=priority,
-            )
-            messages.append(message)
-        return messages[0]
+        return _QueuePutCoordinator(self).put_fanout(
+            item,
+            block=block,
+            timeout=timeout,
+            delay=delay,
+            dedupe_key=dedupe_key,
+            priority=priority,
+        )
 
     def _run_post_put_hooks(self, message: QueueMessage) -> None:
-        if self.notification_policy.notifies_on_put:
-            self.notification_policy.notify(message)
-        if self.dispatch_policy.dispatches_on_put:
-            self.dispatch_policy.dispatch(message)
+        _QueuePutCoordinator(self).run_post_put_hooks(message)
 
 
 def _error_payload(error: BaseException | str | None) -> dict[str, Any] | None:

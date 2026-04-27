@@ -69,6 +69,10 @@ These aliases remain available for compatibility:
   `dead_letter_on_failure`
 - `max_tries` remains accepted as an alias for `stop_after_attempt(max_tries)`
 
+Legacy module shims such as `localqueue.queue` and `localqueue.worker` also
+remain available so internal architectural refactors can stay source-compatible.
+They are compatibility surfaces, not preferred extension points for new code.
+
 Aliases stay documented until they are removed.
 
 ## Deprecation policy
