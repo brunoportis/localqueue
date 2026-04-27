@@ -18,7 +18,7 @@ from unittest import mock
 
 import lmdb
 
-import localqueue
+from localqueue.paths import data_dir
 from localqueue.idempotency.stores import _shared as _idempotency_shared
 from localqueue.idempotency.stores import lmdb as _idempotency_lmdb
 from localqueue.results.stores import _shared as _result_shared
@@ -3840,7 +3840,7 @@ class QueueTests(unittest.TestCase):
             mock.patch("pathlib.Path.home", return_value=fake_home),
         ):
             self.assertEqual(
-                localqueue.paths.data_dir(),
+                data_dir(),
                 fake_home / ".local" / "share" / "localqueue",
             )
 
