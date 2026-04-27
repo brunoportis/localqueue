@@ -644,6 +644,16 @@ queue = PersistentQueue(spec=spec)
 worker_config = queue.build_worker_config()
 ```
 
+To reuse one queue configuration across multiple queue names, clone the spec
+with a new name or override the name in the constructor:
+
+```python
+base = QueueSpec("orders.base").with_qos(QoS.AT_LEAST_ONCE)
+
+payments = PersistentQueue(spec=base.with_name("orders.payment"))
+refunds = PersistentQueue("orders.refund", spec=base)
+```
+
 Use `persistent_async_worker()` for async handlers. Queue operations are performed
 off the event loop with `asyncio.to_thread()`.
 

@@ -46,6 +46,9 @@ class QueueSpec:
     def retry_kwargs(self) -> dict[str, Any]:
         return dict(self._retry_items)
 
+    def with_name(self, name: str) -> QueueSpec:
+        return replace(self, name=name)
+
     def with_qos(
         self,
         qos: QoS | str,

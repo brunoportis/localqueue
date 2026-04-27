@@ -103,7 +103,8 @@ object to describe queue delivery defaults plus worker retry and pacing
 defaults, then build the runtime objects explicitly with `build_queue()` and
 `build_worker_config()`. `PersistentQueue.from_spec(spec)` and
 `PersistentQueue(spec=spec)` are the matching queue entry points when you want
-the queue type to own construction.
+the queue type to own construction. Use `with_name(...)` when one base spec
+should be reused across multiple queue names.
 
 `with_qos(...)` maps to the queue delivery policy, `with_dead_letter_queue()`
 maps to the queue dead-letter policy, `with_retry(...)` stores retry defaults

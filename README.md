@@ -34,13 +34,23 @@ spec = (
     .with_dead_letter_queue()
 )
 
-queue = PersistentQueue.from_spec(spec)
+queue = PersistentQueue(spec=spec)
 worker_config = queue.build_worker_config()
 queue.put({"to": "user@example.com"})
 
 @persistent_worker(queue, config=worker_config)
 def send_email(job: dict[str, str]) -> None:
     deliver(job["to"])
+```
+
+Reuse same config for multiple queue names with `with_name(...)`, or override the
+spec name directly in the constructor:
+
+```python
+base = QueueSpec("orders.base").with_qos(QoS.AT_LEAST_ONCE)
+
+payments = PersistentQueue(spec=base.with_name("orders.payment"))
+refunds = PersistentQueue("orders.refund", spec=base)
 ```
 
 Full docs live at [brunoportis.github.io/localqueue](https://brunoportis.github.io/localqueue/). The source docs are in [`docs/`](docs/).
