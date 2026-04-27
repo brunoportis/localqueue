@@ -111,7 +111,10 @@ class _IdempotencyCoordinator:
         metadata: dict[str, Any] = {"queue": message.queue, "message_id": message.id}
         result_policy = self.policies.result_policy()
         result_key = None if existing is None else existing.result_key
-        if bool(getattr(result_policy, "stores_result", False)) and status == "succeeded":
+        if (
+            bool(getattr(result_policy, "stores_result", False))
+            and status == "succeeded"
+        ):
             result_store = self.policies.result_store()
             if result_store is None:
                 metadata["result"] = result

@@ -60,6 +60,8 @@ def subscriber_queue_name(queue_name: str, subscriber: str) -> str:
     if not subscriber:
         raise ValueError("subscriber cannot be empty")
     return f"{queue_name}.{subscriber}"
+
+
 def _resolve_spec_inputs(
     *,
     name: str | None,
