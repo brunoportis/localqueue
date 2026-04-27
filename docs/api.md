@@ -101,8 +101,9 @@ Small enum for fluent queue specs. The built-in values are
 Fluent builder for common queue and worker settings. Use it when you want one
 object to describe queue delivery defaults plus worker retry and pacing
 defaults, then build the runtime objects explicitly with `build_queue()` and
-`build_worker_config()`. `PersistentQueue.from_spec(spec)` is the matching queue
-entry point when you want the queue type to own construction.
+`build_worker_config()`. `PersistentQueue.from_spec(spec)` and
+`PersistentQueue(spec=spec)` are the matching queue entry points when you want
+the queue type to own construction.
 
 `with_qos(...)` maps to the queue delivery policy, `with_dead_letter_queue()`
 maps to the queue dead-letter policy, `with_retry(...)` stores retry defaults

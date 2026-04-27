@@ -142,7 +142,7 @@ class QueueSpec:
             queue_kwargs["policy_set"] = policy_set
         if self._retry_items:
             queue_kwargs["retry_defaults"] = self.retry_kwargs
-        return PersistentQueue(self.name, **queue_kwargs)
+        return PersistentQueue(spec=self, **queue_kwargs)
 
     def build_worker_config(self, **overrides: Any) -> PersistentWorkerConfig:
         config_kwargs: dict[str, Any] = {
