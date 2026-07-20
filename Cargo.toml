@@ -1,0 +1,14 @@
+[package]
+name = "simpleq"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+
+[lib]
+name = "simpleq"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.29", features = ["extension-module"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+thiserror = "1.0"

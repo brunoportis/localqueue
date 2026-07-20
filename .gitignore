@@ -11,3 +11,6 @@ __pycache__/
 data/
 dist/
 build/
+target/
+*.so
+Cargo.lock
