@@ -1,5 +1,6 @@
 use pyo3::prelude::*;
-use rusqlite::{params, TransactionBehavior};
+use rusqlite::{params, Connection, TransactionBehavior};
+use std::sync::MutexGuard;
 
 use crate::error::QueueError;
 use crate::storage::{now_ms, Storage};
@@ -59,50 +60,102 @@ impl NativeQueue {
 
     pub fn put(&self, payload: Vec<u8>, job_id: Option<&str>) -> PyResult<i64> {
         let now = now_ms();
-        let conn = self.storage.connection();
+        let mut guard = self.conn()?;
+        let conn = guard.as_mut().unwrap();
+
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(QueueError::from)?;
 
         if let Some(jid) = job_id {
-            let existing: Option<i64> = conn
+            tx.execute(
+                "INSERT OR IGNORE INTO messages (
+                    queue, payload, status, attempts, max_attempts,
+                    available_at, lease_until, receipt, job_id,
+                    created_at, updated_at
+                ) VALUES (?1, ?2, ?3, 0, ?4, ?5, NULL, NULL, ?6, ?7, ?8)",
+                params![
+                    self.queue,
+                    payload,
+                    STATUS_READY,
+                    self.max_attempts,
+                    now,
+                    job_id,
+                    now,
+                    now,
+                ],
+            )
+            .map_err(QueueError::from)?;
+
+            let id: i64 = tx
                 .query_row(
                     "SELECT id FROM messages WHERE queue = ?1 AND job_id = ?2",
                     params![self.queue, jid],
                     |row| row.get(0),
                 )
-                .optional()
                 .map_err(QueueError::from)?;
-            if let Some(id) = existing {
-                return Ok(id);
-            }
+            tx.commit().map_err(QueueError::from)?;
+            Ok(id)
+        } else {
+            tx.execute(
+                "INSERT INTO messages (
+                    queue, payload, status, attempts, max_attempts,
+                    available_at, lease_until, receipt, job_id,
+                    created_at, updated_at
+                ) VALUES (?1, ?2, ?3, 0, ?4, ?5, NULL, NULL, ?6, ?7, ?8)",
+                params![
+                    self.queue,
+                    payload,
+                    STATUS_READY,
+                    self.max_attempts,
+                    now,
+                    job_id,
+                    now,
+                    now,
+                ],
+            )
+            .map_err(QueueError::from)?;
+            let id = tx.last_insert_rowid();
+            tx.commit().map_err(QueueError::from)?;
+            Ok(id)
         }
-
-        conn.execute(
-            "INSERT INTO messages (
-                queue, payload, status, attempts, max_attempts,
-                available_at, lease_until, receipt, job_id,
-                created_at, updated_at
-            ) VALUES (?1, ?2, ?3, 0, ?4, ?5, NULL, NULL, ?6, ?7, ?8)",
-            params![
-                self.queue,
-                payload,
-                STATUS_READY,
-                self.max_attempts,
-                now,
-                job_id,
-                now,
-                now,
-            ],
-        )
-        .map_err(QueueError::from)?;
-        Ok(conn.last_insert_rowid())
     }
 
     pub fn get(&self, lease_ms: i64) -> PyResult<Option<Lease>> {
         let now = now_ms();
         let lease_until = now + lease_ms;
         let receipt = generate_receipt();
-        let mut conn = self.storage.connection();
+        let mut guard = self.conn()?;
+        let conn = guard.as_mut().unwrap();
 
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(QueueError::from)?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(QueueError::from)?;
+
+        // Reclaim unificado: move leases expirados para ready ou failed.
+        tx.execute(
+            "UPDATE messages SET
+                status = ?1,
+                available_at = ?2,
+                receipt = NULL,
+                lease_until = NULL,
+                updated_at = ?3
+             WHERE queue = ?4 AND status = ?5 AND lease_until <= ?6
+                AND attempts < max_attempts",
+            params![STATUS_READY, now, now, self.queue, STATUS_LEASED, now],
+        )
+        .map_err(QueueError::from)?;
+        tx.execute(
+            "UPDATE messages SET
+                status = ?1,
+                receipt = NULL,
+                lease_until = NULL,
+                updated_at = ?2
+             WHERE queue = ?3 AND status = ?4 AND lease_until <= ?5
+                AND attempts >= max_attempts",
+            params![STATUS_FAILED, now, self.queue, STATUS_LEASED, now],
+        )
+        .map_err(QueueError::from)?;
 
         let row: Option<(i64, Vec<u8>, i64)> = tx
             .query_row(
@@ -118,23 +171,8 @@ impl NativeQueue {
         let (id, payload, attempts) = match row {
             Some(r) => r,
             None => {
-                let expired: Option<(i64, Vec<u8>, i64)> = tx
-                    .query_row(
-                        "SELECT id, payload, attempts FROM messages
-                         WHERE queue = ?1 AND status = ?2 AND lease_until <= ?3
-                         ORDER BY lease_until LIMIT 1",
-                        params![self.queue, STATUS_LEASED, now],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                    )
-                    .optional()
-                    .map_err(QueueError::from)?;
-                match expired {
-                    Some(r) => r,
-                    None => {
-                        tx.commit().map_err(QueueError::from)?;
-                        return Ok(None);
-                    }
-                }
+                tx.commit().map_err(QueueError::from)?;
+                return Ok(None);
             }
         };
 
@@ -147,10 +185,7 @@ impl NativeQueue {
                     lease_until = ?3,
                     attempts = ?4,
                     updated_at = ?5
-                 WHERE id = ?6 AND (
-                    (status = ?7 AND available_at <= ?8) OR
-                    (status = ?9 AND lease_until <= ?10)
-                 )",
+                 WHERE id = ?6 AND status = ?7 AND available_at <= ?8",
                 params![
                     STATUS_LEASED,
                     receipt,
@@ -159,8 +194,6 @@ impl NativeQueue {
                     now,
                     id,
                     STATUS_READY,
-                    now,
-                    STATUS_LEASED,
                     now,
                 ],
             )
@@ -183,7 +216,8 @@ impl NativeQueue {
 
     pub fn ack(&self, id: i64, receipt: &str) -> PyResult<()> {
         let now = now_ms();
-        let conn = self.storage.connection();
+        let mut guard = self.conn()?;
+        let conn = guard.as_mut().unwrap();
         let changed = conn
             .execute(
                 "UPDATE messages SET
@@ -191,8 +225,8 @@ impl NativeQueue {
                     receipt = NULL,
                     lease_until = NULL,
                     updated_at = ?2
-                 WHERE id = ?3 AND status = ?4 AND receipt = ?5",
-                params![STATUS_ACKED, now, id, STATUS_LEASED, receipt],
+                 WHERE id = ?3 AND status = ?4 AND receipt = ?5 AND lease_until > ?6",
+                params![STATUS_ACKED, now, id, STATUS_LEASED, receipt, now],
             )
             .map_err(QueueError::from)?;
         if changed == 0 {
@@ -210,9 +244,12 @@ impl NativeQueue {
         last_error: Option<&str>,
     ) -> PyResult<()> {
         let now = now_ms();
-        let mut conn = self.storage.connection();
+        let mut guard = self.conn()?;
+        let conn = guard.as_mut().unwrap();
 
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(QueueError::from)?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(QueueError::from)?;
         let (attempts, max_attempts): (i64, i64) = tx
             .query_row(
                 "SELECT attempts, max_attempts FROM messages WHERE id = ?1",
@@ -241,7 +278,7 @@ impl NativeQueue {
                     lease_until = NULL,
                     last_error = ?3,
                     updated_at = ?4
-                 WHERE id = ?5 AND status = ?6 AND receipt = ?7",
+                 WHERE id = ?5 AND status = ?6 AND receipt = ?7 AND lease_until > ?8",
                 params![
                     new_status,
                     available_at,
@@ -250,6 +287,7 @@ impl NativeQueue {
                     id,
                     STATUS_LEASED,
                     receipt,
+                    now,
                 ],
             )
             .map_err(QueueError::from)?;
@@ -264,7 +302,8 @@ impl NativeQueue {
     #[pyo3(signature = (id, receipt, last_error = None))]
     pub fn fail(&self, id: i64, receipt: &str, last_error: Option<&str>) -> PyResult<()> {
         let now = now_ms();
-        let conn = self.storage.connection();
+        let mut guard = self.conn()?;
+        let conn = guard.as_mut().unwrap();
         let changed = conn
             .execute(
                 "UPDATE messages SET
@@ -273,8 +312,8 @@ impl NativeQueue {
                     lease_until = NULL,
                     last_error = ?2,
                     updated_at = ?3
-                 WHERE id = ?4 AND status = ?5 AND receipt = ?6",
-                params![STATUS_FAILED, last_error, now, id, STATUS_LEASED, receipt],
+                 WHERE id = ?4 AND status = ?5 AND receipt = ?6 AND lease_until > ?7",
+                params![STATUS_FAILED, last_error, now, id, STATUS_LEASED, receipt, now],
             )
             .map_err(QueueError::from)?;
         if changed == 0 {
@@ -286,14 +325,15 @@ impl NativeQueue {
     pub fn extend_lease(&self, id: i64, receipt: &str, extend_ms: i64) -> PyResult<i64> {
         let now = now_ms();
         let new_lease_until = now + extend_ms;
-        let conn = self.storage.connection();
+        let mut guard = self.conn()?;
+        let conn = guard.as_mut().unwrap();
         let changed = conn
             .execute(
                 "UPDATE messages SET
                     lease_until = ?1,
                     updated_at = ?2
-                 WHERE id = ?3 AND status = ?4 AND receipt = ?5",
-                params![new_lease_until, now, id, STATUS_LEASED, receipt],
+                 WHERE id = ?3 AND status = ?4 AND receipt = ?5 AND lease_until > ?6",
+                params![new_lease_until, now, id, STATUS_LEASED, receipt, now],
             )
             .map_err(QueueError::from)?;
         if changed == 0 {
@@ -304,9 +344,12 @@ impl NativeQueue {
 
     pub fn reclaim_expired(&self, now: Option<i64>) -> PyResult<i64> {
         let now = now.unwrap_or_else(now_ms);
-        let mut conn = self.storage.connection();
+        let mut guard = self.conn()?;
+        let conn = guard.as_mut().unwrap();
 
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(QueueError::from)?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(QueueError::from)?;
         let to_ready = tx
             .execute(
                 "UPDATE messages SET
@@ -337,7 +380,8 @@ impl NativeQueue {
     }
 
     pub fn stats(&self) -> PyResult<Stats> {
-        let conn = self.storage.connection();
+        let mut guard = self.conn()?;
+        let conn = guard.as_mut().unwrap();
         let mut stmt = conn
             .prepare("SELECT status, COUNT(*) FROM messages WHERE queue = ?1 GROUP BY status")
             .map_err(QueueError::from)?;
@@ -359,6 +403,21 @@ impl NativeQueue {
             }
         }
         Ok(stats)
+    }
+
+    pub fn close(&self) -> PyResult<()> {
+        self.storage.close()?;
+        Ok(())
+    }
+}
+
+impl NativeQueue {
+    fn conn(&self) -> PyResult<MutexGuard<'_, Option<Connection>>> {
+        let guard = self.storage.connection();
+        if guard.is_none() {
+            return Err(QueueError::Closed.into());
+        }
+        Ok(guard)
     }
 }
 

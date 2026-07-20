@@ -2,11 +2,11 @@ use rusqlite::{Connection, OpenFlags};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::error::Result;
+use crate::error::{QueueError, Result};
 use crate::schema::SCHEMA_SQL;
 
 pub struct Storage {
-    conn: Mutex<Connection>,
+    conn: Mutex<Option<Connection>>,
 }
 
 impl Storage {
@@ -26,12 +26,20 @@ impl Storage {
         conn.execute_batch(SCHEMA_SQL)?;
 
         Ok(Self {
-            conn: Mutex::new(conn),
+            conn: Mutex::new(Some(conn)),
         })
     }
 
-    pub fn connection(&self) -> std::sync::MutexGuard<'_, Connection> {
+    pub fn connection(&self) -> std::sync::MutexGuard<'_, Option<Connection>> {
         self.conn.lock().expect("mutex envenenado")
+    }
+
+    pub fn close(&self) -> Result<()> {
+        let mut guard = self.connection();
+        if let Some(conn) = guard.take() {
+            conn.close().map_err(|(_, e)| QueueError::Sqlite(e))?;
+        }
+        Ok(())
     }
 }
 

@@ -137,3 +137,125 @@ os._exit(1)
 
         producer.close()
         consumer.close()
+
+    def test_ack_rejected_after_expiry_before_redelivery(self, tmp_path):
+        """ACK atrasado antes de outro worker reservar deve ser rejeitado."""
+        path = tmp_path / "expiry"
+        q = SimpleQueue(str(path), lease_seconds=0.3, max_retries=3)
+        q.put({"task": "stale"})
+
+        job = q.get(block=False)
+        time.sleep(0.4)
+
+        with pytest.raises(LeaseExpired):
+            q.ack(job)
+
+        q.close()
+
+    def test_nack_rejected_after_expiry_before_redelivery(self, tmp_path):
+        """NACK atrasado antes de outro worker reservar deve ser rejeitado."""
+        path = tmp_path / "expiry_nack"
+        q = SimpleQueue(str(path), lease_seconds=0.3, max_retries=3)
+        q.put({"task": "stale"})
+
+        job = q.get(block=False)
+        time.sleep(0.4)
+
+        with pytest.raises(LeaseExpired):
+            q.nack(job)
+
+        q.close()
+
+    def test_extend_lease_rejected_after_expiry(self, tmp_path):
+        """extend_lease após expiração deve ser rejeitado."""
+        path = tmp_path / "expiry_extend"
+        q = SimpleQueue(str(path), lease_seconds=0.3, max_retries=3)
+        q.put({"task": "stale"})
+
+        job = q.get(block=False)
+        time.sleep(0.4)
+
+        with pytest.raises(LeaseExpired):
+            job.extend_lease(10.0)
+
+        q.close()
+
+    def test_expired_job_does_not_exceed_max_attempts(self, tmp_path):
+        """Job não é entregue mais vezes que max_attempts via reclaim."""
+        path = tmp_path / "max_attempts"
+        q = SimpleQueue(str(path), lease_seconds=0.2, max_retries=2)
+        q.put({"task": "doomed"})
+
+        # 3 entregas: 1 inicial + 2 retries.
+        for _ in range(3):
+            job = q.get(block=False)
+            time.sleep(0.3)
+
+        # Após expirar a terceira vez, deve ir para failed.
+        with pytest.raises(Empty):
+            q.get(block=False)
+        assert q.stats()["failed"] == 1
+
+        q.close()
+
+    def test_concurrent_put_same_job_id_returns_same_id(self, tmp_path):
+        """Dois processos fazendo put com mesmo job_id retornam o mesmo id."""
+        import multiprocessing
+
+        path = tmp_path / "dedup"
+
+        def put_job(result_queue):
+            q = SimpleQueue(str(path), lease_seconds=5.0)
+            job_id = q.put({"task": "x"}, job_id="job-123")
+            result_queue.put(job_id)
+            q.close()
+
+        result_queue = multiprocessing.Queue()
+        processes = [
+            multiprocessing.Process(target=put_job, args=(result_queue,))
+            for _ in range(2)
+        ]
+        for p in processes:
+            p.start()
+        for p in processes:
+            p.join(timeout=10)
+
+        results = [result_queue.get(timeout=5), result_queue.get(timeout=5)]
+        assert results[0] == results[1]
+
+        for p in processes:
+            assert p.exitcode == 0
+
+        q = SimpleQueue(str(path), lease_seconds=5.0)
+        assert q.stats()["ready"] == 1
+        q.close()
+
+    def test_close_prevents_further_operations(self, tmp_path):
+        """Após close(), operações devem levantar erro."""
+        from simpleq import SimpleQError
+
+        path = tmp_path / "close"
+        q = SimpleQueue(str(path), lease_seconds=5.0)
+        q.put({"task": "x"})
+        q.close()
+
+        with pytest.raises(SimpleQError):
+            q.put({"task": "y"})
+
+        with pytest.raises(SimpleQError):
+            q.get(block=False)
+
+    def test_lease_expires_at_updates_on_extend(self, tmp_path):
+        """lease_expires_at é atualizado após extend_lease."""
+        path = tmp_path / "extend"
+        q = SimpleQueue(str(path), lease_seconds=0.5, max_retries=3)
+        q.put({"task": "x"})
+
+        job = q.get(block=False)
+        old_expiration = job.lease_expires_at
+
+        job.extend_lease(10.0)
+        assert job.lease_expires_at > old_expiration + 5
+
+        q.ack(job)
+        q.close()

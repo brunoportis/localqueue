@@ -7,7 +7,7 @@ import time as _time
 from typing import Any, Callable, Optional
 
 from simpleq.core import SimpleQueue
-from simpleq.exceptions import Empty
+from simpleq.exceptions import Empty, LeaseExpired
 from simpleq.job import Job
 
 log = logging.getLogger(__name__)
@@ -109,6 +109,7 @@ class Worker:
         result: list[Any] = []
         error: list[BaseException] = []
         done = threading.Event()
+        lease_lost = False
 
         def target() -> None:
             try:
@@ -125,8 +126,15 @@ class Worker:
             try:
                 job.extend_lease(self.queue.lease_seconds)
             except Exception:
-                log.warning("Falha ao renovar lease do job %s", job.id)
+                log.warning("Perdeu o lease do job %s", job.id)
+                lease_lost = True
                 break
+
+        # Espera o handler terminar, mesmo se o lease foi perdido.
+        done.wait()
+
+        if lease_lost:
+            raise LeaseExpired(f"job {job.id} perdeu o lease durante o processamento")
 
         if error:
             raise error[0]

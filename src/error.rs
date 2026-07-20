@@ -32,6 +32,9 @@ pub enum QueueError {
     #[error("job não encontrado")]
     NotFound,
 
+    #[error("fila fechada")]
+    Closed,
+
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
 
@@ -47,6 +50,7 @@ impl From<QueueError> for PyErr {
             QueueError::Empty => PyErr::new::<Empty, _>("fila vazia"),
             QueueError::LeaseExpired => PyErr::new::<LeaseExpired, _>("lease expirado"),
             QueueError::NotFound => PyErr::new::<SimpleQError, _>("job não encontrado"),
+            QueueError::Closed => PyErr::new::<SimpleQError, _>("fila fechada"),
             QueueError::Sqlite(e) => PyErr::new::<SimpleQError, _>(format!("{}", e)),
             QueueError::Io(e) => PyErr::new::<SimpleQError, _>(format!("{}", e)),
         }

@@ -1,6 +1,6 @@
 import pytest
 
-from simpleq import SimpleQueue, Worker
+from simpleq import LeaseExpired, SimpleQueue, Worker
 
 
 class PermanentError(Exception):
@@ -79,3 +79,50 @@ class TestWorker:
 
         assert queue.stats()["ready"] == 0
         assert queue.stats()["failed"] == 1
+
+    def test_heartbeat_failure_does_not_ack_running_handler(self, tmp_path):
+        """Se o heartbeat falhar, o job não deve ser confirmado."""
+        import threading
+        import time
+        from unittest.mock import patch
+
+        path = tmp_path / "heartbeat"
+        q = SimpleQueue(str(path), lease_seconds=5.0, max_retries=3)
+
+        handler_started = threading.Event()
+        handler_continue = threading.Event()
+
+        def handler(job):
+            handler_started.set()
+            handler_continue.wait(timeout=5)
+            return "done"
+
+        q.put({"id": 1})
+        worker = Worker(q, handler, heartbeat_interval=0.1)
+
+        # Força extend_lease a falhar após o handler começar.
+        original_extend = q.extend_lease
+
+        def failing_extend(job, seconds):
+            raise LeaseExpired("simulated lease loss")
+
+        with patch.object(q, "extend_lease", side_effect=failing_extend):
+            # Roda o worker em uma thread para poder controlar o handler.
+            worker_thread = threading.Thread(target=worker.run_once)
+            worker_thread.start()
+
+            # Espera o handler começar.
+            assert handler_started.wait(timeout=2)
+
+            # Espera o heartbeat falhar algumas vezes.
+            time.sleep(0.3)
+
+            # Libera o handler.
+            handler_continue.set()
+            worker_thread.join(timeout=5)
+
+        # O job não deve ter sido confirmado (deve estar em ready).
+        stats = q.stats()
+        assert stats["acked"] == 0
+
+        q.close()
