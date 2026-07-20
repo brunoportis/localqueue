@@ -1,4 +1,4 @@
-"""Facade Python para a fila persistente simpleq."""
+"""Facade Python para a fila persistente localqueue."""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ import time as _time
 from pathlib import Path
 from typing import Any, Optional, Protocol
 
-from simpleq import simpleq as _native
-from simpleq.exceptions import Empty, LeaseExpired, SimpleQError
-from simpleq.job import Job
+from localqueue import localqueue as _native
+from localqueue.exceptions import Empty, LeaseExpired, LocalQueueError
+from localqueue.job import Job
 
 log = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ class SimpleQueue:
         self.serializer = serializer or JsonSerializer()
 
         self.path.mkdir(parents=True, exist_ok=True)
-        db_path = self.path / "simpleq.db"
+        db_path = self.path / "localqueue.db"
 
         self._native: Optional[_native.NativeQueue] = _native.NativeQueue(
             str(db_path),
@@ -83,7 +83,7 @@ class SimpleQueue:
     def _get_native(self) -> "_native.NativeQueue":
         native = self._native
         if native is None:
-            raise SimpleQError("fila fechada")
+            raise LocalQueueError("fila fechada")
         return native
 
     def put(self, data: Any, job_id: Optional[str] = None) -> int:
@@ -253,7 +253,7 @@ class SimpleQueue:
         self._get_native().retry_failed(message_id)
 
     def vacuum(self) -> None:
-        """Compacta todo o ``simpleq.db`` compartilhado pelas filas.
+        """Compacta todo o ``localqueue.db`` compartilhado pelas filas.
 
         A operação pode disputar o lock do SQLite com workers ativos.
         """
