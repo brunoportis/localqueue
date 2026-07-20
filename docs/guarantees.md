@@ -1,6 +1,6 @@
 # Garantias de entrega
 
-O simpleq é uma fila persistente local baseada em SQLite. A garantia de
+O localqueue é uma fila persistente local baseada em SQLite. A garantia de
 entrega é **at-least-once**: uma mensagem pode ser entregue novamente quando a
 tentativa anterior não confirmou o processamento.
 

@@ -1,4 +1,4 @@
-# simpleq
+# localqueue
 
 Fila persistente local em SQLite com ACK, lease e retry.
 
@@ -21,9 +21,9 @@ garantindo atomicidade mesmo com múltiplos processos e threads. A facade em
 ## Arquitetura
 
 ```text
-simpleq/
+localqueue/
 ├── src/               # Rust: schema, storage, queue, error, lib (pyo3)
-├── python/simpleq/    # Python: SimpleQueue, Job, Worker, exceções
+├── python/localqueue/    # Python: SimpleQueue, Job, Worker, exceções
 ├── Cargo.toml
 └── pyproject.toml     # build via maturin
 ```
@@ -36,7 +36,7 @@ transação.
 ## Uso rápido
 
 ```python
-from simpleq import SimpleQueue
+from localqueue import SimpleQueue
 
 with SimpleQueue("./data", lease_seconds=30, max_retries=3) as q:
     q.put({"type": "deploy", "app": "jarvis", "revision": "abc123"})
@@ -53,7 +53,7 @@ with SimpleQueue("./data", lease_seconds=30, max_retries=3) as q:
 ## Worker
 
 ```python
-from simpleq import SimpleQueue, Worker
+from localqueue import SimpleQueue, Worker
 
 def deploy(job):
     print(f"Deploying {job.data['app']}@{job.data['revision']}")
@@ -99,7 +99,7 @@ As garantias completas de durabilidade, leases, retries e fencing estão em
 * ``purge(older_than, include_failed=False)`` – remove mensagens antigas.
 * ``list_failed(limit=100, offset=0)`` – lista mensagens na dead-letter.
 * ``retry_failed(message_id)`` – move mensagem failed de volta para ready.
-* ``vacuum()`` – compacta todo o arquivo compartilhado ``simpleq.db``. Pode
+* ``vacuum()`` – compacta todo o arquivo compartilhado ``localqueue.db``. Pode
   disputar o lock do SQLite com workers ativos, portanto prefira executá-lo em
   uma janela de manutenção.
 

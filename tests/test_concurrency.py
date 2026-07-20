@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from simpleq import Empty, SimpleQueue
+from localqueue import Empty, SimpleQueue
 
 
 @pytest.fixture

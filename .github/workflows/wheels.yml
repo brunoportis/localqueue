@@ -81,7 +81,7 @@ jobs:
           python - <<'PY'
           import tempfile
 
-          from simpleq import SimpleQueue
+          from localqueue import SimpleQueue
 
           with tempfile.TemporaryDirectory() as path:
               queue = SimpleQueue(path)

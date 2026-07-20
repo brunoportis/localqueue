@@ -8,7 +8,7 @@ import typing
 
 import pytest
 
-from simpleq import Empty, Job, LeaseExpired, SimpleQError, SimpleQueue
+from localqueue import Empty, Job, LeaseExpired, LocalQueueError, SimpleQueue
 
 
 class TestContract:
@@ -58,7 +58,7 @@ class TestContract:
         code = f"""
 import sys
 sys.path.insert(0, {repr(str(tmp_path))})
-from simpleq import SimpleQueue
+from localqueue import SimpleQueue
 
 q = SimpleQueue({repr(str(path))}, lease_seconds=0.5, max_retries=3)
 q.put({{"task": "crash"}})
@@ -233,17 +233,17 @@ os._exit(1)
 
     def test_close_prevents_further_operations(self, tmp_path):
         """Após close(), operações devem levantar erro."""
-        from simpleq import SimpleQError
+        from localqueue import LocalQueueError
 
         path = tmp_path / "close"
         q = SimpleQueue(str(path), lease_seconds=5.0)
         q.put({"task": "x"})
         q.close()
 
-        with pytest.raises(SimpleQError):
+        with pytest.raises(LocalQueueError):
             q.put({"task": "y"})
 
-        with pytest.raises(SimpleQError):
+        with pytest.raises(LocalQueueError):
             q.get(block=False)
 
     def test_lease_expires_at_updates_on_extend(self, tmp_path):
@@ -271,7 +271,7 @@ os._exit(1)
         owner.put({"email": "x"})
         job = owner.get(block=False)
 
-        with pytest.raises(SimpleQError):
+        with pytest.raises(LocalQueueError):
             if transition == "extend_lease":
                 other.extend_lease(job, 5.0)
             else:

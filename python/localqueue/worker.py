@@ -1,13 +1,13 @@
-"""Worker genérico para processar jobs do simpleq."""
+"""Worker genérico para processar jobs do localqueue."""
 
 from __future__ import annotations
 
 import logging
 from typing import Any, Callable, Optional
 
-from simpleq.core import SimpleQueue
-from simpleq.exceptions import Empty, LeaseExpired
-from simpleq.job import Job
+from localqueue.core import SimpleQueue
+from localqueue.exceptions import Empty, LeaseExpired
+from localqueue.job import Job
 
 log = logging.getLogger(__name__)
 
