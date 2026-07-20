@@ -31,6 +31,18 @@ def worker_process(path, num_jobs, result_queue):
     q.close()
 
 
+def producer_process(path, name, num_jobs, result_queue):
+    """Produtor em processo separado usando put_many com job_ids."""
+    from localqueue import EnqueueItem
+
+    q = SimpleQueue(path, name=name, lease_seconds=2.0, max_retries=1)
+    ids = q.put_many(
+        [EnqueueItem(data={"id": i}, job_id=f"job-{i}") for i in range(num_jobs)]
+    )
+    result_queue.put(ids)
+    q.close()
+
+
 class TestConcurrency:
     def test_multiple_threads_do_not_duplicate_jobs(self, queue):
         """Vários workers na mesma thread não processam o mesmo job."""
@@ -106,3 +118,36 @@ class TestConcurrency:
         assert stats["acked"] == num_jobs
         assert stats["ready"] == 0
         assert stats["processing"] == 0
+
+    def test_concurrent_put_many_deduplicates_across_processes(self, tmp_path):
+        """Dois processos produzindo em lote com os mesmos job_ids."""
+        path = tmp_path / "multiproc-batch"
+        q = SimpleQueue(str(path), lease_seconds=2.0, max_retries=1)
+        q.close()
+
+        num_jobs = 50
+        result_queue = multiprocessing.Queue()
+        processes = [
+            multiprocessing.Process(
+                target=producer_process,
+                args=(str(path), "batch", num_jobs, result_queue),
+            )
+            for _ in range(2)
+        ]
+        for p in processes:
+            p.start()
+        for p in processes:
+            p.join(timeout=30)
+            assert p.exitcode == 0
+
+        all_ids = []
+        while not result_queue.empty():
+            all_ids.extend(result_queue.get())
+
+        # Cada job_id existe uma única vez; os dois processos veem os mesmos ids.
+        assert len(all_ids) == 2 * num_jobs
+        assert len(set(all_ids)) == num_jobs
+
+        q = SimpleQueue(str(path), name="batch", lease_seconds=2.0, max_retries=1)
+        assert q.stats()["ready"] == num_jobs
+        q.close()

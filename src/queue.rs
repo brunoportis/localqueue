@@ -3,7 +3,7 @@ use rusqlite::{params, Connection, TransactionBehavior};
 use std::sync::MutexGuard;
 
 use crate::error::QueueError;
-use crate::storage::{now_ms, Storage};
+use crate::storage::{now_ms, EnqueueEntry, Storage};
 
 pub const STATUS_READY: i64 = 0;
 pub const STATUS_LEASED: i64 = 1;
@@ -78,66 +78,66 @@ impl NativeQueue {
     pub fn put(&self, py: Python<'_>, payload: Vec<u8>, job_id: Option<&str>) -> PyResult<i64> {
         let job_id = job_id.map(str::to_owned);
         py.detach(move || {
-            let now = now_ms();
-            let mut guard = self.conn()?;
-            let conn = guard.as_mut().unwrap();
+            let entries = [EnqueueEntry {
+                queue_name: &self.queue,
+                payload: &payload,
+                job_id: job_id.as_deref(),
+            }];
+            let ids = self.storage.enqueue_batch(&entries, self.max_attempts)?;
+            Ok(ids[0])
+        })
+    }
 
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(QueueError::from)?;
-
-            if let Some(jid) = job_id.as_deref() {
-                tx.execute(
-                    "INSERT OR IGNORE INTO messages (
-                    queue, payload, status, attempts, max_attempts,
-                    available_at, lease_until, receipt, job_id,
-                    created_at, updated_at
-                ) VALUES (?1, ?2, ?3, 0, ?4, ?5, NULL, NULL, ?6, ?7, ?8)",
-                    params![
-                        self.queue,
-                        payload,
-                        STATUS_READY,
-                        self.max_attempts,
-                        now,
-                        jid,
-                        now,
-                        now,
-                    ],
-                )
-                .map_err(QueueError::from)?;
-
-                let id: i64 = tx
-                    .query_row(
-                        "SELECT id FROM messages WHERE queue = ?1 AND job_id = ?2",
-                        params![self.queue, jid],
-                        |row| row.get(0),
-                    )
-                    .map_err(QueueError::from)?;
-                tx.commit().map_err(QueueError::from)?;
-                Ok(id)
-            } else {
-                tx.execute(
-                    "INSERT INTO messages (
-                    queue, payload, status, attempts, max_attempts,
-                    available_at, lease_until, receipt, job_id,
-                    created_at, updated_at
-                ) VALUES (?1, ?2, ?3, 0, ?4, ?5, NULL, NULL, ?6, ?7, ?8)",
-                    params![
-                        self.queue,
-                        payload,
-                        STATUS_READY,
-                        self.max_attempts,
-                        now,
-                        job_id,
-                        now,
-                        now,
-                    ],
-                )
-                .map_err(QueueError::from)?;
-                let id = tx.last_insert_rowid();
-                tx.commit().map_err(QueueError::from)?;
-                Ok(id)
+    /// Insere várias mensagens na fila em uma única transação.
+    pub fn put_many(
+        &self,
+        py: Python<'_>,
+        payloads: Vec<Vec<u8>>,
+        job_ids: Option<Vec<Option<String>>>,
+    ) -> PyResult<Vec<i64>> {
+        if let Some(ids) = &job_ids {
+            if ids.len() != payloads.len() {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "'job_ids' deve ter o mesmo tamanho de 'payloads'",
+                ));
             }
+        }
+        py.detach(move || {
+            let entries: Vec<EnqueueEntry<'_>> = payloads
+                .iter()
+                .enumerate()
+                .map(|(index, payload)| EnqueueEntry {
+                    queue_name: &self.queue,
+                    payload,
+                    job_id: job_ids
+                        .as_ref()
+                        .and_then(|ids| ids[index].as_deref()),
+                })
+                .collect();
+            Ok(self.storage.enqueue_batch(&entries, self.max_attempts)?)
+        })
+    }
+
+    /// Fan-out interno: mesmo payload para várias filas, em uma transação.
+    ///
+    /// `targets` é uma lista de (queue_name, job_id). Uso interno (event bus);
+    /// não faz parte da facade pública Python.
+    pub fn fanout(
+        &self,
+        py: Python<'_>,
+        payload: Vec<u8>,
+        targets: Vec<(String, Option<String>)>,
+    ) -> PyResult<Vec<i64>> {
+        py.detach(move || {
+            let entries: Vec<EnqueueEntry<'_>> = targets
+                .iter()
+                .map(|(queue_name, job_id)| EnqueueEntry {
+                    queue_name,
+                    payload: &payload,
+                    job_id: job_id.as_deref(),
+                })
+                .collect();
+            Ok(self.storage.enqueue_batch(&entries, self.max_attempts)?)
         })
     }
 

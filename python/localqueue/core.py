@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import time as _time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional, Protocol
+from typing import Any, Optional, Protocol, Union
 
 from localqueue import localqueue as _native
 from localqueue.exceptions import Empty, LeaseExpired, LocalQueueError
@@ -31,6 +32,14 @@ class JsonSerializer:
 
     def loads(self, data: bytes) -> Any:
         return json.loads(data.decode("utf-8"))
+
+
+@dataclass
+class EnqueueItem:
+    """Item de um :meth:`SimpleQueue.put_many` com ``job_id`` opcional."""
+
+    data: Any
+    job_id: Optional[str] = None
 
 
 class SimpleQueue:
@@ -95,6 +104,28 @@ class SimpleQueue:
         """
         payload = self.serializer.dumps(data)
         return self._get_native().put(payload, job_id)
+
+    def put_many(self, items: list[Union[Any, EnqueueItem]]) -> list[int]:
+        """Adiciona vários itens à fila em uma única transação.
+
+        :param items: payloads simples ou instâncias de :class:`EnqueueItem`
+            (para deduplicação por ``job_id``).
+        :return: ids internos dos itens, na ordem de entrada.
+        """
+        payloads: list[bytes] = []
+        job_ids: list[Optional[str]] = []
+        has_job_id = False
+        for item in items:
+            if isinstance(item, EnqueueItem):
+                payloads.append(self.serializer.dumps(item.data))
+                job_ids.append(item.job_id)
+                has_job_id = has_job_id or item.job_id is not None
+            else:
+                payloads.append(self.serializer.dumps(item))
+                job_ids.append(None)
+        return self._get_native().put_many(
+            payloads, job_ids if has_job_id else None
+        )
 
     def get(
         self, block: bool = True, timeout: Optional[float] = None
