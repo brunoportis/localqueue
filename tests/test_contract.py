@@ -11,6 +11,13 @@ import pytest
 from localqueue import Empty, Job, LeaseExpired, LocalQueueError, SimpleQueue
 
 
+def _put_job_with_same_id(path: str, result_queue) -> None:
+    q = SimpleQueue(path, lease_seconds=5.0)
+    job_id = q.put({"task": "x"}, job_id="job-123")
+    result_queue.put(job_id)
+    q.close()
+
+
 class TestContract:
     def test_two_queues_same_db(self, tmp_path):
         """Duas filas com nomes diferentes no mesmo banco."""
@@ -205,15 +212,12 @@ os._exit(1)
 
         path = tmp_path / "dedup"
 
-        def put_job(result_queue):
-            q = SimpleQueue(str(path), lease_seconds=5.0)
-            job_id = q.put({"task": "x"}, job_id="job-123")
-            result_queue.put(job_id)
-            q.close()
-
         result_queue = multiprocessing.Queue()
         processes = [
-            multiprocessing.Process(target=put_job, args=(result_queue,))
+            multiprocessing.Process(
+                target=_put_job_with_same_id,
+                args=(str(path), result_queue),
+            )
             for _ in range(2)
         ]
         for p in processes:
