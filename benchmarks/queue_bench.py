@@ -58,11 +58,12 @@ def payloads(count: int, payload_bytes: int) -> list[dict[str, Any]]:
     return [{"id": index, "padding": padding} for index in range(count)]
 
 
-def make_queue(backend: str, root: Path) -> Any:
+def make_queue(backend: str, root: Path, fsync: bool) -> Any:
     if backend == "simpleq":
         return SimpleQueue(
             str(root / "simpleq"),
             lease_seconds=60.0,
+            fsync=fsync,
             serializer=PickleSerializer(),
         )
     if backend == "persist-queue":
@@ -74,6 +75,21 @@ def make_queue(backend: str, root: Path) -> Any:
             ) from error
         return persistqueue.SQLiteAckQueue(str(root / "persist-queue.db"))
     raise ValueError(f"backend desconhecido: {backend}")
+
+
+def sqlite_settings(backend: str, queue: Any) -> dict[str, Any]:
+    if backend == "simpleq":
+        journal_mode, synchronous = queue._native.pragma_settings()
+    else:
+        connection = queue._conn
+        journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+        synchronous = connection.execute("PRAGMA synchronous").fetchone()[0]
+    synchronous_names = {0: "OFF", 1: "NORMAL", 2: "FULL", 3: "EXTRA"}
+    return {
+        "journal_mode": str(journal_mode).upper(),
+        "synchronous": int(synchronous),
+        "synchronous_name": synchronous_names.get(int(synchronous), "UNKNOWN"),
+    }
 
 
 def close_queue(queue: Any) -> None:
@@ -88,16 +104,21 @@ def run_operation(
     messages: int,
     repetitions: int,
     payload_bytes: int,
+    durability: str,
 ) -> dict[str, Any]:
     operation_latencies: list[int] = []
     total_elapsed_ns = 0
+    settings: dict[str, Any] | None = None
+    fsync = durability == "full"
 
     for _ in range(repetitions):
         with tempfile.TemporaryDirectory(prefix="simpleq-bench-") as directory:
             root = Path(directory)
-            queue = make_queue(backend, root)
+            queue = make_queue(backend, root, fsync)
             items = payloads(messages, payload_bytes)
             try:
+                if settings is None:
+                    settings = sqlite_settings(backend, queue)
                 if operation == "read_ack":
                     for item in items:
                         queue.put(item)
@@ -134,6 +155,8 @@ def run_operation(
         "messages": messages,
         "repetitions": repetitions,
         "payload_bytes": payload_bytes,
+        "durability": durability,
+        "sqlite": settings,
         "throughput_messages_per_second": messages * repetitions / elapsed_seconds,
         "latency_microseconds": {
             "p50": percentile(operation_latencies, 0.50) / 1_000,
@@ -159,6 +182,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--messages", type=int, default=1_000)
     parser.add_argument("--repetitions", type=int, default=5)
     parser.add_argument("--payload-bytes", type=int, default=128)
+    parser.add_argument(
+        "--durability",
+        choices=("normal", "full"),
+        default="normal",
+        help="política do simpleq; persist-queue mantém sua configuração padrão",
+    )
     parser.add_argument("--output", type=Path)
     return parser.parse_args()
 
@@ -181,6 +210,7 @@ def main() -> int:
                 args.messages,
                 args.repetitions,
                 args.payload_bytes,
+                args.durability,
             )
             for backend in backends
         ],

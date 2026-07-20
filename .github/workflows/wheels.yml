@@ -19,12 +19,16 @@ jobs:
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             manylinux: '2_17'
+          - name: linux-aarch64
+            os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            manylinux: '2_17'
           - name: macos-x86_64
-            os: macos-13
+            os: macos-15-intel
             target: x86_64-apple-darwin
             manylinux: off
           - name: macos-arm64
-            os: macos-14
+            os: macos-15
             target: aarch64-apple-darwin
             manylinux: off
           - name: windows-x86_64
@@ -35,6 +39,10 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+
+      - name: Set up QEMU for Linux ARM64
+        if: matrix.name == 'linux-aarch64'
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Python interpreters
         uses: actions/setup-python@v6
@@ -52,7 +60,7 @@ jobs:
           command: build
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
-          args: --release --find-interpreter --compatibility pypi
+          args: --release --locked --find-interpreter --compatibility pypi
           maturin-version: v1.14.1
 
       - name: Set up smoke-test Python
@@ -61,10 +69,12 @@ jobs:
           python-version: '3.13'
 
       - name: Install one wheel for smoke testing
+        if: matrix.name != 'linux-aarch64'
         shell: bash
         run: python -m pip install --force-reinstall --no-index target/wheels/*cp313*.whl
 
       - name: Smoke-test installed wheel outside the checkout
+        if: matrix.name != 'linux-aarch64'
         shell: bash
         run: |
           cd "$RUNNER_TEMP"
@@ -81,6 +91,11 @@ jobs:
               assert queue.stats()["acked"] == 1
               queue.close()
           PY
+
+      - name: Validate Linux ARM64 wheel artifact
+        if: matrix.name == 'linux-aarch64'
+        shell: bash
+        run: test -n "$(find target/wheels -name '*cp313*.whl' -print -quit)"
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4

@@ -8,6 +8,19 @@ uv pip install -e '.[benchmark]'
 python benchmarks/queue_bench.py --backend both --operation roundtrip
 ```
 
+Para comparar as duas políticas do simpleq, execute o mesmo cenário duas
+vezes:
+
+```bash
+python benchmarks/queue_bench.py --durability normal --output normal.json
+python benchmarks/queue_bench.py --durability full --output full.json
+```
+
+Cada resultado inclui `journal_mode`, `synchronous` e o nome da política
+observada na conexão SQLite de cada backend. O `persist-queue` mantém sua
+configuração padrão; no benchmark atual ela é registrada explicitamente para
+que a diferença em relação a `NORMAL` não fique escondida.
+
 Operações disponíveis:
 
 - `write`: somente `put()`;
