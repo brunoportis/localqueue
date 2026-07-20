@@ -3,6 +3,7 @@
 [![PyPI](https://img.shields.io/pypi/v/localqueue.svg)](https://pypi.org/project/localqueue/)
 [![Python](https://img.shields.io/pypi/pyversions/localqueue.svg)](https://pypi.org/project/localqueue/)
 [![CI](https://github.com/brunoportis/localqueue/actions/workflows/ci.yml/badge.svg)](https://github.com/brunoportis/localqueue/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/brunoportis/localqueue/blob/main/LICENSE)
 
 A persistent, multiprocess-safe local queue for Python, backed by SQLite and Rust.
 
@@ -218,3 +219,7 @@ Build a release wheel:
 ```bash
 uv run maturin build --release --locked
 ```
+
+## License
+
+Licensed under the [Apache License 2.0](https://github.com/brunoportis/localqueue/blob/main/LICENSE).
