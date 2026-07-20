@@ -3,7 +3,7 @@ import sqlite3
 import threading
 import time
 
-from simpleq import SimpleQueue
+from localqueue import SimpleQueue
 
 
 def hold_write_lock(database_path, ready):
@@ -24,7 +24,7 @@ def test_put_releases_gil_while_waiting_for_sqlite_lock(tmp_path):
     ready = context.Event()
     holder = context.Process(
         target=hold_write_lock,
-        args=(str(path / "simpleq.db"), ready),
+        args=(str(path / "localqueue.db"), ready),
     )
     holder.start()
     assert ready.wait(timeout=5)

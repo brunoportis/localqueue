@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from simpleq import LeaseExpired, SimpleQueue, Worker
+from localqueue import LeaseExpired, SimpleQueue, Worker
 
 
 class PermanentError(Exception):

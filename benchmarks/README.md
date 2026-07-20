@@ -8,7 +8,7 @@ uv pip install -e '.[benchmark]'
 python benchmarks/queue_bench.py --backend both --operation roundtrip
 ```
 
-Para comparar as duas políticas do simpleq, execute o mesmo cenário duas
+Para comparar as duas políticas do localqueue, execute o mesmo cenário duas
 vezes:
 
 ```bash

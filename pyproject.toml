@@ -1,6 +1,6 @@
 [project]
-name = "simpleq"
-version = "0.1.0"
+name = "localqueue"
+version = "1.0.0"
 description = "Fila persistente local em SQLite com ACK, lease e retry."
 readme = "README.md"
 requires-python = ">=3.10"

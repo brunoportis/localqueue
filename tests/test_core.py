@@ -2,7 +2,7 @@ import time
 
 import pytest
 
-from simpleq import Empty, SimpleQueue
+from localqueue import Empty, SimpleQueue
 
 
 @pytest.fixture
@@ -170,7 +170,7 @@ class TestSimpleQueue:
         assert job2.receipt != job.receipt
 
         # ACK atrasado do primeiro worker deve ser rejeitado.
-        from simpleq import LeaseExpired
+        from localqueue import LeaseExpired
 
         with pytest.raises(LeaseExpired):
             queue.ack(job)

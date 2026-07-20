@@ -2,7 +2,7 @@ import time
 
 import pytest
 
-from simpleq import SimpleQueue
+from localqueue import SimpleQueue
 
 
 @pytest.fixture
@@ -96,9 +96,9 @@ class TestMaintenance:
         queue.ack(job2)
 
     def test_retry_failed_not_found(self, queue):
-        from simpleq import SimpleQError
+        from localqueue import LocalQueueError
 
-        with pytest.raises(SimpleQError):
+        with pytest.raises(LocalQueueError):
             queue.retry_failed(999)
 
     def test_vacuum(self, queue):

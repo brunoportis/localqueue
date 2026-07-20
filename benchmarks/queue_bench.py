@@ -1,4 +1,4 @@
-"""Benchmark reproduzível dos caminhos comuns de simpleq e persist-queue.
+"""Benchmark reproduzível dos caminhos comuns de localqueue e persist-queue.
 
 Exemplos:
 
@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from simpleq import SimpleQueue
+from localqueue import SimpleQueue
 
 
 class PickleSerializer:
@@ -59,9 +59,9 @@ def payloads(count: int, payload_bytes: int) -> list[dict[str, Any]]:
 
 
 def make_queue(backend: str, root: Path, fsync: bool) -> Any:
-    if backend == "simpleq":
+    if backend == "localqueue":
         return SimpleQueue(
-            str(root / "simpleq"),
+            str(root / "localqueue"),
             lease_seconds=60.0,
             fsync=fsync,
             serializer=PickleSerializer(),
@@ -78,7 +78,7 @@ def make_queue(backend: str, root: Path, fsync: bool) -> Any:
 
 
 def sqlite_settings(backend: str, queue: Any) -> dict[str, Any]:
-    if backend == "simpleq":
+    if backend == "localqueue":
         journal_mode, synchronous = queue._native.pragma_settings()
     else:
         connection = queue._conn
@@ -112,7 +112,7 @@ def run_operation(
     fsync = durability == "full"
 
     for _ in range(repetitions):
-        with tempfile.TemporaryDirectory(prefix="simpleq-bench-") as directory:
+        with tempfile.TemporaryDirectory(prefix="localqueue-bench-") as directory:
             root = Path(directory)
             queue = make_queue(backend, root, fsync)
             items = payloads(messages, payload_bytes)
@@ -171,7 +171,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--backend",
-        choices=("simpleq", "persist-queue", "both"),
+        choices=("localqueue", "persist-queue", "both"),
         default="both",
     )
     parser.add_argument(
@@ -186,7 +186,7 @@ def parse_args() -> argparse.Namespace:
         "--durability",
         choices=("normal", "full"),
         default="normal",
-        help="política do simpleq; persist-queue mantém sua configuração padrão",
+        help="política do localqueue; persist-queue mantém sua configuração padrão",
     )
     parser.add_argument("--output", type=Path)
     return parser.parse_args()
@@ -197,7 +197,7 @@ def main() -> int:
     if args.messages < 1 or args.repetitions < 1:
         raise ValueError("--messages e --repetitions devem ser positivos")
 
-    backends = ("simpleq", "persist-queue") if args.backend == "both" else (args.backend,)
+    backends = ("localqueue", "persist-queue") if args.backend == "both" else (args.backend,)
     result = {
         "revision": git_revision(),
         "python": platform.python_version(),

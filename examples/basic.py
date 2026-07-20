@@ -1,6 +1,6 @@
-"""Exemplo básico de produtor e consumidor com simpleq."""
+"""Exemplo básico de produtor e consumidor com localqueue."""
 
-from simpleq import SimpleQueue
+from localqueue import SimpleQueue
 
 DATA_DIR = "./data/example"
 

@@ -1,4 +1,4 @@
-"""Executa um stress test multiprocesso reproduzível para o simpleq.
+"""Executa um stress test multiprocesso reproduzível para o localqueue.
 
 Exemplo curto:
 
@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from simpleq import Empty, SimpleQueue
+from localqueue import Empty, SimpleQueue
 
 
 def produce(path: str, queue_name: str, first: int, count: int) -> None:
@@ -68,7 +68,7 @@ def consume(
 
 
 def database_state(path: Path, queue_name: str) -> dict[str, Any]:
-    database = path / "simpleq.db"
+    database = path / "localqueue.db"
     with sqlite3.connect(database) as connection:
         integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
         rows = connection.execute(
@@ -99,7 +99,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     queue_name = "stress"
     temporary_directory = None
     if args.path is None:
-        temporary_directory = tempfile.TemporaryDirectory(prefix="simpleq-stress-")
+        temporary_directory = tempfile.TemporaryDirectory(prefix="localqueue-stress-")
         path = Path(temporary_directory.name)
     else:
         path = Path(args.path)
@@ -117,7 +117,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             process = context.Process(
                 target=produce,
                 args=(str(path), queue_name, first, count),
-                name=f"simpleq-producer-{producer_id}",
+                name=f"localqueue-producer-{producer_id}",
             )
             process.start()
             producers.append(process)
@@ -135,7 +135,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     args.fail_rate,
                     args.crash_rate,
                 ),
-                name=f"simpleq-consumer-{consumer_id}-{restart}",
+                name=f"localqueue-consumer-{consumer_id}-{restart}",
             )
             process.start()
             return process
