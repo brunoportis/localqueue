@@ -18,10 +18,10 @@ impl Storage {
                 | OpenFlags::SQLITE_OPEN_URI,
         )?;
 
+        conn.pragma_update(None, "busy_timeout", 5000)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", if fsync { "FULL" } else { "NORMAL" })?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.pragma_update(None, "busy_timeout", 5000)?;
 
         conn.execute_batch(SCHEMA_SQL)?;
 
