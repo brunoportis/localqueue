@@ -36,6 +36,10 @@ jobs:
             target: x86_64-pc-windows-msvc
             manylinux: off
     runs-on: ${{ matrix.os }}
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -97,9 +101,18 @@ jobs:
         shell: bash
         run: test -n "$(find target/wheels -name '*cp313*.whl' -print -quit)"
 
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheels-${{ matrix.name }}
-          path: target/wheels/*.whl
-          if-no-files-found: error
+      - name: Install release tools
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python -m pip install --upgrade "maturin>=1.14,<2" uv
+
+      - name: Build and publish source distribution
+        if: matrix.name == 'linux-x86_64' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          maturin sdist --out target/dist
+          uv publish target/dist/*.tar.gz
+
+      - name: Publish wheel
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: uv publish target/wheels/*.whl
