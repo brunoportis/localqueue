@@ -38,6 +38,23 @@ pub struct Stats {
     pub failed: i64,
 }
 
+#[derive(Debug, Clone)]
+#[pyclass(skip_from_py_object)]
+pub struct FailedMessage {
+    #[pyo3(get)]
+    pub id: i64,
+    #[pyo3(get)]
+    pub payload: Vec<u8>,
+    #[pyo3(get)]
+    pub attempts: i64,
+    #[pyo3(get)]
+    pub last_error: Option<String>,
+    #[pyo3(get)]
+    pub created_at: i64,
+    #[pyo3(get)]
+    pub updated_at: i64,
+}
+
 #[pyclass]
 pub struct NativeQueue {
     storage: Storage,
@@ -403,6 +420,94 @@ impl NativeQueue {
             }
         }
         Ok(stats)
+    }
+
+    /// Remove mensagens `acked` ou `failed` mais antigas que `older_than_ms`.
+    #[pyo3(signature = (older_than_ms, status = None))]
+    pub fn purge(&self, older_than_ms: i64, status: Option<i64>) -> PyResult<i64> {
+        let now = now_ms();
+        let cutoff = now - older_than_ms;
+        let mut guard = self.conn()?;
+        let conn = guard.as_mut().unwrap();
+
+        let status_filter = status.unwrap_or(STATUS_ACKED);
+        let changed = conn
+            .execute(
+                "DELETE FROM messages
+                 WHERE queue = ?1 AND status = ?2 AND updated_at < ?3",
+                params![self.queue, status_filter, cutoff],
+            )
+            .map_err(QueueError::from)?;
+        Ok(changed as i64)
+    }
+
+    /// Lista mensagens na dead-letter (status = failed).
+    #[pyo3(signature = (limit = 100, offset = 0))]
+    pub fn list_failed(&self, limit: i64, offset: i64) -> PyResult<Vec<FailedMessage>> {
+        let mut guard = self.conn()?;
+        let conn = guard.as_mut().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, payload, attempts, last_error, created_at, updated_at
+                 FROM messages
+                 WHERE queue = ?1 AND status = ?2
+                 ORDER BY id
+                 LIMIT ?3 OFFSET ?4",
+            )
+            .map_err(QueueError::from)?;
+
+        let rows = stmt
+            .query_map(params![self.queue, STATUS_FAILED, limit, offset], |row| {
+                Ok(FailedMessage {
+                    id: row.get(0)?,
+                    payload: row.get(1)?,
+                    attempts: row.get(2)?,
+                    last_error: row.get(3)?,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                })
+            })
+            .map_err(QueueError::from)?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(QueueError::from)?);
+        }
+        Ok(result)
+    }
+
+    /// Move uma mensagem `failed` de volta para `ready`.
+    pub fn retry_failed(&self, id: i64) -> PyResult<()> {
+        let now = now_ms();
+        let mut guard = self.conn()?;
+        let conn = guard.as_mut().unwrap();
+        let changed = conn
+            .execute(
+                "UPDATE messages SET
+                    status = ?1,
+                    available_at = ?2,
+                    attempts = 0,
+                    receipt = NULL,
+                    lease_until = NULL,
+                    last_error = NULL,
+                    updated_at = ?3
+                 WHERE id = ?4 AND queue = ?5 AND status = ?6",
+                params![STATUS_READY, now, now, id, self.queue, STATUS_FAILED],
+            )
+            .map_err(QueueError::from)?;
+        if changed == 0 {
+            return Err(QueueError::NotFound.into());
+        }
+        Ok(())
+    }
+
+    /// Executa VACUUM no banco para compactar.
+    pub fn vacuum(&self) -> PyResult<()> {
+        let mut guard = self.conn()?;
+        let conn = guard.as_mut().unwrap();
+        conn.execute("VACUUM", params![])
+            .map_err(QueueError::from)?;
+        Ok(())
     }
 
     pub fn close(&self) -> PyResult<()> {

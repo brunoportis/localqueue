@@ -78,6 +78,25 @@ exemplo, se um worker morrer logo após dar `ack` mas antes de persistir).
 Recomenda-se que os handlers sejam idempotentes — use `job_id` para
 deduplicação quando necessário.
 
+## API resumida
+
+* ``put(data, job_id=None)`` – enfileira um item.
+* ``get(block=True, timeout=None)`` – retira um item com lease.
+* ``get_nowait()`` – variação não bloqueante.
+* ``ack(job)`` – confirma processamento.
+* ``nack(job, delay=0, last_error=None)`` – devolve à fila (erro transitório).
+* ``fail(job, last_error=None)`` – envia para dead-letter.
+* ``extend_lease(job, seconds)`` – renova o lease de um job.
+* ``reclaim_expired_leases()`` – recupera leases expirados manualmente.
+* ``stats()`` – retorna contagens de ready, processing, acked e failed.
+
+## Manutenção
+
+* ``purge(older_than, include_failed=False)`` – remove mensagens antigas.
+* ``list_failed(limit=100, offset=0)`` – lista mensagens na dead-letter.
+* ``retry_failed(message_id)`` – move mensagem failed de volta para ready.
+* ``vacuum()`` – compacta o banco de dados.
+
 ## Desenvolvimento
 
 ```bash

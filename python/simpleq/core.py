@@ -194,6 +194,55 @@ class SimpleQueue:
             queue=self,
         )
 
+    def purge(self, older_than: float, *, include_failed: bool = False) -> int:
+        """Remove mensagens antigas da fila.
+
+        :param older_than: idade máxima em segundos. Mensagens mais antigas
+            serão removidas.
+        :param include_failed: quando ``True``, também remove mensagens
+            ``failed``. Por padrão apenas ``acked`` são removidas.
+        :return: número de mensagens removidas.
+        """
+        older_than_ms = int(older_than * 1000)
+        removed = 0
+        removed += self._get_native().purge(older_than_ms, 2)  # acked
+        if include_failed:
+            removed += self._get_native().purge(older_than_ms, 3)  # failed
+        return removed
+
+    def list_failed(
+        self, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Lista mensagens na dead-letter.
+
+        :param limit: número máximo de mensagens.
+        :param offset: deslocamento para paginação.
+        :return: lista de dicionários com informações das mensagens.
+        """
+        failed = self._get_native().list_failed(limit, offset)
+        return [
+            {
+                "id": msg.id,
+                "data": self.serializer.loads(msg.payload),
+                "attempts": msg.attempts,
+                "last_error": msg.last_error,
+                "created_at": msg.created_at / 1000.0,
+                "updated_at": msg.updated_at / 1000.0,
+            }
+            for msg in failed
+        ]
+
+    def retry_failed(self, message_id: int) -> None:
+        """Move uma mensagem da dead-letter de volta para a fila.
+
+        :param message_id: id da mensagem a ser retentada.
+        """
+        self._get_native().retry_failed(message_id)
+
+    def vacuum(self) -> None:
+        """Compacta o banco de dados."""
+        self._get_native().vacuum()
+
     def close(self) -> None:
         """Fecha a conexão com o banco."""
         if self._native is not None:
