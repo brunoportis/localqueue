@@ -1,6 +1,7 @@
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, ErrorCode, OpenFlags};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::error::{QueueError, Result};
 use crate::schema::SCHEMA_SQL;
@@ -19,7 +20,7 @@ impl Storage {
         )?;
 
         conn.pragma_update(None, "busy_timeout", 5000)?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
+        enable_wal(&conn)?;
         conn.pragma_update(None, "synchronous", if fsync { "FULL" } else { "NORMAL" })?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
 
@@ -40,6 +41,26 @@ impl Storage {
             conn.close().map_err(|(_, e)| QueueError::Sqlite(e))?;
         }
         Ok(())
+    }
+}
+
+fn enable_wal(conn: &Connection) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+
+    loop {
+        match conn.pragma_update(None, "journal_mode", "WAL") {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if matches!(
+                    error,
+                    rusqlite::Error::SqliteFailure(ref failure, _)
+                        if matches!(failure.code, ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+                ) && Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(error) => return Err(error.into()),
+        }
     }
 }
 
