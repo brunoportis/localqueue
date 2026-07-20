@@ -74,9 +74,13 @@ operações concorrentes não corrompam o estado.
 ## Idempotência
 
 Mesmo com fencing token, um job pode ser entregue mais de uma vez (por
-exemplo, se um worker morrer logo após dar `ack` mas antes de persistir).
+exemplo, se o worker concluir um efeito externo e morrer antes de executar
+`ack`). A fila oferece semântica at-least-once, não exactly-once.
 Recomenda-se que os handlers sejam idempotentes — use `job_id` para
 deduplicação quando necessário.
+
+As garantias completas de durabilidade, leases, retries e fencing estão em
+[`docs/guarantees.md`](docs/guarantees.md).
 
 ## API resumida
 
