@@ -1,80 +1,79 @@
-# Garantias de entrega
+# Delivery guarantees
 
-O localqueue é uma fila persistente local baseada em SQLite. A garantia de
-entrega é **at-least-once**: uma mensagem pode ser entregue novamente quando a
-tentativa anterior não confirmou o processamento.
+`localqueue` is a persistent local queue backed by SQLite. It provides
+**at-least-once** delivery: a message may be delivered again when a previous
+attempt did not confirm processing.
 
-## O que é confirmado por `put()`
+## What `put()` guarantees
 
-Quando `put()` retorna com sucesso, a mensagem foi inserida em uma transação
-SQLite e recebeu um ID. A mensagem permanece no banco até chegar a um estado
-terminal (`acked` ou `failed`) ou ser removida por uma operação de manutenção,
-como `purge()`.
+When `put()` returns successfully, the message was inserted in a SQLite
+transaction and assigned an internal ID. The message remains in the database
+until it reaches a terminal state (`acked` or `failed`) or is removed by a
+maintenance operation such as `purge()`.
 
-Com `fsync=False`, a fila usa `synchronous=NORMAL`. Isso protege o estado contra
-crashes normais de processo, mas uma falha de energia ou do host pode perder
-transações recentes. Para uma política de durabilidade mais forte, use
-`fsync=True`, que configura `synchronous=FULL`.
+With `fsync=False`, the queue uses `synchronous=NORMAL`. This protects the state
+against normal process crashes, but a power or host failure may lose recent
+transactions. For stronger durability, use `fsync=True`, which configures
+`synchronous=FULL`.
 
-## Ciclo de entrega
+## Delivery lifecycle
 
 ```text
 ready -> leased -> acked
              |
-             +-> ready, quando há NACK ou expiração do lease
+             +-> ready, after NACK or lease expiration
              |
-             +-> failed, quando o limite de tentativas é atingido
+             +-> failed, after the attempt limit is reached
 ```
 
-Um `get()` cria um lease e um receipt exclusivo para aquela entrega. Se o
-worker morrer, não executar `ack()` ou deixar o lease expirar, outro worker
-poderá receber a mesma mensagem.
+A `get()` creates a lease and a unique receipt for that delivery. If the worker
+dies, does not call `ack()`, or lets the lease expire, another worker may receive
+the same message.
 
-O limite `max_retries` é finito. Portanto, at-least-once não significa que uma
-mensagem será tentada indefinidamente: depois do limite, ela vai para
-dead-letter (`failed`) e pode ser inspecionada ou reenfileirada explicitamente.
+The `max_retries` limit is finite. At-least-once delivery therefore does not
+mean that a message is attempted indefinitely: after the limit, it moves to the
+dead-letter state (`failed`) and can be inspected or explicitly requeued.
 
-## Por que não é exactly-once
+## Why delivery is not exactly once
 
-Não existe uma transação única envolvendo a fila e os efeitos externos do
-handler. Por exemplo:
+There is no single transaction that covers both the queue and the handler's
+external effects. For example:
 
 ```text
-worker aplica uma alteração em um serviço externo
+worker applies a change to an external service
     |
-    +-- worker morre antes de executar ack()
+    +-- worker dies before calling ack()
     |
-    +-- o lease expira e a mensagem é entregue novamente
+    +-- the lease expires and the message is delivered again
 ```
 
-O efeito externo pode, portanto, ser executado duas vezes. Os handlers devem
-ser idempotentes ou usar uma chave de idempotência no sistema externo, como o
-`job_id` da mensagem.
+The external effect may therefore happen twice. Handlers should be idempotent
+or use an idempotency key accepted by the external system. Include that key in
+the payload when the handler needs access to it.
 
 ## Fencing token (receipt)
 
-Cada entrega recebe um receipt diferente. Operações de `ack()`, `nack()`,
-`fail()` e extensão de lease só são aceitas com o receipt vigente e antes da
-expiração do lease.
+Each delivery receives a different receipt. `ack()`, `nack()`, `fail()`, and
+lease extension are accepted only with the current receipt and before the lease
+expires.
 
-Isso impede que um worker antigo confirme a entrega atual depois que outro
-worker já recebeu a mensagem. O fencing token evita confirmações obsoletas,
-mas não elimina duplicidade de efeitos externos.
+This prevents an old worker from acknowledging the current delivery after
+another worker has already received the message. The fencing token rejects
+stale transitions, but it does not eliminate duplicate external effects.
 
-## Deduplicação com `job_id`
+## Deduplication with `job_id`
 
-Quando informado, `job_id` é único dentro do nome da fila enquanto o registro
-existir. Um novo `put()` com o mesmo `job_id` retorna o ID existente e não
-substitui o payload original.
+When provided, `job_id` is unique within the named queue while its record
+exists. A new `put()` with the same `job_id` returns the existing internal ID
+and does not replace the original payload.
 
-Essa deduplicação evita inserções repetidas, mas não transforma o processamento
-em exactly-once. Depois de `purge()`, o registro deixa de existir e o mesmo
-`job_id` poderá ser usado novamente.
+This prevents duplicate inserts, but it does not make processing exactly once.
+After `purge()` removes the record, the same `job_id` can be used again.
 
-## O que a fila não promete
+## What the queue does not guarantee
 
-- exactly-once para efeitos fora do SQLite;
-- ausência de duplicidades durante expiração e recuperação de leases;
-- retries infinitos depois de atingir `max_retries`;
-- durabilidade contra falha de energia com `fsync=False`;
-- retenção indefinida de mensagens que foram removidas por manutenção.
+- exactly-once delivery for effects outside SQLite;
+- absence of duplicate deliveries during lease expiration and recovery;
+- infinite retries after `max_retries` is reached;
+- durability against power failure with `fsync=False`;
+- indefinite retention of messages removed by maintenance.
