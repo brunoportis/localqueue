@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import time as _time
 from typing import Any, Callable, Optional
 
 from simpleq.core import SimpleQueue
@@ -31,7 +30,6 @@ class Worker:
         *,
         permanent_errors: Optional[tuple[type[BaseException], ...]] = None,
         poll_interval: float = 1.0,
-        lease_reclaim_interval: float = 10.0,
         heartbeat_interval: Optional[float] = None,
     ) -> None:
         """Inicializa o worker.
@@ -42,28 +40,24 @@ class Worker:
             dead-letter.
         :param poll_interval: intervalo entre tentativas quando a fila está
             vazia.
-        :param lease_reclaim_interval: intervalo entre verificações de leases
-            expirados.
         :param heartbeat_interval: se definido, renova o lease
             automaticamente durante o processamento.
         """
+        if not poll_interval > 0:
+            raise ValueError("'poll_interval' deve ser positivo")
+        if heartbeat_interval is not None and not heartbeat_interval > 0:
+            raise ValueError("'heartbeat_interval' deve ser positivo")
+
         self.queue = queue
         self.handler = handler
         self.permanent_errors = permanent_errors or ()
         self.poll_interval = poll_interval
-        self.lease_reclaim_interval = lease_reclaim_interval
         self.heartbeat_interval = heartbeat_interval
         self._stop = False
 
     def run(self) -> None:
         """Inicia o loop de consumo."""
-        last_reclaim = _time.monotonic()
         while not self._stop:
-            now = _time.monotonic()
-            if now - last_reclaim >= self.lease_reclaim_interval:
-                self.queue.reclaim_expired_leases()
-                last_reclaim = now
-
             try:
                 job = self.queue.get(block=True, timeout=self.poll_interval)
             except Empty:
@@ -77,7 +71,6 @@ class Worker:
         :return: ``True`` se um job foi processado, ``False`` se a fila estava
             vazia.
         """
-        self.queue.reclaim_expired_leases()
         try:
             job = self.queue.get(block=False)
         except Empty:
@@ -100,13 +93,25 @@ class Worker:
             return
         except self.permanent_errors:
             log.exception("Erro permanente no job %s", job.id)
-            self.queue.fail(job)
+            self._transition(self.queue.fail, job)
         except Exception:
             log.exception("Erro transitório no job %s; devolvendo à fila", job.id)
-            self.queue.nack(job)
+            self._transition(self.queue.nack, job)
         else:
             log.debug("Job %s processado com sucesso: %s", job.id, result)
-            self.queue.ack(job)
+            self._transition(self.queue.ack, job)
+
+    def _transition(
+        self, operation: Callable[[Job], None], job: Job
+    ) -> None:
+        try:
+            operation(job)
+        except LeaseExpired:
+            log.warning(
+                "Lease do job %s foi perdido antes da transição; "
+                "resultado será descartado",
+                job.id,
+            )
 
     def _run_with_heartbeat(self, job: Job) -> Any:
         """Executa o handler renovando o lease periodicamente."""

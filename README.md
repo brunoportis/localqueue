@@ -95,7 +95,9 @@ deduplicação quando necessário.
 * ``purge(older_than, include_failed=False)`` – remove mensagens antigas.
 * ``list_failed(limit=100, offset=0)`` – lista mensagens na dead-letter.
 * ``retry_failed(message_id)`` – move mensagem failed de volta para ready.
-* ``vacuum()`` – compacta o banco de dados.
+* ``vacuum()`` – compacta todo o arquivo compartilhado ``simpleq.db``. Pode
+  disputar o lock do SQLite com workers ativos, portanto prefira executá-lo em
+  uma janela de manutenção.
 
 ## Desenvolvimento
 

@@ -202,7 +202,7 @@ impl NativeQueue {
                     lease_until = ?3,
                     attempts = ?4,
                     updated_at = ?5
-                 WHERE id = ?6 AND status = ?7 AND available_at <= ?8",
+                 WHERE id = ?6 AND queue = ?7 AND status = ?8 AND available_at <= ?9",
                 params![
                     STATUS_LEASED,
                     receipt,
@@ -210,6 +210,7 @@ impl NativeQueue {
                     new_attempts,
                     now,
                     id,
+                    self.queue,
                     STATUS_READY,
                     now,
                 ],
@@ -242,8 +243,17 @@ impl NativeQueue {
                     receipt = NULL,
                     lease_until = NULL,
                     updated_at = ?2
-                 WHERE id = ?3 AND status = ?4 AND receipt = ?5 AND lease_until > ?6",
-                params![STATUS_ACKED, now, id, STATUS_LEASED, receipt, now],
+                 WHERE id = ?3 AND queue = ?4 AND status = ?5
+                    AND receipt = ?6 AND lease_until > ?7",
+                params![
+                    STATUS_ACKED,
+                    now,
+                    id,
+                    self.queue,
+                    STATUS_LEASED,
+                    receipt,
+                    now
+                ],
             )
             .map_err(QueueError::from)?;
         if changed == 0 {
@@ -267,13 +277,20 @@ impl NativeQueue {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(QueueError::from)?;
-        let (attempts, max_attempts): (i64, i64) = tx
+        let attempt_limits: Option<(i64, i64)> = tx
             .query_row(
-                "SELECT attempts, max_attempts FROM messages WHERE id = ?1",
-                params![id],
+                "SELECT attempts, max_attempts FROM messages
+                 WHERE id = ?1 AND queue = ?2 AND status = ?3
+                    AND receipt = ?4 AND lease_until > ?5",
+                params![id, self.queue, STATUS_LEASED, receipt, now],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
+            .optional()
             .map_err(QueueError::from)?;
+        let (attempts, max_attempts) = match attempt_limits {
+            Some(limits) => limits,
+            None => return Err(QueueError::LeaseExpired.into()),
+        };
 
         let new_status = if attempts >= max_attempts {
             STATUS_FAILED
@@ -295,13 +312,15 @@ impl NativeQueue {
                     lease_until = NULL,
                     last_error = ?3,
                     updated_at = ?4
-                 WHERE id = ?5 AND status = ?6 AND receipt = ?7 AND lease_until > ?8",
+                 WHERE id = ?5 AND queue = ?6 AND status = ?7
+                    AND receipt = ?8 AND lease_until > ?9",
                 params![
                     new_status,
                     available_at,
                     last_error,
                     now,
                     id,
+                    self.queue,
                     STATUS_LEASED,
                     receipt,
                     now,
@@ -329,8 +348,18 @@ impl NativeQueue {
                     lease_until = NULL,
                     last_error = ?2,
                     updated_at = ?3
-                 WHERE id = ?4 AND status = ?5 AND receipt = ?6 AND lease_until > ?7",
-                params![STATUS_FAILED, last_error, now, id, STATUS_LEASED, receipt, now],
+                 WHERE id = ?4 AND queue = ?5 AND status = ?6
+                    AND receipt = ?7 AND lease_until > ?8",
+                params![
+                    STATUS_FAILED,
+                    last_error,
+                    now,
+                    id,
+                    self.queue,
+                    STATUS_LEASED,
+                    receipt,
+                    now
+                ],
             )
             .map_err(QueueError::from)?;
         if changed == 0 {
@@ -349,8 +378,17 @@ impl NativeQueue {
                 "UPDATE messages SET
                     lease_until = ?1,
                     updated_at = ?2
-                 WHERE id = ?3 AND status = ?4 AND receipt = ?5 AND lease_until > ?6",
-                params![new_lease_until, now, id, STATUS_LEASED, receipt, now],
+                 WHERE id = ?3 AND queue = ?4 AND status = ?5
+                    AND receipt = ?6 AND lease_until > ?7",
+                params![
+                    new_lease_until,
+                    now,
+                    id,
+                    self.queue,
+                    STATUS_LEASED,
+                    receipt,
+                    now
+                ],
             )
             .map_err(QueueError::from)?;
         if changed == 0 {
@@ -424,56 +462,65 @@ impl NativeQueue {
 
     /// Remove mensagens `acked` ou `failed` mais antigas que `older_than_ms`.
     #[pyo3(signature = (older_than_ms, status = None))]
-    pub fn purge(&self, older_than_ms: i64, status: Option<i64>) -> PyResult<i64> {
-        let now = now_ms();
-        let cutoff = now - older_than_ms;
-        let mut guard = self.conn()?;
-        let conn = guard.as_mut().unwrap();
+    pub fn purge(&self, py: Python<'_>, older_than_ms: i64, status: Option<i64>) -> PyResult<i64> {
+        py.detach(|| {
+            let now = now_ms();
+            let cutoff = now - older_than_ms;
+            let mut guard = self.conn()?;
+            let conn = guard.as_mut().unwrap();
 
-        let status_filter = status.unwrap_or(STATUS_ACKED);
-        let changed = conn
-            .execute(
-                "DELETE FROM messages
-                 WHERE queue = ?1 AND status = ?2 AND updated_at < ?3",
-                params![self.queue, status_filter, cutoff],
-            )
-            .map_err(QueueError::from)?;
-        Ok(changed as i64)
+            let status_filter = status.unwrap_or(STATUS_ACKED);
+            let changed = conn
+                .execute(
+                    "DELETE FROM messages
+                     WHERE queue = ?1 AND status = ?2 AND updated_at < ?3",
+                    params![self.queue, status_filter, cutoff],
+                )
+                .map_err(QueueError::from)?;
+            Ok(changed as i64)
+        })
     }
 
     /// Lista mensagens na dead-letter (status = failed).
     #[pyo3(signature = (limit = 100, offset = 0))]
-    pub fn list_failed(&self, limit: i64, offset: i64) -> PyResult<Vec<FailedMessage>> {
-        let mut guard = self.conn()?;
-        let conn = guard.as_mut().unwrap();
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, payload, attempts, last_error, created_at, updated_at
-                 FROM messages
-                 WHERE queue = ?1 AND status = ?2
-                 ORDER BY id
-                 LIMIT ?3 OFFSET ?4",
-            )
-            .map_err(QueueError::from)?;
+    pub fn list_failed(
+        &self,
+        py: Python<'_>,
+        limit: i64,
+        offset: i64,
+    ) -> PyResult<Vec<FailedMessage>> {
+        py.detach(|| {
+            let mut guard = self.conn()?;
+            let conn = guard.as_mut().unwrap();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, payload, attempts, last_error, created_at, updated_at
+                     FROM messages
+                     WHERE queue = ?1 AND status = ?2
+                     ORDER BY id
+                     LIMIT ?3 OFFSET ?4",
+                )
+                .map_err(QueueError::from)?;
 
-        let rows = stmt
-            .query_map(params![self.queue, STATUS_FAILED, limit, offset], |row| {
-                Ok(FailedMessage {
-                    id: row.get(0)?,
-                    payload: row.get(1)?,
-                    attempts: row.get(2)?,
-                    last_error: row.get(3)?,
-                    created_at: row.get(4)?,
-                    updated_at: row.get(5)?,
+            let rows = stmt
+                .query_map(params![self.queue, STATUS_FAILED, limit, offset], |row| {
+                    Ok(FailedMessage {
+                        id: row.get(0)?,
+                        payload: row.get(1)?,
+                        attempts: row.get(2)?,
+                        last_error: row.get(3)?,
+                        created_at: row.get(4)?,
+                        updated_at: row.get(5)?,
+                    })
                 })
-            })
-            .map_err(QueueError::from)?;
+                .map_err(QueueError::from)?;
 
-        let mut result = Vec::new();
-        for row in rows {
-            result.push(row.map_err(QueueError::from)?);
-        }
-        Ok(result)
+            let mut result = Vec::new();
+            for row in rows {
+                result.push(row.map_err(QueueError::from)?);
+            }
+            Ok(result)
+        })
     }
 
     /// Move uma mensagem `failed` de volta para `ready`.
@@ -502,12 +549,14 @@ impl NativeQueue {
     }
 
     /// Executa VACUUM no banco para compactar.
-    pub fn vacuum(&self) -> PyResult<()> {
-        let mut guard = self.conn()?;
-        let conn = guard.as_mut().unwrap();
-        conn.execute("VACUUM", params![])
-            .map_err(QueueError::from)?;
-        Ok(())
+    pub fn vacuum(&self, py: Python<'_>) -> PyResult<()> {
+        py.detach(|| {
+            let mut guard = self.conn()?;
+            let conn = guard.as_mut().unwrap();
+            conn.execute("VACUUM", params![])
+                .map_err(QueueError::from)?;
+            Ok(())
+        })
     }
 
     pub fn close(&self) -> PyResult<()> {

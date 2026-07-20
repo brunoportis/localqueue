@@ -1,3 +1,6 @@
+import inspect
+import time
+
 import pytest
 
 from simpleq import LeaseExpired, SimpleQueue, Worker
@@ -165,3 +168,73 @@ class TestWorker:
         assert not worker_thread.is_alive()
 
         q.close()
+
+    def test_worker_survives_ack_after_natural_lease_expiry(self, tmp_path):
+        q = SimpleQueue(str(tmp_path / "expired_ack"), lease_seconds=0.03)
+        q.put({"id": 1})
+
+        def handler(job):
+            time.sleep(0.06)
+            return "done"
+
+        worker = Worker(q, handler)
+
+        assert worker.run_once() is True
+        assert q.stats()["acked"] == 0
+        q.close()
+
+    def test_worker_survives_nack_after_natural_lease_expiry(self, tmp_path):
+        q = SimpleQueue(str(tmp_path / "expired_nack"), lease_seconds=0.03)
+        q.put({"id": 1})
+
+        def handler(job):
+            time.sleep(0.06)
+            raise TransientError("late failure")
+
+        worker = Worker(q, handler)
+
+        assert worker.run_once() is True
+        assert q.stats()["processing"] == 1
+        q.close()
+
+    def test_worker_survives_fail_after_natural_lease_expiry(self, tmp_path):
+        q = SimpleQueue(str(tmp_path / "expired_fail"), lease_seconds=0.03)
+        q.put({"id": 1})
+
+        def handler(job):
+            time.sleep(0.06)
+            raise PermanentError("late permanent failure")
+
+        worker = Worker(q, handler, permanent_errors=(PermanentError,))
+
+        assert worker.run_once() is True
+        assert q.stats()["failed"] == 0
+        q.close()
+
+    def test_run_once_relies_on_get_for_lease_reclaim(self, queue, monkeypatch):
+        queue.put({"id": 1})
+
+        def unexpected_reclaim():
+            raise AssertionError("worker must not reclaim leases explicitly")
+
+        monkeypatch.setattr(queue, "reclaim_expired_leases", unexpected_reclaim)
+
+        assert Worker(queue, lambda job: None).run_once() is True
+
+    @pytest.mark.parametrize(
+        ("kwargs", "message"),
+        [
+            ({"poll_interval": 0}, "poll_interval"),
+            ({"poll_interval": -1}, "poll_interval"),
+            ({"heartbeat_interval": 0}, "heartbeat_interval"),
+            ({"heartbeat_interval": -1}, "heartbeat_interval"),
+        ],
+    )
+    def test_worker_rejects_non_positive_intervals(self, queue, kwargs, message):
+        with pytest.raises(ValueError, match=message):
+            Worker(queue, lambda job: None, **kwargs)
+
+    def test_worker_no_longer_exposes_lease_reclaim_interval(self):
+        parameters = inspect.signature(Worker).parameters
+
+        assert "lease_reclaim_interval" not in parameters

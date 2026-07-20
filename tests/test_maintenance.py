@@ -114,3 +114,18 @@ class TestMaintenance:
         job2 = queue.get(block=False)
         assert job2.data == {"task": "two"}
         queue.ack(job2)
+
+    def test_purge_rejects_negative_age(self, queue):
+        with pytest.raises(ValueError, match="older_than"):
+            queue.purge(-1)
+
+    @pytest.mark.parametrize(
+        ("kwargs", "message"),
+        [
+            ({"limit": -1}, "limit"),
+            ({"offset": -1}, "offset"),
+        ],
+    )
+    def test_list_failed_rejects_negative_pagination(self, queue, kwargs, message):
+        with pytest.raises(ValueError, match=message):
+            queue.list_failed(**kwargs)

@@ -4,10 +4,11 @@ import subprocess
 import sys
 import tempfile
 import time
+import typing
 
 import pytest
 
-from simpleq import Empty, LeaseExpired, SimpleQueue
+from simpleq import Empty, Job, LeaseExpired, SimpleQError, SimpleQueue
 
 
 class TestContract:
@@ -259,3 +260,29 @@ os._exit(1)
 
         q.ack(job)
         q.close()
+
+    @pytest.mark.parametrize("transition", ["ack", "nack", "fail", "extend_lease"])
+    def test_queue_cannot_transition_job_from_another_queue(
+        self, tmp_path, transition
+    ):
+        path = tmp_path / f"queue_isolation_{transition}"
+        owner = SimpleQueue(str(path), name="emails", lease_seconds=5.0)
+        other = SimpleQueue(str(path), name="deploys", lease_seconds=5.0)
+        owner.put({"email": "x"})
+        job = owner.get(block=False)
+
+        with pytest.raises(SimpleQError):
+            if transition == "extend_lease":
+                other.extend_lease(job, 5.0)
+            else:
+                getattr(other, transition)(job)
+
+        assert owner.stats()["processing"] == 1
+        owner.ack(job)
+        owner.close()
+        other.close()
+
+    def test_get_nowait_return_annotation_is_job(self):
+        hints = typing.get_type_hints(SimpleQueue.get_nowait)
+
+        assert hints["return"] is Job

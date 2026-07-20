@@ -59,6 +59,11 @@ class SimpleQueue:
         :param fsync: quando ``True`` usa ``PRAGMA synchronous=FULL``.
         :param serializer: serializador com métodos ``dumps`` e ``loads``.
         """
+        if not lease_seconds > 0:
+            raise ValueError("'lease_seconds' deve ser positivo")
+        if max_retries < 0:
+            raise ValueError("'max_retries' deve ser não negativo")
+
         self.path = Path(path)
         self.name = name
         self.lease_seconds = lease_seconds
@@ -129,7 +134,7 @@ class SimpleQueue:
             _time.sleep(sleep)
             sleep = min(sleep * 1.5, max_sleep)
 
-    def get_nowait(self) -> Optional[Job]:
+    def get_nowait(self) -> Job:
         """Variação não bloqueante de :meth:`get`."""
         return self.get(block=False)
 
@@ -203,6 +208,9 @@ class SimpleQueue:
             ``failed``. Por padrão apenas ``acked`` são removidas.
         :return: número de mensagens removidas.
         """
+        if older_than < 0:
+            raise ValueError("'older_than' deve ser não negativo")
+
         older_than_ms = int(older_than * 1000)
         removed = 0
         removed += self._get_native().purge(older_than_ms, 2)  # acked
@@ -219,6 +227,11 @@ class SimpleQueue:
         :param offset: deslocamento para paginação.
         :return: lista de dicionários com informações das mensagens.
         """
+        if limit < 0:
+            raise ValueError("'limit' deve ser não negativo")
+        if offset < 0:
+            raise ValueError("'offset' deve ser não negativo")
+
         failed = self._get_native().list_failed(limit, offset)
         return [
             {
@@ -240,7 +253,10 @@ class SimpleQueue:
         self._get_native().retry_failed(message_id)
 
     def vacuum(self) -> None:
-        """Compacta o banco de dados."""
+        """Compacta todo o ``simpleq.db`` compartilhado pelas filas.
+
+        A operação pode disputar o lock do SQLite com workers ativos.
+        """
         self._get_native().vacuum()
 
     def close(self) -> None:

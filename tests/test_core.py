@@ -177,3 +177,15 @@ class TestSimpleQueue:
 
         # O segundo worker pode confirmar normalmente.
         queue.ack(job2)
+
+    @pytest.mark.parametrize(
+        ("kwargs", "message"),
+        [
+            ({"lease_seconds": 0}, "lease_seconds"),
+            ({"lease_seconds": -1}, "lease_seconds"),
+            ({"max_retries": -1}, "max_retries"),
+        ],
+    )
+    def test_constructor_rejects_invalid_limits(self, tmp_path, kwargs, message):
+        with pytest.raises(ValueError, match=message):
+            SimpleQueue(str(tmp_path / "invalid"), **kwargs)
