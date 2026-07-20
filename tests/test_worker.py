@@ -23,8 +23,8 @@ class TestWorker:
     def test_worker_acks_success(self, queue):
         processed = []
 
-        def handler(data):
-            processed.append(data)
+        def handler(job):
+            processed.append(job.data)
             return "ok"
 
         queue.put({"id": 1})
@@ -32,14 +32,14 @@ class TestWorker:
         worker.run_once()
 
         assert len(processed) == 1
-        assert queue.acked_count() == 1
-        assert queue.size() == 0
+        assert queue.stats()["acked"] == 1
+        assert queue.stats()["ready"] == 0
 
     def test_worker_nacks_transient_error(self, queue):
         attempts = []
 
-        def handler(data):
-            attempts.append(data)
+        def handler(job):
+            attempts.append(job.data)
             raise TransientError("ops")
 
         queue.put({"id": 1})
@@ -47,22 +47,35 @@ class TestWorker:
         worker.run_once()
 
         assert len(attempts) == 1
-        assert queue.acked_count() == 0
-        assert queue.failed_count() == 0
-        assert queue.size() == 1
+        assert queue.stats()["acked"] == 0
+        assert queue.stats()["failed"] == 0
+        assert queue.stats()["ready"] == 1
 
     def test_worker_fails_permanent_error(self, queue):
-        def handler(_):
+        def handler(job):
             raise PermanentError("nope")
 
         queue.put({"id": 1})
         worker = Worker(queue, handler, permanent_errors=(PermanentError,))
         worker.run_once()
 
-        assert queue.acked_count() == 0
-        assert queue.failed_count() == 1
-        assert queue.size() == 0
+        assert queue.stats()["acked"] == 0
+        assert queue.stats()["failed"] == 1
+        assert queue.stats()["ready"] == 0
 
     def test_worker_returns_false_when_empty(self, queue):
-        worker = Worker(queue, lambda x: x)
+        worker = Worker(queue, lambda job: job)
         assert worker.run_once() is False
+
+    def test_worker_fails_after_max_retries(self, queue):
+        def handler(job):
+            raise TransientError("ops")
+
+        queue.put({"id": 1})
+        worker = Worker(queue, handler)
+
+        for _ in range(4):
+            worker.run_once()
+
+        assert queue.stats()["ready"] == 0
+        assert queue.stats()["failed"] == 1

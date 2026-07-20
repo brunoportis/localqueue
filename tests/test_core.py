@@ -1,12 +1,8 @@
-import shutil
 import time
-from pathlib import Path
 
 import pytest
 
 from simpleq import Empty, SimpleQueue
-
-DATA_DIR = Path(__file__).with_name("_test_data")
 
 
 @pytest.fixture
@@ -24,7 +20,7 @@ class TestSimpleQueue:
         assert job.data == {"task": "one"}
         assert job.attempts == 0
         queue.ack(job)
-        assert queue.size() == 0
+        assert queue.stats()["ready"] == 0
 
     def test_empty_raises_empty(self, queue):
         with pytest.raises(Empty):
@@ -41,12 +37,20 @@ class TestSimpleQueue:
         assert job2.attempts == 1
         queue.ack(job2)
 
+    def test_nack_with_delay(self, queue):
+        queue.put({"task": "delayed"})
+        job = queue.get(block=False)
+        queue.nack(job, delay=10.0)
+
+        with pytest.raises(Empty):
+            queue.get(block=False)
+
     def test_failed_goes_to_dead_letter(self, queue):
         queue.put({"task": "bad"})
         job = queue.get(block=False)
         queue.fail(job)
-        assert queue.size() == 0
-        assert queue.failed_count() == 1
+        assert queue.stats()["ready"] == 0
+        assert queue.stats()["failed"] == 1
 
     def test_lease_expires_and_returns_to_queue(self, queue):
         queue.put({"task": "abandoned"})
@@ -75,15 +79,33 @@ class TestSimpleQueue:
             queue.reclaim_expired_leases()
 
         # Após max_retries=2, a próxima recuperação deve mandar para dead-letter.
-        assert queue.size() == 0
-        assert queue.failed_count() == 1
+        assert queue.stats()["ready"] == 0
+        assert queue.stats()["failed"] == 1
+
+    def test_nack_respects_max_retries(self, queue):
+        queue.put({"task": "doomed"})
+
+        job = queue.get(block=False)
+        assert job.attempts == 0
+        queue.nack(job)
+
+        job = queue.get(block=False)
+        assert job.attempts == 1
+        queue.nack(job)
+
+        job = queue.get(block=False)
+        assert job.attempts == 2
+        queue.nack(job)
+
+        assert queue.stats()["ready"] == 0
+        assert queue.stats()["failed"] == 1
 
     def test_reclaim_is_called_implicitly_on_get(self, queue):
         queue.put({"task": "auto"})
         job = queue.get(block=False)
         time.sleep(0.6)
 
-        # get() chama reclaim_expired_leases() internamente.
+        # get() chama reclaim_expired_leases() internamente no backend.
         job2 = queue.get(block=False)
         assert job2.data == {"task": "auto"}
         assert job2.attempts == 1
@@ -112,3 +134,46 @@ class TestSimpleQueue:
         assert job.data == {"task": "survive"}
         q2.ack(job)
         q2.close()
+
+    def test_deduplication_by_job_id(self, queue):
+        queue.put({"task": "one"}, job_id="job-123")
+        queue.put({"task": "two"}, job_id="job-123")
+        queue.put({"task": "three"}, job_id="job-456")
+
+        assert queue.stats()["ready"] == 2
+
+    def test_extend_lease(self, queue):
+        queue.put({"task": "long"})
+        job = queue.get(block=False)
+
+        # Estende o lease por mais 5 segundos.
+        job.extend_lease(5.0)
+
+        # Espera além do lease original mas dentro do novo.
+        time.sleep(0.7)
+
+        # O job ainda deve estar em processamento.
+        stats = queue.stats()
+        assert stats["processing"] == 1
+
+        queue.ack(job)
+
+    def test_ack_after_lease_expired_raises(self, queue):
+        queue.put({"task": "stale"})
+        job = queue.get(block=False)
+
+        # Espera o lease expirar.
+        time.sleep(0.6)
+
+        # Outro worker (ou o mesmo) recupera o job.
+        job2 = queue.get(block=False)
+        assert job2.receipt != job.receipt
+
+        # ACK atrasado do primeiro worker deve ser rejeitado.
+        from simpleq import LeaseExpired
+
+        with pytest.raises(LeaseExpired):
+            queue.ack(job)
+
+        # O segundo worker pode confirmar normalmente.
+        queue.ack(job2)

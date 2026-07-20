@@ -2,18 +2,36 @@
 
 Fila persistente local em SQLite com ACK, lease e retry.
 
-Baseada na ideia documentada em `docs/internal/initial_idea.md`: usa
-`persist-queue` (`SQLiteAckQueue`) como backend e adiciona uma camada de
-*lease* para recuperar mensagens abandonadas por workers mortos.
+O motor transacional é implementado em **Rust** (extensão nativa via pyo3/maturin),
+garantindo atomicidade mesmo com múltiplos processos e threads. A facade em
+**Python** mantém uma API simples e agradável.
 
 ## Características
 
 - Persistência em disco via SQLite (sobrevive a reinícios).
-- Semântica de ACK/NACK/falha.
+- Semântica de ACK/NACK/falha com **receipt/fencing token**.
 - Lease/timeout: jobs não confirmados dentro do prazo voltam para a fila.
 - Retry com limite máximo; após isso vão para dead-letter.
-- Worker genérico incluso.
+- Deduplicação opcional por `job_id`.
+- Extensão de lease (`job.extend_lease(...)`) e heartbeat no worker.
+- Estatísticas consistentes mesmo em multiprocessos.
 - Serialização JSON por padrão (legível e interoperável).
+- Suporte a múltiplas filas no mesmo banco (`name="foo"`, `name="bar"`).
+
+## Arquitetura
+
+```text
+simpleq/
+├── src/               # Rust: schema, storage, queue, error, lib (pyo3)
+├── python/simpleq/    # Python: SimpleQueue, Job, Worker, exceções
+├── Cargo.toml
+└── pyproject.toml     # build via maturin
+```
+
+Toda a máquina de estados vive em uma única tabela SQLite (`messages`), com
+transações `BEGIN IMMEDIATE` para atomicidade. Não há camadas auxiliares de
+estado: cada operação (`put`, `get`, `ack`, `nack`, `fail`) é uma única
+transação.
 
 ## Uso rápido
 
@@ -27,7 +45,7 @@ with SimpleQueue("./data", lease_seconds=30, max_retries=3) as q:
     try:
         process(job.data)
     except Exception:
-        q.fail(job)
+        q.nack(job)
     else:
         q.ack(job)
 ```
@@ -38,47 +56,38 @@ with SimpleQueue("./data", lease_seconds=30, max_retries=3) as q:
 from simpleq import SimpleQueue, Worker
 
 def deploy(job):
-    print(f"Deploying {job['app']}@{job['revision']}")
+    print(f"Deploying {job.data['app']}@{job.data['revision']}")
+    # Opcional: renova lease para jobs longos
+    job.extend_lease(60)
 
 q = SimpleQueue("./data")
-worker = Worker(q, deploy)
-worker.run()  # loop contínuo
+worker = Worker(q, deploy, heartbeat_interval=10)
+worker.run()
 ```
 
 ## Multithreading / multiprocessos
 
-Para consumir a fila a partir de várias threads no mesmo processo, crie a
-fila com ``multithreading=True``:
-
-```python
-q = SimpleQueue("./data", multithreading=True)
-```
-
-O SQLite (mesmo em WAL) permite apenas **um writer por vez**, então o
-throughput de escritas é serial. Para workloads muito concorrentes, considere
-NATS JetStream ou Redis Streams.
+A fila é segura para uso com múltiplas threads e processos. O SQLite (em WAL)
+serializa escritas, mas `BEGIN IMMEDIATE` e `busy_timeout` garantem que
+operações concorrentes não corrompam o estado.
 
 ## Idempotência
 
-Como qualquer fila com lease, um job pode ser entregue mais de uma vez (por
-exemplo, se um worker morrer logo antes de dar ``ack``). Recomenda-se que os
-handlers sejam idempotentes — adicione um ``job_id`` único ao payload quando
-necessário.
-
-## API resumida
-
-* ``put(data)`` – enfileira um item.
-* ``get(block=True, timeout=None)`` – retira um item com lease.
-* ``get_nowait()`` – variação não bloqueante.
-* ``ack(job)`` – confirma processamento.
-* ``nack(job)`` – devolve à fila (erro transitório).
-* ``fail(job)`` – envia para dead-letter.
-* ``reclaim_expired_leases()`` – recupera leases expirados manualmente.
-* ``stats()`` – retorna contagens de ready, processing, acked e failed.
+Mesmo com fencing token, um job pode ser entregue mais de uma vez (por
+exemplo, se um worker morrer logo após dar `ack` mas antes de persistir).
+Recomenda-se que os handlers sejam idempotentes — use `job_id` para
+deduplicação quando necessário.
 
 ## Desenvolvimento
 
 ```bash
 uv sync --extra dev
+maturin develop
 pytest
+```
+
+## Build para distribuição
+
+```bash
+maturin build --release
 ```
