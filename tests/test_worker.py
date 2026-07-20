@@ -126,3 +126,42 @@ class TestWorker:
         assert stats["acked"] == 0
 
         q.close()
+
+    def test_worker_survives_heartbeat_lease_loss(self, tmp_path):
+        """O worker não morre quando o heartbeat perde o lease."""
+        import threading
+        import time
+        from unittest.mock import patch
+
+        path = tmp_path / "heartbeat_survive"
+        q = SimpleQueue(str(path), lease_seconds=5.0, max_retries=3)
+
+        def handler(job):
+            time.sleep(0.2)
+            return "done"
+
+        q.put({"id": 1})
+        worker = Worker(q, handler, heartbeat_interval=0.05)
+
+        def failing_extend(job, seconds):
+            raise LeaseExpired("simulated lease loss")
+
+        error = None
+
+        def run_worker():
+            nonlocal error
+            try:
+                worker.run_once()
+            except Exception as exc:
+                error = exc
+
+        with patch.object(q, "extend_lease", side_effect=failing_extend):
+            worker_thread = threading.Thread(target=run_worker)
+            worker_thread.start()
+            worker_thread.join(timeout=5)
+
+        # O worker deve ter terminado sem exceção.
+        assert error is None
+        assert not worker_thread.is_alive()
+
+        q.close()

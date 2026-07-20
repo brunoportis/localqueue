@@ -92,6 +92,12 @@ class Worker:
                 result = self._run_with_heartbeat(job)
             else:
                 result = self.handler(job)
+        except LeaseExpired:
+            log.warning(
+                "Lease do job %s foi perdido; resultado será descartado",
+                job.id,
+            )
+            return
         except self.permanent_errors:
             log.exception("Erro permanente no job %s", job.id)
             self.queue.fail(job)

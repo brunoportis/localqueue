@@ -75,9 +75,11 @@ class SimpleQueue:
             fsync=fsync,
         )
 
-    def _check_closed(self) -> None:
-        if self._native is None:
+    def _get_native(self) -> "_native.NativeQueue":
+        native = self._native
+        if native is None:
             raise SimpleQError("fila fechada")
+        return native
 
     def put(self, data: Any, job_id: Optional[str] = None) -> int:
         """Adiciona um item à fila.
@@ -86,9 +88,8 @@ class SimpleQueue:
         :param job_id: identificador único opcional para deduplicação.
         :return: id interno do item na fila.
         """
-        self._check_closed()
         payload = self.serializer.dumps(data)
-        return self._native.put(payload, job_id)
+        return self._get_native().put(payload, job_id)
 
     def get(
         self, block: bool = True, timeout: Optional[float] = None
@@ -101,11 +102,10 @@ class SimpleQueue:
         :raises Empty: se ``block=False`` e a fila estiver vazia, ou se
             ``block=True`` e ``timeout`` expirar.
         """
-        self._check_closed()
         lease_ms = int(self.lease_seconds * 1000)
 
         if not block:
-            lease = self._native.get(lease_ms)
+            lease = self._get_native().get(lease_ms)
             if lease is None:
                 raise Empty("fila vazia")
             return self._to_job(lease)
@@ -114,8 +114,10 @@ class SimpleQueue:
             raise ValueError("'timeout' deve ser não negativo")
 
         start = _time.monotonic()
+        sleep = 0.01
+        max_sleep = 0.25
         while True:
-            lease = self._native.get(lease_ms)
+            lease = self._get_native().get(lease_ms)
             if lease is not None:
                 return self._to_job(lease)
 
@@ -124,7 +126,8 @@ class SimpleQueue:
                 if elapsed >= timeout:
                     raise Empty("fila vazia")
 
-            _time.sleep(0.01)
+            _time.sleep(sleep)
+            sleep = min(sleep * 1.5, max_sleep)
 
     def get_nowait(self) -> Optional[Job]:
         """Variação não bloqueante de :meth:`get`."""
@@ -132,8 +135,7 @@ class SimpleQueue:
 
     def ack(self, job: Job) -> None:
         """Confirma o processamento bem-sucedido de um job."""
-        self._check_closed()
-        self._native.ack(job.id, job.receipt)
+        self._get_native().ack(job.id, job.receipt)
 
     def nack(
         self,
@@ -146,23 +148,22 @@ class SimpleQueue:
 
         Se o job já atingiu ``max_retries``, ele é movido para dead-letter.
         """
-        self._check_closed()
         delay_ms = int(delay * 1000)
-        self._native.nack(job.id, job.receipt, delay_ms, last_error)
+        self._get_native().nack(job.id, job.receipt, delay_ms, last_error)
 
     def fail(self, job: Job, last_error: Optional[str] = None) -> None:
         """Marca o job como falha definitiva (dead-letter)."""
-        self._check_closed()
-        self._native.fail(job.id, job.receipt, last_error)
+        self._get_native().fail(job.id, job.receipt, last_error)
 
     def extend_lease(self, job: Job, seconds: float) -> None:
         """Estende o lease de um job.
 
         Levanta :class:`LeaseExpired` se o lease já tiver expirado.
         """
-        self._check_closed()
         extend_ms = int(seconds * 1000)
-        new_expiration = self._native.extend_lease(job.id, job.receipt, extend_ms)
+        new_expiration = self._get_native().extend_lease(
+            job.id, job.receipt, extend_ms
+        )
         job.lease_expires_at = new_expiration / 1000.0
 
     def reclaim_expired_leases(self) -> int:
@@ -170,13 +171,11 @@ class SimpleQueue:
 
         :return: número de leases recuperados.
         """
-        self._check_closed()
-        return self._native.reclaim_expired(None)
+        return self._get_native().reclaim_expired(None)
 
     def stats(self) -> dict[str, int]:
         """Retorna estatísticas da fila."""
-        self._check_closed()
-        stats = self._native.stats()
+        stats = self._get_native().stats()
         return {
             "ready": stats.ready,
             "processing": stats.processing,
