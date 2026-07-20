@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-quality:
+    name: Rust format and Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  python-tests:
+    name: Python tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: '3.10'
+          - os: ubuntu-latest
+            python: '3.14'
+          - os: macos-latest
+            python: '3.14'
+          - os: windows-latest
+            python: '3.14'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install test dependencies
+        run: python -m pip install --upgrade "maturin>=1.14,<2" "pytest>=8,<10"
+
+      - name: Build the extension in the test environment
+        run: maturin develop --release
+
+      - name: Run tests
+        run: pytest -ra
+
+  wheel-smoke:
+    name: Build and smoke-test wheel
+    needs: [rust-quality, python-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install maturin
+        run: python -m pip install --upgrade "maturin>=1.14,<2"
+
+      - name: Build wheel
+        run: maturin build --release -i python
+
+      - name: Install wheel
+        shell: bash
+        run: python -m pip install --force-reinstall target/wheels/*.whl
+
+      - name: Import package outside the checkout
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          python - <<'PY'
+          import tempfile
+
+          from simpleq import SimpleQueue
+
+          with tempfile.TemporaryDirectory() as path:
+              queue = SimpleQueue(path)
+              queue.put({"source": "wheel-smoke"})
+              job = queue.get(block=False)
+              assert job.data == {"source": "wheel-smoke"}
+              queue.ack(job)
+              assert queue.stats()["acked"] == 1
+              queue.close()
+          PY
