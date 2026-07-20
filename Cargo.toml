@@ -3,6 +3,9 @@ name = "localqueue"
 version = "1.0.1"
 edition = "2021"
 rust-version = "1.83"
+description = "A persistent, multiprocess-safe local queue for Python, backed by SQLite and Rust."
+license = "Apache-2.0"
+repository = "https://github.com/brunoportis/localqueue"
 
 [lib]
 name = "localqueue"
