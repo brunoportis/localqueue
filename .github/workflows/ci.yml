@@ -41,7 +41,20 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Run Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+  msrv:
+    name: Rust MSRV 1.83
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust 1.83
+        uses: dtolnay/rust-toolchain@1.83
+
+      - name: Check with MSRV
+        run: cargo check --locked
 
   python-tests:
     name: Python tests (${{ matrix.os }}, Python ${{ matrix.python }})
@@ -53,7 +66,7 @@ jobs:
             python: '3.10'
           - os: ubuntu-latest
             python: '3.14'
-          - os: macos-latest
+          - os: macos-15
             python: '3.14'
           - os: windows-latest
             python: '3.14'
@@ -72,7 +85,7 @@ jobs:
         run: python -m pip install --upgrade "maturin>=1.14,<2" "pytest>=8,<10"
 
       - name: Build the extension in the test environment
-        run: maturin develop --release
+        run: maturin develop --release --locked
 
       - name: Run tests
         run: pytest -ra
@@ -94,7 +107,7 @@ jobs:
         run: python -m pip install --upgrade "maturin>=1.14,<2"
 
       - name: Build wheel
-        run: maturin build --release -i python
+        run: maturin build --release --locked -i python
 
       - name: Install wheel
         shell: bash

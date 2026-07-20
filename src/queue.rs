@@ -496,6 +496,21 @@ impl NativeQueue {
         })
     }
 
+    /// Retorna as pragmas SQLite usadas pela conexão ativa.
+    pub fn pragma_settings(&self, py: Python<'_>) -> PyResult<(String, i64)> {
+        py.detach(move || {
+            let mut guard = self.conn()?;
+            let conn = guard.as_mut().unwrap();
+            let journal_mode = conn
+                .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                .map_err(QueueError::from)?;
+            let synchronous = conn
+                .query_row("PRAGMA synchronous", [], |row| row.get(0))
+                .map_err(QueueError::from)?;
+            Ok((journal_mode, synchronous))
+        })
+    }
+
     /// Remove mensagens `acked` ou `failed` mais antigas que `older_than_ms`.
     #[pyo3(signature = (older_than_ms, status = None))]
     pub fn purge(&self, py: Python<'_>, older_than_ms: i64, status: Option<i64>) -> PyResult<i64> {

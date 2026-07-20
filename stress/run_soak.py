@@ -186,6 +186,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             and state["integrity"] == "ok"
             and state["rows"] == args.messages
             and all(code == 0 for code in producer_exitcodes)
+            and all(code == 0 for code in consumer_exitcodes)
+            and all(not process.is_alive() for process in consumers)
         )
         return {
             "success": success,
