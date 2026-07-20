@@ -1,10 +1,15 @@
 [project]
 name = "localqueue"
 version = "1.0.0"
-description = "Fila persistente local em SQLite com ACK, lease e retry."
+description = "A persistent, multiprocess-safe local queue for Python, backed by SQLite and Rust."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/brunoportis/localqueue"
+Repository = "https://github.com/brunoportis/localqueue"
+Issues = "https://github.com/brunoportis/localqueue/issues"
 
 [project.optional-dependencies]
 dev = [

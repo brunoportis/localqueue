@@ -1,118 +1,220 @@
 # localqueue
 
-Fila persistente local em SQLite com ACK, lease e retry.
+[![PyPI](https://img.shields.io/pypi/v/localqueue.svg)](https://pypi.org/project/localqueue/)
+[![Python](https://img.shields.io/pypi/pyversions/localqueue.svg)](https://pypi.org/project/localqueue/)
+[![CI](https://github.com/brunoportis/localqueue/actions/workflows/ci.yml/badge.svg)](https://github.com/brunoportis/localqueue/actions/workflows/ci.yml)
 
-O motor transacional é implementado em **Rust** (extensão nativa via pyo3/maturin),
-garantindo atomicidade mesmo com múltiplos processos e threads. A facade em
-**Python** mantém uma API simples e agradável.
+A persistent, multiprocess-safe local queue for Python, backed by SQLite and Rust.
 
-## Características
+`localqueue` gives scripts and workers durable jobs with ACK/NACK, leases,
+bounded retries, and dead-letter handling—without a server, daemon, or external
+service.
 
-- Persistência em disco via SQLite (sobrevive a reinícios).
-- Semântica de ACK/NACK/falha com **receipt/fencing token**.
-- Lease/timeout: jobs não confirmados dentro do prazo voltam para a fila.
-- Retry com limite máximo; após isso vão para dead-letter.
-- Deduplicação opcional por `job_id`.
-- Extensão de lease (`job.extend_lease(...)`) e heartbeat no worker.
-- Estatísticas consistentes mesmo em multiprocessos.
-- Serialização JSON por padrão (legível e interoperável).
-- Suporte a múltiplas filas no mesmo banco (`name="foo"`, `name="bar"`).
+- **Durable:** jobs survive process restarts in a local SQLite database.
+- **Safe under concurrency:** multiple Python threads and processes can share a
+  queue on the same machine.
+- **Failure-aware:** expired leases and transient failures are retried; exhausted
+  jobs move to a dead-letter state.
+- **Fenced:** every delivery has a unique receipt, so stale workers cannot
+  acknowledge a newer delivery.
+- **Flexible:** use multiple named queues, optional job deduplication, automatic
+  worker heartbeats, and custom serializers.
 
-## Arquitetura
+[Installation](#installation) · [Quick start](#quick-start) ·
+[Worker](#worker) · [Guarantees](#delivery-guarantees) ·
+[API](#api-overview) · [Development](#development)
 
-```text
-localqueue/
-├── src/               # Rust: schema, storage, queue, error, lib (pyo3)
-├── python/localqueue/    # Python: SimpleQueue, Job, Worker, exceções
-├── Cargo.toml
-└── pyproject.toml     # build via maturin
+## Installation
+
+Using [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv add localqueue
 ```
 
-Toda a máquina de estados vive em uma única tabela SQLite (`messages`), com
-transações `BEGIN IMMEDIATE` para atomicidade. Não há camadas auxiliares de
-estado: cada operação (`put`, `get`, `ack`, `nack`, `fail`) é uma única
-transação.
+Using pip:
 
-## Uso rápido
+```bash
+python -m pip install localqueue
+```
+
+`localqueue` requires Python 3.10 or newer.
+
+## Quick start
 
 ```python
 from localqueue import SimpleQueue
 
-with SimpleQueue("./data", lease_seconds=30, max_retries=3) as q:
-    q.put({"type": "deploy", "app": "jarvis", "revision": "abc123"})
+with SimpleQueue("./data", lease_seconds=30, max_retries=3) as queue:
+    queue.put(
+        {"task": "send-email", "to": "hello@example.com"},
+        job_id="welcome-email-42",
+    )
 
-    job = q.get()
+    job = queue.get()
+
     try:
-        process(job.data)
-    except Exception:
-        q.nack(job)
+        send_email(job.data)
+    except Exception as error:
+        queue.nack(job, last_error=str(error))
     else:
-        q.ack(job)
+        queue.ack(job)
 ```
 
+The path passed to `SimpleQueue` is a directory. The queue creates and manages
+`localqueue.db` inside it. Payloads are JSON-serialized by default.
+
 ## Worker
+
+`Worker` handles the ACK/NACK lifecycle for you. A successful handler is
+acknowledged, an unexpected exception is retried, and an exception listed in
+`permanent_errors` is sent directly to the dead-letter state.
 
 ```python
 from localqueue import SimpleQueue, Worker
 
+
+class InvalidDeployment(Exception):
+    pass
+
+
 def deploy(job):
     print(f"Deploying {job.data['app']}@{job.data['revision']}")
-    # Opcional: renova lease para jobs longos
-    job.extend_lease(60)
 
-q = SimpleQueue("./data")
-worker = Worker(q, deploy, heartbeat_interval=10)
-worker.run()
+
+with SimpleQueue("./data", lease_seconds=30, max_retries=3) as queue:
+    worker = Worker(
+        queue,
+        deploy,
+        permanent_errors=(InvalidDeployment,),
+        heartbeat_interval=10,
+    )
+    worker.run()
 ```
 
-## Multithreading / multiprocessos
+For long-running handlers, `heartbeat_interval` renews the lease in the
+background. A handler can also renew it explicitly with
+`job.extend_lease(seconds)`.
 
-A fila é segura para uso com múltiplas threads e processos. O SQLite (em WAL)
-serializa escritas, mas `BEGIN IMMEDIATE` e `busy_timeout` garantem que
-operações concorrentes não corrompam o estado.
+## Delivery guarantees
 
-## Idempotência
+> [!IMPORTANT]
+> `localqueue` provides **at-least-once** delivery, not exactly-once delivery.
+> A worker can finish an external side effect and crash before `ack()`, causing
+> the job to be delivered again. Make handlers idempotent when duplicate effects
+> matter.
 
-Mesmo com fencing token, um job pode ser entregue mais de uma vez (por
-exemplo, se o worker concluir um efeito externo e morrer antes de executar
-`ack`). A fila oferece semântica at-least-once, não exactly-once.
-Recomenda-se que os handlers sejam idempotentes — use `job_id` para
-deduplicação quando necessário.
+```text
+put() ──> ready ──> leased ──> acked
+                     │
+                     ├── nack() or expired lease ──> ready
+                     │
+                     └── fail() or retry limit ────> failed
+                                                        │
+                                           retry_failed() ──> ready
+```
 
-As garantias completas de durabilidade, leases, retries e fencing estão em
-[`docs/guarantees.md`](docs/guarantees.md).
+| Behavior | Guarantee |
+| --- | --- |
+| Successful `put()` | The job was committed to SQLite and has an internal ID. |
+| Worker crash | An unacknowledged job becomes available after its lease expires. |
+| Stale worker | `ack()`, `nack()`, `fail()`, and lease extension require the current receipt. |
+| Retries | `max_retries` allows that many retries after the initial delivery; exhaustion moves the job to `failed`. |
+| Deduplication | A `job_id` is unique within a named queue while its record exists. |
+| Ordering | Ready jobs are claimed by insertion ID, but completion order is best effort under concurrency. |
 
-## API resumida
+By default, SQLite uses `synchronous=NORMAL`, which protects against normal
+process crashes but may lose recent transactions after an operating-system or
+power failure. Pass `fsync=True` to use `synchronous=FULL` for stronger
+durability.
 
-* ``put(data, job_id=None)`` – enfileira um item.
-* ``get(block=True, timeout=None)`` – retira um item com lease.
-* ``get_nowait()`` – variação não bloqueante.
-* ``ack(job)`` – confirma processamento.
-* ``nack(job, delay=0, last_error=None)`` – devolve à fila (erro transitório).
-* ``fail(job, last_error=None)`` – envia para dead-letter.
-* ``extend_lease(job, seconds)`` – renova o lease de um job.
-* ``reclaim_expired_leases()`` – recupera leases expirados manualmente.
-* ``stats()`` – retorna contagens de ready, processing, acked e failed.
+See [Delivery guarantees](https://github.com/brunoportis/localqueue/blob/main/docs/guarantees.md)
+for the complete durability, lease, retry, fencing, and deduplication contract.
 
-## Manutenção
+## Configuration
 
-* ``purge(older_than, include_failed=False)`` – remove mensagens antigas.
-* ``list_failed(limit=100, offset=0)`` – lista mensagens na dead-letter.
-* ``retry_failed(message_id)`` – move mensagem failed de volta para ready.
-* ``vacuum()`` – compacta todo o arquivo compartilhado ``localqueue.db``. Pode
-  disputar o lock do SQLite com workers ativos, portanto prefira executá-lo em
-  uma janela de manutenção.
+```python
+queue = SimpleQueue(
+    "./data",
+    name="emails",
+    lease_seconds=60,
+    max_retries=3,
+    fsync=False,
+    serializer=None,
+)
+```
 
-## Desenvolvimento
+| Option | Default | Description |
+| --- | ---: | --- |
+| `path` | required | Directory containing the shared `localqueue.db` file. |
+| `name` | `"default"` | Logical queue name; several queues can share one database. |
+| `lease_seconds` | `60.0` | Time a worker owns a delivery before it can be reclaimed. |
+| `max_retries` | `3` | Retries allowed after the first delivery. |
+| `fsync` | `False` | Use SQLite `synchronous=FULL` when enabled. |
+| `serializer` | JSON | Object implementing `dumps(obj) -> bytes` and `loads(bytes) -> obj`. |
+
+## API overview
+
+| Method | Purpose |
+| --- | --- |
+| `put(data, job_id=None)` | Enqueue a payload, with optional deduplication. |
+| `get(block=True, timeout=None)` | Claim a job and start its lease. |
+| `get_nowait()` | Claim immediately or raise `Empty`. |
+| `ack(job)` | Confirm successful processing. |
+| `nack(job, delay=0, last_error=None)` | Return a transient failure to the queue, optionally with a delay. |
+| `fail(job, last_error=None)` | Move a permanent failure to the dead-letter state. |
+| `extend_lease(job, seconds)` | Renew the current delivery lease. |
+| `reclaim_expired_leases()` | Reclaim expired leases explicitly; `get()` also does this automatically. |
+| `stats()` | Return `ready`, `processing`, `acked`, and `failed` counts. |
+| `list_failed(limit=100, offset=0)` | Inspect dead-letter jobs. |
+| `retry_failed(message_id)` | Move a dead-letter job back to `ready`. |
+| `purge(older_than, include_failed=False)` | Delete old terminal records. |
+| `vacuum()` | Compact the shared SQLite database. Run during a maintenance window. |
+
+## Architecture
+
+The public API is a small Python facade over a native
+[PyO3](https://pyo3.rs/) extension. Rust owns the transactional state machine,
+while SQLite WAL mode provides local persistence and coordinates competing
+writers.
+
+```text
+Python application
+       │
+       ▼
+SimpleQueue / Worker       Python API and serialization
+       │
+       ▼
+Rust native extension      leases, receipts, retries, transactions
+       │
+       ▼
+localqueue.db              SQLite WAL, one machine
+```
+
+All queue state lives in one SQLite table. Claims and multi-step transitions
+use immediate transactions so concurrent processes cannot reserve the same
+delivery. This is local infrastructure for a shared database on one machine,
+not a distributed message broker.
+
+## Development
+
+Build the extension in a local virtual environment and run the test suite:
 
 ```bash
 uv sync --extra dev
-maturin develop
-pytest
+uv run maturin develop
+uv run pytest
 ```
 
-## Build para distribuição
+Rust quality checks:
 
 ```bash
-maturin build --release
+cargo fmt --all --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
+```
+
+Build a release wheel:
+
+```bash
+uv run maturin build --release --locked
 ```
