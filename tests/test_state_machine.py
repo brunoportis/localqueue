@@ -1,0 +1,420 @@
+"""Generated public-contract checks for queue state transitions.
+
+The reference model deliberately tracks only logical jobs, their public
+status, delivery attempts, and the current receipt.  It does not reproduce
+SQLite rows, native states, SQL queries, or the Rust reclaim algorithm.
+"""
+
+from __future__ import annotations
+
+import json
+import tempfile
+import time
+from dataclasses import dataclass
+from typing import Any
+
+import pytest
+from hypothesis import HealthCheck, note, settings
+from hypothesis import strategies as st
+from hypothesis.stateful import RuleBasedStateMachine, invariant, precondition, rule
+from localqueue import Empty, EnqueueItem, LeaseExpired, SimpleQueue
+
+
+class FailsBeforeNativeSerializer:
+    """A public serializer seam used to fail during batch preparation."""
+
+    def dumps(self, obj: Any) -> bytes:
+        if isinstance(obj, dict) and obj.get("__fail__"):
+            raise TypeError("intentional serialization failure")
+        return json.dumps(obj).encode("utf-8")
+
+    def loads(self, data: bytes) -> Any:
+        # The state machine only puts values that the default JSON serializer
+        # would decode.  This serializer is used solely by the failure rule.
+        return json.loads(data.decode("utf-8"))
+
+
+@dataclass
+class ReferenceJob:
+    data: dict[str, int]
+    job_id: str | None
+    order: int
+    status: str = "ready"
+    attempts: int = 0
+    available_at: float = 0.0
+    receipt: str | None = None
+    lease_until: float = 0.0
+
+
+@settings(
+    max_examples=20,
+    stateful_step_count=25,
+    deadline=None,
+    database=None,
+    print_blob=True,
+    suppress_health_check=[HealthCheck.too_slow],
+)
+class QueueStateMachine(RuleBasedStateMachine):
+    """Compare a small logical queue model with the public SimpleQueue API."""
+
+    lease_seconds = 0.08
+    max_retries = 2
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.temp_dir = tempfile.TemporaryDirectory(prefix="localqueue-state-")
+        self.path = self.temp_dir.name
+        self.queue = SimpleQueue(
+            str(self.path),
+            lease_seconds=self.lease_seconds,
+            max_retries=self.max_retries,
+        )
+        self.other = SimpleQueue(
+            str(self.path),
+            name="other",
+            lease_seconds=self.lease_seconds,
+            max_retries=self.max_retries,
+        )
+        self.jobs: dict[int, ReferenceJob] = {}
+        self.by_job_id: dict[str, int] = {}
+        self.deliveries: dict[int, list[Any]] = {}
+        self.current_delivery: dict[int, Any] = {}
+        self.order = 0
+        self.trace: list[str] = []
+
+    def teardown(self) -> None:
+        self.queue.close()
+        self.other.close()
+        self.temp_dir.cleanup()
+
+    def _record(self, operation: str) -> None:
+        self.trace.append(operation)
+        note("operation trace: " + " -> ".join(self.trace))
+
+    def _stats(
+        self, queue: SimpleQueue, jobs: dict[int, ReferenceJob]
+    ) -> dict[str, int]:
+        return {
+            "ready": sum(job.status == "ready" for job in jobs.values()),
+            "processing": sum(job.status == "processing" for job in jobs.values()),
+            "acked": sum(job.status == "acked" for job in jobs.values()),
+            "failed": sum(job.status == "failed" for job in jobs.values()),
+        }
+
+    def _assert_stats(self) -> None:
+        assert self.queue.stats() == self._stats(self.queue, self.jobs)
+
+    def _new_reference(
+        self, data: dict[str, int], job_id: str | None, message_id: int
+    ) -> None:
+        if job_id is not None:
+            self.by_job_id[job_id] = message_id
+        self.jobs[message_id] = ReferenceJob(data, job_id, self.order)
+        self.order += 1
+
+    def _model_reclaim(self, now: float) -> int:
+        reclaimed = 0
+        for job in self.jobs.values():
+            if job.status != "processing":
+                continue
+            # The real queue increments attempts when a delivery is reclaimed.
+            if job.receipt is not None and job.lease_until <= now:
+                if job.attempts >= self.max_retries:
+                    job.status = "failed"
+                else:
+                    job.status = "ready"
+                    job.attempts += 1
+                    job.available_at = now
+                job.receipt = None
+                reclaimed += 1
+        return reclaimed
+
+    def _ready_reference(self) -> ReferenceJob | None:
+        now = time.monotonic()
+        candidates = [
+            job
+            for job in self.jobs.values()
+            if job.status == "ready" and job.available_at <= now
+        ]
+        return min(candidates, key=lambda job: job.order, default=None)
+
+    @rule(
+        value=st.integers(min_value=0, max_value=5),
+        job_id=st.one_of(st.none(), st.sampled_from(["a", "b", "c"])),
+    )
+    def put(self, value: int, job_id: str | None) -> None:
+        data = {"value": value}
+        self._record(f"put({value}, {job_id!r})")
+        message_id = self.queue.put(data, job_id=job_id)
+        if job_id is not None and job_id in self.by_job_id:
+            assert message_id == self.by_job_id[job_id]
+        else:
+            self._new_reference(data, job_id, message_id)
+        self._assert_stats()
+
+    @rule(
+        items=st.lists(
+            st.tuples(
+                st.integers(min_value=0, max_value=5),
+                st.one_of(st.none(), st.sampled_from(["a", "b", "c"])),
+            ),
+            min_size=0,
+            max_size=4,
+        )
+    )
+    def put_many(self, items: list[tuple[int, str | None]]) -> None:
+        public_items = [
+            EnqueueItem({"value": value}, job_id)
+            if job_id is not None
+            else {"value": value}
+            for value, job_id in items
+        ]
+        self._record(f"put_many({items!r})")
+        message_ids = self.queue.put_many(public_items)
+        assert len(message_ids) == len(items)
+        for (value, job_id), message_id in zip(items, message_ids):
+            data = {"value": value}
+            if job_id is not None and job_id in self.by_job_id:
+                assert message_id == self.by_job_id[job_id]
+            else:
+                self._new_reference(data, job_id, message_id)
+        self._assert_stats()
+
+    @rule(value=st.integers(min_value=0, max_value=5))
+    def put_many_serializer_failure(self, value: int) -> None:
+        before = self.queue.stats()
+        self._record(f"put_many_serializer_failure({value})")
+        queue = SimpleQueue(
+            str(self.path),
+            lease_seconds=self.lease_seconds,
+            max_retries=self.max_retries,
+            serializer=FailsBeforeNativeSerializer(),
+        )
+        try:
+            with pytest.raises(TypeError):
+                queue.put_many([{"value": value}, {"__fail__": True}, {"value": value}])
+        finally:
+            queue.close()
+        assert self.queue.stats() == before
+        self._assert_stats()
+
+    def _get(self, method: str) -> None:
+        now = time.monotonic()
+        self._model_reclaim(now)
+        for message_id in list(self.current_delivery):
+            if self.jobs[message_id].status != "processing":
+                self.current_delivery.pop(message_id)
+        expected = self._ready_reference()
+        self._record(f"{method}()")
+        getter = (
+            self.queue.get_nowait
+            if method == "get_nowait"
+            else lambda: self.queue.get(block=False)
+        )
+        if expected is None:
+            with pytest.raises(Empty):
+                getter()
+            self._assert_stats()
+            return
+        job = getter()
+        assert job.data == expected.data
+        assert job.attempts == expected.attempts
+        expected.status = "processing"
+        expected.receipt = job.receipt
+        expected.lease_until = time.monotonic() + self.lease_seconds
+        self.deliveries.setdefault(job.id, []).append(job)
+        self.current_delivery[job.id] = job
+        assert job.id in self.jobs
+        self._assert_stats()
+
+    @rule()
+    def get(self) -> None:
+        self._get("get")
+
+    @rule()
+    def get_nowait(self) -> None:
+        self._get("get_nowait")
+
+    @precondition(lambda self: bool(self.current_delivery))
+    @rule(index=st.integers(min_value=0, max_value=100))
+    def ack(self, index: int) -> None:
+        message_id = list(self.current_delivery)[index % len(self.current_delivery)]
+        job = self.current_delivery[message_id]
+        self._record(f"ack({message_id})")
+        self.queue.ack(job)
+        self.jobs[message_id].status = "acked"
+        self.jobs[message_id].receipt = None
+        self.current_delivery.pop(message_id)
+        self._assert_stats()
+
+    @precondition(lambda self: bool(self.current_delivery))
+    @rule(
+        index=st.integers(min_value=0, max_value=100),
+        delay=st.sampled_from([0.0, 0.02]),
+    )
+    def nack(self, index: int, delay: float) -> None:
+        message_id = list(self.current_delivery)[index % len(self.current_delivery)]
+        job = self.current_delivery[message_id]
+        self._record(f"nack({message_id}, delay={delay})")
+        self.queue.nack(job, delay=delay, last_error="transient")
+        reference = self.jobs[message_id]
+        reference.receipt = None
+        if reference.attempts >= self.max_retries:
+            reference.status = "failed"
+            self.current_delivery.pop(message_id)
+        else:
+            reference.status = "ready"
+            reference.attempts += 1
+            reference.available_at = time.monotonic() + delay
+            self.current_delivery.pop(message_id)
+        self._assert_stats()
+
+    @precondition(lambda self: bool(self.current_delivery))
+    @rule(index=st.integers(min_value=0, max_value=100))
+    def fail(self, index: int) -> None:
+        message_id = list(self.current_delivery)[index % len(self.current_delivery)]
+        job = self.current_delivery[message_id]
+        self._record(f"fail({message_id})")
+        self.queue.fail(job, "permanent")
+        reference = self.jobs[message_id]
+        reference.status = "failed"
+        reference.receipt = None
+        self.current_delivery.pop(message_id)
+        self._assert_stats()
+
+    @precondition(lambda self: bool(self.current_delivery))
+    @rule(
+        index=st.integers(min_value=0, max_value=100),
+        seconds=st.sampled_from([0.02, 0.2]),
+    )
+    def extend_lease(self, index: int, seconds: float) -> None:
+        message_id = list(self.current_delivery)[index % len(self.current_delivery)]
+        job = self.current_delivery[message_id]
+        self._record(f"extend_lease({message_id}, {seconds})")
+        self.queue.extend_lease(job, seconds)
+        self.jobs[message_id].lease_until = time.monotonic() + seconds
+        self._assert_stats()
+
+    @precondition(
+        lambda self: any(job.status == "processing" for job in self.jobs.values())
+    )
+    @rule()
+    def expire_and_reclaim(self) -> None:
+        self._record("sleep_and_reclaim()")
+        time.sleep(self.lease_seconds * 3)
+        now = time.monotonic()
+        expected = self._model_reclaim(now)
+        assert self.queue.reclaim_expired_leases() == expected
+        for message_id, job in list(self.current_delivery.items()):
+            if self.jobs[message_id].status != "processing":
+                self.current_delivery.pop(message_id)
+                assert job.receipt != self.jobs[message_id].receipt
+        self._assert_stats()
+
+    @precondition(
+        lambda self: any(len(deliveries) > 1 for deliveries in self.deliveries.values())
+    )
+    @rule(
+        index=st.integers(min_value=0, max_value=100),
+        operation=st.sampled_from(["ack", "nack", "fail", "extend_lease"]),
+    )
+    def stale_receipt(self, index: int, operation: str) -> None:
+        stale = [
+            job
+            for message_id, deliveries in self.deliveries.items()
+            if len(deliveries) > 1
+            for job in deliveries[:-1]
+            if self.jobs[message_id].status == "processing"
+        ]
+        if not stale:
+            return
+        job = stale[index % len(stale)]
+        before = self.queue.stats()
+        self._record(f"stale_{operation}({job.id})")
+        with pytest.raises(LeaseExpired):
+            if operation == "ack":
+                self.queue.ack(job)
+            elif operation == "nack":
+                self.queue.nack(job)
+            elif operation == "fail":
+                self.queue.fail(job)
+            else:
+                self.queue.extend_lease(job, 0.2)
+        assert self.queue.stats() == before
+        self._assert_stats()
+
+    @rule()
+    def reopen(self) -> None:
+        self._record("close(); reopen()")
+        self.queue.close()
+        self.queue = SimpleQueue(
+            str(self.path),
+            lease_seconds=self.lease_seconds,
+            max_retries=self.max_retries,
+        )
+        self._assert_stats()
+
+    @rule(value=st.integers(min_value=0, max_value=5))
+    def same_job_id_is_independent_between_queues(self, value: int) -> None:
+        cross_index = len(self.trace)
+        job_id = f"cross-{cross_index}"
+        data = {"value": value}
+        self._record(f"cross_queue_put({value}, {job_id!r})")
+        queue_a = SimpleQueue(
+            str(self.path),
+            name=f"cross-a-{cross_index}",
+            lease_seconds=self.lease_seconds,
+        )
+        queue_b = SimpleQueue(
+            str(self.path),
+            name=f"cross-b-{cross_index}",
+            lease_seconds=self.lease_seconds,
+        )
+        try:
+            id_a = queue_a.put(data, job_id=job_id)
+            id_b = queue_b.put(data, job_id=job_id)
+            assert id_a != id_b
+            job_a = queue_a.get_nowait()
+            job_b = queue_b.get_nowait()
+            assert job_a.data == job_b.data == data
+            queue_a.ack(job_a)
+            queue_b.ack(job_b)
+        finally:
+            queue_a.close()
+            queue_b.close()
+        self._assert_stats()
+
+    @precondition(
+        lambda self: any(job.status == "failed" for job in self.jobs.values())
+    )
+    @rule()
+    def retry_failed(self) -> None:
+        reference = next(job for job in self.jobs.values() if job.status == "failed")
+        failed = self.queue.list_failed()
+        assert any(message["id"] == self._reference_id(reference) for message in failed)
+        self._record(f"retry_failed({self._reference_id(reference)})")
+        self.queue.retry_failed(self._reference_id(reference))
+        reference.status = "ready"
+        reference.attempts = 0
+        reference.available_at = time.monotonic()
+        self._assert_stats()
+
+    def _reference_id(self, reference: ReferenceJob) -> int:
+        return next(
+            message_id for message_id, job in self.jobs.items() if job is reference
+        )
+
+    @rule()
+    def vacuum(self) -> None:
+        self._record("vacuum()")
+        self.queue.vacuum()
+        self._assert_stats()
+
+    @invariant()
+    def stats_are_coherent(self) -> None:
+        stats = self.queue.stats()
+        assert sum(stats.values()) == len(self.jobs)
+        self._assert_stats()
+
+
+TestQueueStateMachine = QueueStateMachine.TestCase
