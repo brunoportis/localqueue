@@ -90,9 +90,9 @@ configuração do token Codecov**.
 
 ## Evidências finais
 
-- [CI completo](https://github.com/brunoportis/localqueue/actions/runs/29849538917):
+- [CI completo](https://github.com/brunoportis/localqueue/actions/runs/29861997345):
   aprovado, incluindo wheel smoke test e cobertura de 89,55%.
-- [Release v1.1.1](https://github.com/brunoportis/localqueue/releases/tag/v1.1.1):
+- [Release v1.1.2](https://github.com/brunoportis/localqueue/releases/tag/v1.1.2):
   32 artefatos publicados no PyPI por Trusted Publishing.
 - [Dry-run SemVer](https://github.com/brunoportis/localqueue/actions/runs/29849958301):
   confirmou corretamente que não havia release pendente após `v1.1.1`.
