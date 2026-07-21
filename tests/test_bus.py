@@ -4,7 +4,6 @@ import sys
 import time
 
 import pytest
-
 from localqueue.bus import BaseEvent, BusTopology, EventBus, NoSubscribers
 
 
@@ -108,15 +107,14 @@ class TestRegistration:
 
     def test_event_name_vazio_rejeitado(self):
         with pytest.raises(ValueError, match="event_name"):
+
             class Bad(BaseEvent):
                 event_name = "  "
 
     @pytest.mark.parametrize("name", ["", "tem:dois-pontos", "-abc", "com espaço"])
     def test_nomes_invalidos(self, tmp_path, name):
         with pytest.raises(ValueError, match="invalid"):
-            EventBus(
-                str(tmp_path / "b"), name=name, topology=BusTopology({})
-            )
+            EventBus(str(tmp_path / "b"), name=name, topology=BusTopology({}))
         bus = EventBus(
             str(tmp_path / "ok"),
             name="ok",
@@ -193,15 +191,14 @@ class TestConsumption:
     def test_handler_sync_e_async_ack(self, tmp_path):
         bus = EventBus(
             str(tmp_path / "bus"),
-            topology=BusTopology(
-                {"sync": [UserCreated], "async": [UserCreated]}
-            ),
+            topology=BusTopology({"sync": [UserCreated], "async": [UserCreated]}),
             lease_seconds=0.5,
             max_retries=1,
         )
         seen = []
-        bus.on(UserCreated, lambda e: seen.append(("sync", e.user_id)),
-               subscription="sync")
+        bus.on(
+            UserCreated, lambda e: seen.append(("sync", e.user_id)), subscription="sync"
+        )
 
         @bus.on(UserCreated, subscription="async")
         async def async_handler(event):
@@ -257,8 +254,7 @@ class TestConsumption:
         def doomed(event):
             raise FatalError("não adianta retentar")
 
-        bus.on(UserCreated, doomed, subscription="s1",
-               permanent_errors=(FatalError,))
+        bus.on(UserCreated, doomed, subscription="s1", permanent_errors=(FatalError,))
         bus.dispatch(UserCreated(user_id="1"))
         run(bus.run_subscription("s1", idle_timeout=0.5))
 
@@ -288,8 +284,11 @@ class TestConsumption:
         class StrictTyped(BaseEvent):
             count: int
 
-        bus.on(StrictTyped, lambda e: seen.append((e.count, type(e.count))),
-               subscription="s1")
+        bus.on(
+            StrictTyped,
+            lambda e: seen.append((e.count, type(e.count))),
+            subscription="s1",
+        )
         bus.dispatch(StrictTyped(count=5))
         run(bus.run_subscription("s1", idle_timeout=0.5))
         assert seen == [(5, int)]
@@ -344,9 +343,7 @@ class TestConsumption:
     def test_duas_subscriptions_recebem_o_mesmo_evento(self, tmp_path):
         bus = EventBus(
             str(tmp_path / "bus"),
-            topology=BusTopology(
-                {"sa": [UserCreated], "sb": [UserCreated]}
-            ),
+            topology=BusTopology({"sa": [UserCreated], "sb": [UserCreated]}),
             lease_seconds=0.5,
             max_retries=1,
         )
@@ -381,8 +378,7 @@ class TestConsumption:
             lease_seconds=0.5,
             max_retries=1,
         )
-        bus2.on(UserCreated, lambda e: seen.append(e.user_id),
-                subscription="s1")
+        bus2.on(UserCreated, lambda e: seen.append(e.user_id), subscription="s1")
         run(bus2.run_subscription("s1", idle_timeout=0.5))
         bus2.close()
         assert seen == ["sobrevive"]
@@ -435,9 +431,7 @@ def _consumer_group_worker(
         process_id = os.getpid()
         with lock:
             if event_id in active:
-                concurrent_duplicates.append(
-                    (event_id, active[event_id], process_id)
-                )
+                concurrent_duplicates.append((event_id, active[event_id], process_id))
             active[event_id] = process_id
         time.sleep(0.02)
         with lock:
@@ -471,8 +465,12 @@ class TestValidations:
     )
     def test_permanent_errors_invalido_rejeitado(self, bus, permanent_errors):
         with pytest.raises(TypeError, match="permanent_errors"):
-            bus.on(UserCreated, lambda e: None, subscription="s1",
-                   permanent_errors=permanent_errors)
+            bus.on(
+                UserCreated,
+                lambda e: None,
+                subscription="s1",
+                permanent_errors=permanent_errors,
+            )
 
     def test_fsync_repassado_para_subscription_queue(self, tmp_path):
         bus = EventBus(
@@ -540,9 +538,7 @@ class TestTypedReconstruction:
 
 
 class TestAsyncioSafety:
-    def test_subscription_ociosa_faz_uma_sondagem_por_intervalo(
-        self, bus, monkeypatch
-    ):
+    def test_subscription_ociosa_faz_uma_sondagem_por_intervalo(self, bus, monkeypatch):
         from localqueue.core import SimpleQueue
 
         calls = []
@@ -562,8 +558,7 @@ class TestAsyncioSafety:
         call_arguments = {(block, timeout) for block, timeout, _ in calls}
         assert call_arguments == {(False, None)}
         intervals = [
-            current[2] - previous[2]
-            for previous, current in zip(calls, calls[1:])
+            current[2] - previous[2] for previous, current in zip(calls, calls[1:])
         ]
         assert all(interval >= 0.08 for interval in intervals)
 
@@ -657,8 +652,7 @@ class TestLeaseSafety:
         from localqueue.core import SimpleQueue
 
         seen = []
-        bus.on(UserCreated, lambda e: seen.append(e.user_id),
-               subscription="s1")
+        bus.on(UserCreated, lambda e: seen.append(e.user_id), subscription="s1")
         bus.dispatch(UserCreated(user_id="a"))
         bus.dispatch(UserCreated(user_id="b"))
 

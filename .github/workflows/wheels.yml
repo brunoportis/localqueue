@@ -57,16 +57,42 @@ jobs:
           RELEASE_REF: ${{ steps.release.outputs.release_ref }}
         run: |
           gh release view "$RELEASE_REF" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
-            gh release create "$RELEASE_REF" \
+          gh release create "$RELEASE_REF" \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
               --draft \
               --generate-notes \
               --title "$RELEASE_REF"
 
+      - name: Refuse to rebuild an already published release
+        if: steps.release.outputs.release_mode == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REF: ${{ steps.release.outputs.release_ref }}
+        run: |
+          if gh release view "$RELEASE_REF" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft --jq '.isDraft == false' | grep -qx true; then
+            echo "release $RELEASE_REF is already published" >&2
+            exit 1
+          fi
+
+  validate-release:
+    name: Validate release version
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare-release.outputs.release_ref }}
+
+      - name: Validate tag and package metadata
+        if: needs.prepare-release.outputs.release_mode == 'true'
+        run: python scripts/check_release_version.py --tag "${{ needs.prepare-release.outputs.release_ref }}"
+
   build:
     name: ${{ matrix.name }}
-    needs: prepare-release
+    needs: [prepare-release, validate-release]
     permissions:
       contents: write
     strategy:

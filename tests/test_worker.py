@@ -2,7 +2,6 @@ import inspect
 import time
 
 import pytest
-
 from localqueue import LeaseExpired, SimpleQueue, Worker
 
 
@@ -104,8 +103,6 @@ class TestWorker:
         worker = Worker(q, handler, heartbeat_interval=0.1)
 
         # Força extend_lease a falhar após o handler começar.
-        original_extend = q.extend_lease
-
         def failing_extend(job, seconds):
             raise LeaseExpired("simulated lease loss")
 

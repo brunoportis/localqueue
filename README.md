@@ -1,8 +1,9 @@
 # localqueue
 
 [![PyPI](https://img.shields.io/pypi/v/localqueue.svg)](https://pypi.org/project/localqueue/)
-[![Python](https://img.shields.io/pypi/pyversions/localqueue.svg)](https://pypi.org/project/localqueue/)
+[![Python](https://img.shields.io/pypi/pyversions/localqueue.svg?cacheSeconds=300)](https://pypi.org/project/localqueue/)
 [![CI](https://github.com/brunoportis/localqueue/actions/workflows/ci.yml/badge.svg)](https://github.com/brunoportis/localqueue/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/brunoportis/localqueue/graph/badge.svg)](https://app.codecov.io/gh/brunoportis/localqueue)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/brunoportis/localqueue/blob/main/LICENSE)
 
 A persistent, multiprocess-safe local queue for Python, backed by SQLite and Rust.
@@ -51,19 +52,29 @@ backward-incompatible reimplementation. See
 
 ## Quick start
 
-```python
+# producer.py
 from localqueue import SimpleQueue
+
 
 with SimpleQueue("./data", lease_seconds=30, max_retries=3) as queue:
     queue.put(
         {"task": "send-email", "to": "hello@example.com"},
         job_id="welcome-email-42",
     )
+```
 
+The producer can stop here. `put()` commits the job to
+`./data/localqueue.db`; it is not an in-memory dictionary.
+
+```python
+# worker.py — run this later, in another process
+from localqueue import SimpleQueue
+
+with SimpleQueue("./data", lease_seconds=30, max_retries=3) as queue:
     job = queue.get()
 
     try:
-        send_email(job.data)
+        print(f"Sending email to {job.data['to']}")
     except Exception as error:
         queue.nack(job, last_error=str(error))
     else:
@@ -71,7 +82,10 @@ with SimpleQueue("./data", lease_seconds=30, max_retries=3) as queue:
 ```
 
 The path passed to `SimpleQueue` is a directory. The queue creates and manages
-`localqueue.db` inside it. Payloads are JSON-serialized by default.
+`localqueue.db` inside it. Payloads are JSON-serialized by default. Jobs
+survive normal process restarts; use `fsync=True` when the stronger SQLite
+durability setting documented in [Delivery guarantees](#delivery-guarantees) is
+required.
 
 ## Worker
 

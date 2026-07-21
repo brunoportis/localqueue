@@ -143,7 +143,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         for consumer_id in range(args.consumers):
             consumers.append(start_consumer(consumer_id))
 
-        queue = SimpleQueue(str(path), name=queue_name, lease_seconds=1.0, max_retries=3)
+        queue = SimpleQueue(
+            str(path), name=queue_name, lease_seconds=1.0, max_retries=3
+        )
         started_at = time.monotonic()
         restarts = [0] * args.consumers
         drained = False
@@ -156,9 +158,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 process.join()
                 restarts[index] += 1
                 if restarts[index] > args.max_restarts:
-                    raise RuntimeError(
-                        f"consumidor {index} excedeu --max-restarts"
-                    )
+                    raise RuntimeError(f"consumidor {index} excedeu --max-restarts")
                 consumers[index] = start_consumer(index, restarts[index])
 
             last_state = queue.stats()

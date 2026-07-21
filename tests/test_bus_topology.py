@@ -1,5 +1,4 @@
 import pytest
-
 from localqueue.bus import BaseEvent, BusTopology
 
 

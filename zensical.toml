@@ -1,0 +1,30 @@
+[project]
+site_name = "localqueue"
+site_url = "https://brunoportis.github.io/localqueue/"
+site_description = "A persistent, multiprocess-safe local queue for Python, backed by SQLite and Rust."
+site_author = "Bruno Portis"
+repo_url = "https://github.com/brunoportis/localqueue"
+repo_name = "brunoportis/localqueue"
+edit_uri = "edit/main/docs/"
+nav = [
+  {"Home" = "index.md"},
+  {"Getting started" = "getting-started.md"},
+  {"Delivery guarantees" = "guarantees.md"},
+  {"Event bus" = "event-bus.md"},
+  {"GitHub" = "https://github.com/brunoportis/localqueue"},
+]
+
+[project.theme]
+features = [
+  "content.action.edit",
+  "content.action.view",
+  "navigation.instant",
+  "navigation.instant.progress",
+]
+
+[project.theme.icon]
+repo = "fontawesome/brands/github"
+
+[project.markdown_extensions.admonition]
+[project.markdown_extensions.pymdownx.details]
+[project.markdown_extensions.pymdownx.superfences]

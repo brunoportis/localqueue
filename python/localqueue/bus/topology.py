@@ -20,8 +20,7 @@ def validate_name(value: str, field: str) -> None:
     """Validate bus and subscription names consistently."""
     if not isinstance(value, str) or not _NAME_RE.match(value):
         raise ValueError(
-            f"invalid '{field}': use {NAME_PATTERN} "
-            "(non-empty and without ':')"
+            f"invalid '{field}': use {NAME_PATTERN} (non-empty and without ':')"
         )
 
 
@@ -98,6 +97,4 @@ class BusTopology:
     def routes(self, subscription: str, event_type: str) -> bool:
         """Return whether the declared subscription routes ``event_type``."""
         patterns = self._subscriptions.get(subscription)
-        return patterns is not None and (
-            event_type in patterns or WILDCARD in patterns
-        )
+        return patterns is not None and (event_type in patterns or WILDCARD in patterns)

@@ -106,8 +106,7 @@ class EventBus:
             return normalize_event_pattern(pattern)
         except (TypeError, ValueError) as error:
             raise type(error)(
-                "'pattern' must be a BaseEvent subclass, a non-empty event type, "
-                "or '*'"
+                "'pattern' must be a BaseEvent subclass, a non-empty event type, or '*'"
             ) from error
 
     def on(
@@ -230,7 +229,7 @@ class EventBus:
             )
 
         payload = self.serialize_envelope(event)
-        targets = [
+        targets: list[tuple[str, str | None]] = [
             (self._queue_name(subscription), str(event.event_id))
             for subscription in subscriptions
         ]

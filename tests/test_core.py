@@ -1,7 +1,6 @@
 import time
 
 import pytest
-
 from localqueue import Empty, SimpleQueue
 
 
@@ -112,7 +111,7 @@ class TestSimpleQueue:
 
     def test_reclaim_is_called_implicitly_on_get(self, queue):
         queue.put({"task": "auto"})
-        job = queue.get(block=False)
+        queue.get(block=False)
         time.sleep(0.6)
 
         # get() chama reclaim_expired_leases() internamente no backend.

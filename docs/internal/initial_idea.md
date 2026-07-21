@@ -134,4 +134,3 @@ O SQLite corrigiu em 2026 um raro bug de concorrência no reset do WAL. Prefira 
 [4]: https://sqlite.org/wal.html "Write-Ahead Logging"
 [5]: https://docs.nats.io/nats-concepts/jetstream?utm_source=chatgpt.com "JetStream - NATS Docs"
 [6]: https://redis.io/docs/latest/develop/use-cases/streaming/?utm_source=chatgpt.com "Redis streaming | Docs"
-

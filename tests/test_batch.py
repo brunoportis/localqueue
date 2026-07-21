@@ -1,5 +1,4 @@
 import pytest
-
 from localqueue import Empty, EnqueueItem, SimpleQueue
 
 
@@ -45,9 +44,7 @@ class TestPutMany:
 
     def test_put_many_dedup_por_job_id(self, queue):
         first = queue.put_many([EnqueueItem(data={"v": 1}, job_id="job-1")])
-        second = queue.put_many(
-            [EnqueueItem(data={"v": 2}, job_id="job-1")]
-        )
+        second = queue.put_many([EnqueueItem(data={"v": 2}, job_id="job-1")])
 
         assert second == first
         assert queue.stats()["ready"] == 1
@@ -98,9 +95,7 @@ class TestFanout:
         qb = SimpleQueue(str(path), name="queue-b", lease_seconds=5.0)
         try:
             payload = source.serializer.dumps({"event": "created"})
-            ids = source._native.fanout(
-                payload, [("queue-a", None), ("queue-b", None)]
-            )
+            ids = source._native.fanout(payload, [("queue-a", None), ("queue-b", None)])
             assert len(ids) == 2
 
             for target in (qa, qb):

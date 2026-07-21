@@ -128,20 +128,26 @@ def run_operation(
                     for item in items:
                         item_started = time.perf_counter_ns()
                         queue.put(item)
-                        operation_latencies.append(time.perf_counter_ns() - item_started)
+                        operation_latencies.append(
+                            time.perf_counter_ns() - item_started
+                        )
                 elif operation == "read_ack":
                     for _ in items:
                         item_started = time.perf_counter_ns()
                         item = queue.get(block=False)
                         queue.ack(item)
-                        operation_latencies.append(time.perf_counter_ns() - item_started)
+                        operation_latencies.append(
+                            time.perf_counter_ns() - item_started
+                        )
                 elif operation == "roundtrip":
                     for item in items:
                         item_started = time.perf_counter_ns()
                         queue.put(item)
                         received = queue.get(block=False)
                         queue.ack(received)
-                        operation_latencies.append(time.perf_counter_ns() - item_started)
+                        operation_latencies.append(
+                            time.perf_counter_ns() - item_started
+                        )
                 else:
                     raise ValueError(f"operação desconhecida: {operation}")
                 total_elapsed_ns += time.perf_counter_ns() - started
@@ -234,10 +240,7 @@ def run_fanout_comparison(
         total_elapsed_ns = 0
         with tempfile.TemporaryDirectory(prefix="localqueue-bench-") as directory:
             topology = BusTopology(
-                {
-                    f"sub-{index:04d}": [BenchEvent]
-                    for index in range(subscriptions)
-                }
+                {f"sub-{index:04d}": [BenchEvent] for index in range(subscriptions)}
             )
             bus = EventBus(
                 directory,

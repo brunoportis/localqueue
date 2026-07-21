@@ -14,6 +14,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  python-quality:
+    name: Python lint and types
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+          cache: pip
+
+      - name: Install Python quality tools
+        run: python -m pip install --upgrade "ruff>=0.15,<1" "pyrefly>=1.1,<2"
+
+      - name: Run Ruff
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Run Pyrefly
+        run: pyrefly check --preset default --progress-bar no python/localqueue
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+
   rust-quality:
     name: Rust format and Clippy
     runs-on: ubuntu-latest
@@ -42,6 +78,18 @@ jobs:
 
       - name: Run Clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+  rust-dependencies:
+    name: Rust dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
 
   msrv:
     name: Rust MSRV 1.83
@@ -81,7 +129,19 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
 
-      - name: Build extension and run tests in a virtual environment
+      - name: Cache Cargo dependencies and build outputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-py${{ matrix.python }}-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-py${{ matrix.python }}-
+            ${{ runner.os }}-cargo-
+
+      - name: Build extension in a virtual environment
         shell: bash
         run: |
           python -m venv .venv
@@ -93,13 +153,44 @@ jobs:
           python -m pip install --upgrade \
             "maturin>=1.14,<2" \
             "pytest>=8,<10" \
+            "pytest-cov>=7,<8" \
             "pydantic>=2,<3"
-          maturin develop --release --locked
+          maturin develop --locked
+
+      - name: Run tests
+        if: matrix.os != 'ubuntu-latest' || matrix.python != '3.14'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            source .venv/Scripts/activate
+          else
+            source .venv/bin/activate
+          fi
           pytest -ra
+
+      - name: Run tests with branch coverage
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.14'
+        shell: bash
+        run: |
+          source .venv/bin/activate
+          pytest -ra \
+            --cov=localqueue \
+            --cov-branch \
+            --cov-report=term-missing \
+            --cov-report=xml \
+            --cov-fail-under=80
+
+      - name: Upload coverage to Codecov
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.14'
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
+          fail_ci_if_error: false
 
   wheel-smoke:
     name: Build and smoke-test wheel
-    needs: [rust-quality, python-tests]
+    needs: [python-quality, secrets, rust-quality, rust-dependencies, python-tests]
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository

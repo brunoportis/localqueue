@@ -3,7 +3,6 @@ import threading
 import time
 
 import pytest
-
 from localqueue import Empty, SimpleQueue
 
 

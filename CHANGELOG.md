@@ -2,6 +2,26 @@
 
 All notable changes to `localqueue` are documented here.
 
+<!-- version list -->
+
+## [1.1.1] - 2026-07-21
+
+### Added
+
+- Zensical documentation site with a durable, two-process getting-started
+  guide and GitHub Pages deployment workflow.
+- Python branch-coverage reporting, Ruff, Pyrefly, pre-commit, Gitleaks, and
+  cargo-deny quality gates.
+- Manual Conventional Commits release workflow with Python, Cargo, lockfile,
+  tag, and wheel-release consistency checks.
+
+### Changed
+
+- The README quickstart now demonstrates a producer persisting a job before a
+  later worker process consumes it.
+- CI caches Rust build outputs and uses debug builds for test jobs while wheel
+  builds remain optimized release builds.
+
 ## [1.1.0] - 2026-07-21
 
 ### Added
@@ -80,6 +100,7 @@ storage migration:
   leases, bounded retries, dead-letter handling, receipt fencing, and
   multiprocess safety on one machine.
 
+[1.1.1]: https://github.com/brunoportis/localqueue/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/brunoportis/localqueue/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/brunoportis/localqueue/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/brunoportis/localqueue/releases/tag/v1.0.0

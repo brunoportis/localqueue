@@ -1,5 +1,4 @@
 import os
-import signal
 import subprocess
 import sys
 import tempfile
@@ -7,7 +6,6 @@ import time
 import typing
 
 import pytest
-
 from localqueue import Empty, Job, LeaseExpired, LocalQueueError, SimpleQueue
 
 
@@ -45,7 +43,7 @@ class TestContract:
         path = tmp_path / "reopen"
         q1 = SimpleQueue(str(path), lease_seconds=0.3, max_retries=3)
         q1.put({"task": "one"})
-        job = q1.get(block=False)
+        q1.get(block=False)
         q1.close()
 
         # Reabre sem ter dado ack/nack.
@@ -196,7 +194,7 @@ os._exit(1)
 
         # 3 entregas: 1 inicial + 2 retries.
         for _ in range(3):
-            job = q.get(block=False)
+            q.get(block=False)
             time.sleep(0.3)
 
         # Após expirar a terceira vez, deve ir para failed.
@@ -266,9 +264,7 @@ os._exit(1)
         q.close()
 
     @pytest.mark.parametrize("transition", ["ack", "nack", "fail", "extend_lease"])
-    def test_queue_cannot_transition_job_from_another_queue(
-        self, tmp_path, transition
-    ):
+    def test_queue_cannot_transition_job_from_another_queue(self, tmp_path, transition):
         path = tmp_path / f"queue_isolation_{transition}"
         owner = SimpleQueue(str(path), name="emails", lease_seconds=5.0)
         other = SimpleQueue(str(path), name="deploys", lease_seconds=5.0)

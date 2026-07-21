@@ -2,7 +2,6 @@ import asyncio
 import multiprocessing
 
 import pytest
-
 from localqueue.bus import (
     BaseEvent,
     BusTopology,
@@ -80,9 +79,7 @@ class TestStaticRouting:
             bus.close()
 
     def test_handler_registration_does_not_add_a_route(self, tmp_path):
-        topology = BusTopology(
-            {"email": [UserCreated], "orders": [OrderPlaced]}
-        )
+        topology = BusTopology({"email": [UserCreated], "orders": [OrderPlaced]})
         bus = EventBus(str(tmp_path / "bus"), topology=topology)
         try:
             bus.subscription("orders").handler("*", lambda event: None)
@@ -125,9 +122,7 @@ class TestStaticRouting:
             permissive.close()
 
     def test_same_event_id_is_deduplicated_per_subscription(self, tmp_path):
-        topology = BusTopology(
-            {"email": [UserCreated], "analytics": [UserCreated]}
-        )
+        topology = BusTopology({"email": [UserCreated], "analytics": [UserCreated]})
         bus = EventBus(str(tmp_path / "bus"), topology=topology)
         event = UserCreated(user_id="123")
         try:
@@ -146,9 +141,7 @@ class TestStaticRouting:
 
 class TestSubscriptionBinder:
     def test_supports_decorator_and_direct_registration(self, tmp_path):
-        topology = BusTopology(
-            {"email": [UserCreated], "analytics": [UserCreated]}
-        )
+        topology = BusTopology({"email": [UserCreated], "analytics": [UserCreated]})
         bus = EventBus(str(tmp_path / "bus"), topology=topology)
         email = bus.subscription("email")
 
@@ -186,9 +179,7 @@ class TestSubscriptionBinder:
         )
         try:
             with pytest.raises(ValueError, match="does not route"):
-                bus.subscription("email").handler(
-                    OrderPlaced, lambda event: None
-                )
+                bus.subscription("email").handler(OrderPlaced, lambda event: None)
         finally:
             bus.close()
 
@@ -201,22 +192,16 @@ class TestSubscriptionBinder:
         )
         try:
             with pytest.raises(ValueError, match="does not route"):
-                bus.subscription("email").handler(
-                    OrderPlaced, lambda event: None
-                )
+                bus.subscription("email").handler(OrderPlaced, lambda event: None)
 
             assert registry.resolve("order.placed") is None
         finally:
             bus.close()
 
     def test_accepts_exact_handler_under_wildcard_topology(self, tmp_path):
-        bus = EventBus(
-            str(tmp_path / "bus"), topology=BusTopology({"audit": ["*"]})
-        )
+        bus = EventBus(str(tmp_path / "bus"), topology=BusTopology({"audit": ["*"]}))
         try:
-            handler = bus.subscription("audit").handler(
-                UserCreated, lambda event: None
-            )
+            handler = bus.subscription("audit").handler(UserCreated, lambda event: None)
             assert handler is not None
         finally:
             bus.close()
@@ -264,9 +249,7 @@ class TestSubscriptionBinder:
 
 class TestLocalConsumption:
     def test_run_consumes_only_locally_registered_subscriptions(self, tmp_path):
-        topology = BusTopology(
-            {"email": [UserCreated], "analytics": [UserCreated]}
-        )
+        topology = BusTopology({"email": [UserCreated], "analytics": [UserCreated]})
         bus = EventBus(str(tmp_path / "bus"), topology=topology)
         seen = []
         bus.subscription("email").handler(
@@ -308,9 +291,7 @@ def test_producer_and_consumer_work_in_separate_processes(tmp_path):
     context = multiprocessing.get_context("spawn")
     producer = context.Process(target=_produce_without_handlers, args=(path,))
     result = context.Queue()
-    consumer = context.Process(
-        target=_consume_in_separate_process, args=(path, result)
-    )
+    consumer = context.Process(target=_consume_in_separate_process, args=(path, result))
     started_processes = []
     try:
         producer.start()

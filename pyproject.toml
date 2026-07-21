@@ -1,6 +1,6 @@
 [project]
 name = "localqueue"
-version = "1.1.0"
+version = "1.1.1"
 description = "A persistent, multiprocess-safe local queue for Python, backed by SQLite and Rust."
 readme = "README.md"
 license = "Apache-2.0"
@@ -23,9 +23,17 @@ Issues = "https://github.com/brunoportis/localqueue/issues"
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0",
+    "pytest>=8,<10",
+    "pytest-cov>=7,<8",
     "maturin>=1.14",
     "pydantic>=2,<3",
+    "ruff>=0.15,<1",
+    "pyrefly>=1.1,<2",
+    "pre-commit>=4,<5",
+    "python-semantic-release>=10.6,<11",
+]
+docs = [
+    "zensical>=0.0.51,<0.1",
 ]
 benchmark = [
     "persist-queue==1.1.0",
@@ -44,3 +52,39 @@ features = ["pyo3/extension-module"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["localqueue"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.semantic_release]
+assets = ["Cargo.lock"]
+build_command = "cargo metadata --format-version=1 >/dev/null"
+commit_message = "chore(release): v{version}"
+no_git_verify = true
+tag_format = "v{version}"
+version_toml = [
+    "pyproject.toml:project.version",
+    "Cargo.toml:package.version",
+]
+
+[tool.semantic_release.branches.main]
+match = "main"
+prerelease = false
+
+[tool.semantic_release.changelog]
+insertion_flag = "<!-- version list -->"
+mode = "update"
+
+[tool.semantic_release.publish]
+upload_to_vcs_release = false
