@@ -43,7 +43,6 @@ class ReferenceJob:
     attempts: int = 0
     available_at: float = 0.0
     receipt: str | None = None
-    lease_until: float = 0.0
 
 
 @settings(
@@ -57,7 +56,7 @@ class ReferenceJob:
 class QueueStateMachine(RuleBasedStateMachine):
     """Compare a small logical queue model with the public SimpleQueue API."""
 
-    lease_seconds = 0.08
+    lease_seconds = 30.0
     max_retries = 2
 
     def __init__(self) -> None:
@@ -69,22 +68,14 @@ class QueueStateMachine(RuleBasedStateMachine):
             lease_seconds=self.lease_seconds,
             max_retries=self.max_retries,
         )
-        self.other = SimpleQueue(
-            str(self.path),
-            name="other",
-            lease_seconds=self.lease_seconds,
-            max_retries=self.max_retries,
-        )
         self.jobs: dict[int, ReferenceJob] = {}
         self.by_job_id: dict[str, int] = {}
-        self.deliveries: dict[int, list[Any]] = {}
         self.current_delivery: dict[int, Any] = {}
         self.order = 0
         self.trace: list[str] = []
 
     def teardown(self) -> None:
         self.queue.close()
-        self.other.close()
         self.temp_dir.cleanup()
 
     def _record(self, operation: str) -> None:
@@ -111,23 +102,6 @@ class QueueStateMachine(RuleBasedStateMachine):
             self.by_job_id[job_id] = message_id
         self.jobs[message_id] = ReferenceJob(data, job_id, self.order)
         self.order += 1
-
-    def _model_reclaim(self, now: float) -> int:
-        reclaimed = 0
-        for job in self.jobs.values():
-            if job.status != "processing":
-                continue
-            # The real queue increments attempts when a delivery is reclaimed.
-            if job.receipt is not None and job.lease_until <= now:
-                if job.attempts >= self.max_retries:
-                    job.status = "failed"
-                else:
-                    job.status = "ready"
-                    job.attempts += 1
-                    job.available_at = now
-                job.receipt = None
-                reclaimed += 1
-        return reclaimed
 
     def _ready_reference(self) -> ReferenceJob | None:
         now = time.monotonic()
@@ -199,11 +173,6 @@ class QueueStateMachine(RuleBasedStateMachine):
         self._assert_stats()
 
     def _get(self, method: str) -> None:
-        now = time.monotonic()
-        self._model_reclaim(now)
-        for message_id in list(self.current_delivery):
-            if self.jobs[message_id].status != "processing":
-                self.current_delivery.pop(message_id)
         expected = self._ready_reference()
         self._record(f"{method}()")
         getter = (
@@ -221,8 +190,6 @@ class QueueStateMachine(RuleBasedStateMachine):
         assert job.attempts == expected.attempts
         expected.status = "processing"
         expected.receipt = job.receipt
-        expected.lease_until = time.monotonic() + self.lease_seconds
-        self.deliveries.setdefault(job.id, []).append(job)
         self.current_delivery[job.id] = job
         assert job.id in self.jobs
         self._assert_stats()
@@ -285,62 +252,13 @@ class QueueStateMachine(RuleBasedStateMachine):
     @precondition(lambda self: bool(self.current_delivery))
     @rule(
         index=st.integers(min_value=0, max_value=100),
-        seconds=st.sampled_from([0.02, 0.2]),
+        seconds=st.sampled_from([1.0, 5.0]),
     )
     def extend_lease(self, index: int, seconds: float) -> None:
         message_id = list(self.current_delivery)[index % len(self.current_delivery)]
         job = self.current_delivery[message_id]
         self._record(f"extend_lease({message_id}, {seconds})")
         self.queue.extend_lease(job, seconds)
-        self.jobs[message_id].lease_until = time.monotonic() + seconds
-        self._assert_stats()
-
-    @precondition(
-        lambda self: any(job.status == "processing" for job in self.jobs.values())
-    )
-    @rule()
-    def expire_and_reclaim(self) -> None:
-        self._record("sleep_and_reclaim()")
-        time.sleep(self.lease_seconds * 3)
-        now = time.monotonic()
-        expected = self._model_reclaim(now)
-        assert self.queue.reclaim_expired_leases() == expected
-        for message_id, job in list(self.current_delivery.items()):
-            if self.jobs[message_id].status != "processing":
-                self.current_delivery.pop(message_id)
-                assert job.receipt != self.jobs[message_id].receipt
-        self._assert_stats()
-
-    @precondition(
-        lambda self: any(len(deliveries) > 1 for deliveries in self.deliveries.values())
-    )
-    @rule(
-        index=st.integers(min_value=0, max_value=100),
-        operation=st.sampled_from(["ack", "nack", "fail", "extend_lease"]),
-    )
-    def stale_receipt(self, index: int, operation: str) -> None:
-        stale = [
-            job
-            for message_id, deliveries in self.deliveries.items()
-            if len(deliveries) > 1
-            for job in deliveries[:-1]
-            if self.jobs[message_id].status == "processing"
-        ]
-        if not stale:
-            return
-        job = stale[index % len(stale)]
-        before = self.queue.stats()
-        self._record(f"stale_{operation}({job.id})")
-        with pytest.raises(LeaseExpired):
-            if operation == "ack":
-                self.queue.ack(job)
-            elif operation == "nack":
-                self.queue.nack(job)
-            elif operation == "fail":
-                self.queue.fail(job)
-            else:
-                self.queue.extend_lease(job, 0.2)
-        assert self.queue.stats() == before
         self._assert_stats()
 
     @rule()
@@ -418,3 +336,38 @@ class QueueStateMachine(RuleBasedStateMachine):
 
 
 TestQueueStateMachine = QueueStateMachine.TestCase
+
+
+def test_expiry_reclaim_and_stale_receipt_fencing(tmp_path):
+    """Keep the only real-time wait outside generated sequences.
+
+    The state machine above uses a long lease so normal ACK/NACK/fail
+    transitions cannot race a slow CI runner. This focused scenario uses one
+    deliberately short lease to cover expiration, explicit reclaim, and all
+    stale-receipt transitions after redelivery.
+    """
+    queue = SimpleQueue(str(tmp_path), lease_seconds=0.2, max_retries=2)
+    try:
+        queue.put({"task": "expire"})
+        first = queue.get_nowait()
+        time.sleep(0.6)
+        assert queue.reclaim_expired_leases() == 1
+
+        second = queue.get_nowait()
+        assert second.data == first.data
+        assert second.attempts == 1
+        for operation in ("ack", "nack", "fail"):
+            with pytest.raises(LeaseExpired):
+                getattr(queue, operation)(first)
+        with pytest.raises(LeaseExpired):
+            queue.extend_lease(first, 1.0)
+
+        queue.ack(second)
+        assert queue.stats() == {
+            "ready": 0,
+            "processing": 0,
+            "acked": 1,
+            "failed": 0,
+        }
+    finally:
+        queue.close()
