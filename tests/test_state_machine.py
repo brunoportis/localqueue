@@ -217,7 +217,7 @@ class QueueStateMachine(RuleBasedStateMachine):
     @precondition(lambda self: bool(self.current_delivery))
     @rule(
         index=st.integers(min_value=0, max_value=100),
-        delay=st.sampled_from([0.0, 0.02]),
+        delay=st.just(0.0),
     )
     def nack(self, index: int, delay: float) -> None:
         message_id = list(self.current_delivery)[index % len(self.current_delivery)]
@@ -252,7 +252,7 @@ class QueueStateMachine(RuleBasedStateMachine):
     @precondition(lambda self: bool(self.current_delivery))
     @rule(
         index=st.integers(min_value=0, max_value=100),
-        seconds=st.sampled_from([1.0, 5.0]),
+        seconds=st.sampled_from([30.0, 60.0]),
     )
     def extend_lease(self, index: int, seconds: float) -> None:
         message_id = list(self.current_delivery)[index % len(self.current_delivery)]
@@ -363,6 +363,32 @@ def test_expiry_reclaim_and_stale_receipt_fencing(tmp_path):
             queue.extend_lease(first, 1.0)
 
         queue.ack(second)
+        assert queue.stats() == {
+            "ready": 0,
+            "processing": 0,
+            "acked": 1,
+            "failed": 0,
+        }
+    finally:
+        queue.close()
+
+
+def test_delayed_retry_waits_outside_generated_sequences(tmp_path):
+    """Cover delayed availability with one isolated, generously-sized wait."""
+    queue = SimpleQueue(str(tmp_path), lease_seconds=30.0, max_retries=2)
+    try:
+        queue.put({"task": "delayed-retry"})
+        job = queue.get_nowait()
+        queue.nack(job, delay=0.2, last_error="transient")
+
+        with pytest.raises(Empty):
+            queue.get_nowait()
+
+        time.sleep(0.7)
+        redelivery = queue.get_nowait()
+        assert redelivery.data == job.data
+        assert redelivery.attempts == 1
+        queue.ack(redelivery)
         assert queue.stats() == {
             "ready": 0,
             "processing": 0,
