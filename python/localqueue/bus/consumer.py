@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from localqueue.bus.bus import EventBus
 
 log = logging.getLogger(__name__)
+_POLL_INTERVAL = 0.1
 
 
 async def run_consumer(
@@ -26,21 +27,23 @@ async def run_consumer(
 ) -> None:
     """Consome a fila de ``subscription`` até cancelamento (ou idle).
 
-    O ``get`` bloqueante roda em thread separada para não travar o event
-    loop; ``CancelledError`` fecha a fila no ``finally`` e propaga.
+    Cada sondagem não bloqueante roda em thread separada; quando a fila está
+    vazia, o intervalo é aguardado no event loop. ``CancelledError`` fecha a
+    fila no ``finally`` e propaga.
     """
     queue = bus._open_subscription_queue(subscription)
     try:
         idle_since: Optional[float] = None
         while True:
             try:
-                job = await asyncio.to_thread(queue.get, True, 0.1)
+                job = await asyncio.to_thread(queue.get, False)
             except Empty:
                 if idle_timeout is not None:
                     now = asyncio.get_running_loop().time()
                     idle_since = idle_since if idle_since is not None else now
                     if now - idle_since >= idle_timeout:
                         return
+                await asyncio.sleep(_POLL_INTERVAL)
                 continue
             idle_since = None
             await _process_delivery(bus, subscription, queue, job)

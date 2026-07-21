@@ -44,6 +44,45 @@ def producer_process(path, name, num_jobs, result_queue):
 
 
 class TestConcurrency:
+    def test_empty_get_does_not_wait_for_native_writer(self, tmp_path):
+        path = tmp_path / "idle-reader"
+        writer = SimpleQueue(str(path), name="writer")
+        idle = SimpleQueue(str(path), name="idle")
+        wal_path = path / "localqueue.db-wal"
+        initial_wal_size = wal_path.stat().st_size
+        errors = []
+
+        def write_large_batch():
+            try:
+                writer._native.put_many([b"{}"] * 500_000, None)
+            except BaseException as exc:  # pragma: no cover - diagnóstico
+                errors.append(exc)
+
+        write_thread = threading.Thread(target=write_large_batch)
+        write_thread.start()
+        try:
+            deadline = time.monotonic() + 5.0
+            while (
+                write_thread.is_alive()
+                and wal_path.stat().st_size <= initial_wal_size
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.001)
+
+            assert wal_path.stat().st_size > initial_wal_size
+            started = time.monotonic()
+            with pytest.raises(Empty):
+                idle.get(block=False)
+            elapsed = time.monotonic() - started
+        finally:
+            write_thread.join(timeout=10)
+            writer.close()
+            idle.close()
+
+        assert errors == []
+        assert not write_thread.is_alive()
+        assert elapsed < 0.2
+
     def test_multiple_threads_do_not_duplicate_jobs(self, queue):
         """Vários workers na mesma thread não processam o mesmo job."""
         num_jobs = 50

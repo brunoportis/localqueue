@@ -147,6 +147,30 @@ impl NativeQueue {
             let mut guard = self.conn()?;
             let conn = guard.as_mut().unwrap();
 
+            // Fila realmente ociosa permanece no caminho read-only. Além de
+            // evitar duas UPDATEs inúteis, isso impede que cada polling tente
+            // adquirir o writer lock global do SQLite.
+            let has_deliverable: bool = conn
+                .query_row(
+                    "SELECT
+                        EXISTS(
+                            SELECT 1 FROM messages
+                            WHERE queue = ?1 AND status = ?2
+                                AND available_at <= ?3
+                        )
+                        OR EXISTS(
+                            SELECT 1 FROM messages
+                            WHERE queue = ?1 AND status = ?4
+                                AND lease_until <= ?3
+                        )",
+                    params![self.queue, STATUS_READY, now, STATUS_LEASED],
+                    |row| row.get(0),
+                )
+                .map_err(QueueError::from)?;
+            if !has_deliverable {
+                return Ok(None);
+            }
+
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(QueueError::from)?;

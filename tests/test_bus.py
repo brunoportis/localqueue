@@ -453,6 +453,33 @@ class TestTypedReconstruction:
 
 
 class TestAsyncioSafety:
+    def test_subscription_ociosa_faz_uma_sondagem_por_intervalo(
+        self, bus, monkeypatch
+    ):
+        from localqueue.core import SimpleQueue
+
+        calls = []
+
+        def empty_get(self, block=True, timeout=None):
+            calls.append((block, timeout, time.monotonic()))
+            from localqueue import Empty
+
+            raise Empty("fila vazia")
+
+        monkeypatch.setattr(SimpleQueue, "get", empty_get)
+        bus.on(UserCreated, lambda event: None, subscription="s1")
+
+        run(bus.run_subscription("s1", idle_timeout=0.25))
+
+        assert 2 <= len(calls) <= 4
+        call_arguments = {(block, timeout) for block, timeout, _ in calls}
+        assert call_arguments == {(False, None)}
+        intervals = [
+            current[2] - previous[2]
+            for previous, current in zip(calls, calls[1:])
+        ]
+        assert all(interval >= 0.08 for interval in intervals)
+
     def test_event_loop_nao_bloqueia_durante_get_e_handler_sync(self, bus):
         import threading
 
