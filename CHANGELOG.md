@@ -4,6 +4,36 @@ All notable changes to `localqueue` are documented here.
 
 <!-- version list -->
 
+## v1.1.2 (2026-07-21)
+
+### Bug Fixes
+
+- Clarify quickstart execution order
+  ([`69bd317`](https://github.com/brunoportis/localqueue/commit/69bd31778640d25a47b52e36565448c0c1b341ad))
+
+### Continuous Integration
+
+- Pin GitHub Actions to immutable revisions
+  ([`752ebed`](https://github.com/brunoportis/localqueue/commit/752ebed2709d64089a62c7bd97734d30a4ca6eb8))
+
+- Report no-op semantic releases clearly
+  ([`395af15`](https://github.com/brunoportis/localqueue/commit/395af155463d53cc3a34cef06a982c17439e8081))
+
+- Validate release wheels without virtualenv
+  ([`4cfd63e`](https://github.com/brunoportis/localqueue/commit/4cfd63e2ef9703a56f84037c14e6c016fa9a2105))
+
+### Documentation
+
+- Fix quickstart code fence
+  ([`88f22a4`](https://github.com/brunoportis/localqueue/commit/88f22a4a6b2af0f6547ab083c836ed7fe08ee3fa))
+
+- Record automation rollout status
+  ([`9b406ea`](https://github.com/brunoportis/localqueue/commit/9b406ea814d44061ce03ae716dafa0f0e219eff7))
+
+- Record release validation evidence
+  ([`c713eff`](https://github.com/brunoportis/localqueue/commit/c713eff7e7704bc0f046c951a26c502b56e0bfb0))
+
+
 ## [1.1.1] - 2026-07-21
 
 ### Added

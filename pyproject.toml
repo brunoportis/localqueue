@@ -1,6 +1,6 @@
 [project]
 name = "localqueue"
-version = "1.1.1"
+version = "1.1.2"
 description = "A persistent, multiprocess-safe local queue for Python, backed by SQLite and Rust."
 readme = "README.md"
 license = "Apache-2.0"
