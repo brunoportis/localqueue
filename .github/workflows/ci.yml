@@ -92,6 +92,7 @@ jobs:
           fi
           python -m pip install --upgrade "maturin>=1.14,<2" "pytest>=8,<10"
           maturin develop --release --locked
+          python -m pip install ".[bus]"
           pytest -ra
 
   wheel-smoke:

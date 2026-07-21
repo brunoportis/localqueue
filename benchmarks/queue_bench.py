@@ -214,6 +214,54 @@ def run_batch_comparison(
     return results
 
 
+def run_fanout_comparison(
+    sizes: list[int],
+    messages: int,
+    payload_bytes: int,
+    durability: str,
+) -> list[dict[str, Any]]:
+    """Mede throughput de dispatch do EventBus com N subscriptions (fan-out)."""
+    from localqueue.bus import BaseEvent, EventBus
+
+    class BenchEvent(BaseEvent):
+        seq: int
+        padding: str = ""
+
+    results = []
+    fsync = durability == "full"
+    padding = "x" * max(0, payload_bytes - 16)
+    for subscriptions in sizes:
+        total_elapsed_ns = 0
+        with tempfile.TemporaryDirectory(prefix="localqueue-bench-") as directory:
+            bus = EventBus(directory, name="bench", fsync=fsync)
+            for index in range(subscriptions):
+                bus.on("BenchEvent", lambda e: None,
+                       subscription=f"sub-{index:04d}")
+            started = time.perf_counter_ns()
+            for seq in range(messages):
+                bus.dispatch(BenchEvent(seq=seq, padding=padding))
+            total_elapsed_ns = time.perf_counter_ns() - started
+            bus.close()
+        elapsed_seconds = total_elapsed_ns / 1_000_000_000
+        results.append(
+            {
+                "backend": "localqueue-bus",
+                "operation": "fanout",
+                "subscriptions": subscriptions,
+                "messages": messages,
+                "deliveries": messages * subscriptions,
+                "payload_bytes": payload_bytes,
+                "durability": durability,
+                "elapsed_seconds": elapsed_seconds,
+                "throughput_dispatches_per_second": messages / elapsed_seconds,
+                "throughput_deliveries_per_second": messages
+                * subscriptions
+                / elapsed_seconds,
+            }
+        )
+    return results
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -223,9 +271,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--operation",
-        choices=("write", "read_ack", "roundtrip", "batch"),
+        choices=("write", "read_ack", "roundtrip", "batch", "fanout"),
         default="roundtrip",
-        help="'batch' compara N×put() vs 1×put_many() (apenas localqueue)",
+        help=(
+            "'batch' compara N×put() vs 1×put_many(); "
+            "'fanout' mede dispatch do EventBus (1, 10 e 100 subscriptions)"
+        ),
     )
     parser.add_argument("--messages", type=int, default=1_000)
     parser.add_argument("--repetitions", type=int, default=5)
@@ -254,6 +305,19 @@ def main() -> int:
             "results": run_batch_comparison(
                 [1, 10, 100, 1000],
                 args.repetitions,
+                args.payload_bytes,
+                args.durability,
+            ),
+        }
+    elif args.operation == "fanout":
+        result = {
+            "revision": git_revision(),
+            "python": platform.python_version(),
+            "platform": platform.platform(),
+            "machine": platform.machine(),
+            "results": run_fanout_comparison(
+                [1, 10, 100],
+                args.messages,
                 args.payload_bytes,
                 args.durability,
             ),

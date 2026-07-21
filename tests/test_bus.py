@@ -1,6 +1,7 @@
 import asyncio
 import importlib
 import sys
+import time
 
 import pytest
 
@@ -338,3 +339,232 @@ class TestConsumption:
         # Bus continua utilizável após cancelamento.
         receipt = bus.dispatch(UserCreated(user_id="pós-cancel"))
         assert receipt.subscriptions == ("s1",)
+
+
+class GroupEvent(BaseEvent):
+    seq: int
+
+
+def _consumer_group_worker(path, seqs, idle_timeout):
+    """Worker de consumer group em processo separado."""
+    bus = EventBus(path, name="test", lease_seconds=5.0, max_retries=1)
+    bus.on(GroupEvent, lambda e: seqs.append(e.seq), subscription="x")
+    try:
+        asyncio.run(bus.run_subscription("x", idle_timeout=idle_timeout))
+    finally:
+        bus.close()
+
+
+class TestValidations:
+    @pytest.mark.parametrize(
+        "kwargs",
+        [{"lease_seconds": 0}, {"lease_seconds": -1}, {"max_retries": -1}],
+    )
+    def test_constructor_rejeita_limites_invalidos(self, tmp_path, kwargs):
+        with pytest.raises(ValueError):
+            EventBus(str(tmp_path / "b"), name="t", **kwargs)
+
+    @pytest.mark.parametrize(
+        "permanent_errors",
+        ["NaoETupla", (str,), [Exception, 42]],
+    )
+    def test_permanent_errors_invalido_rejeitado(self, bus, permanent_errors):
+        with pytest.raises(TypeError, match="permanent_errors"):
+            bus.on(UserCreated, lambda e: None, subscription="s1",
+                   permanent_errors=permanent_errors)
+
+    def test_fsync_repassado_para_subscription_queue(self, tmp_path):
+        bus = EventBus(str(tmp_path / "b"), name="t", fsync=True)
+        queue = bus._open_subscription_queue("s1")
+        _, synchronous = queue._native.pragma_settings()
+        queue.close()
+        bus.close()
+        assert synchronous == 2  # FULL
+
+
+class TestEnvelopeMalformed:
+    def test_envelope_lista_crua_vai_para_dead_letter(self, bus):
+        bus.on("*", lambda e: None, subscription="s1")
+        queue = bus._open_subscription_queue("s1")
+        queue.put(["não", "é", "um", "envelope"])
+        queue.close()
+
+        run(bus.run_subscription("s1", idle_timeout=0.5))
+
+        q = bus._open_subscription_queue("s1")
+        assert q.stats()["failed"] == 1
+        assert "envelope malformado" in q.list_failed()[0]["last_error"]
+        q.close()
+
+    def test_envelope_sem_chaves_obrigatorias(self, bus):
+        bus.on("*", lambda e: None, subscription="s1")
+        queue = bus._open_subscription_queue("s1")
+        queue.put({"payload": {"user_id": "1"}})  # sem event_type
+        queue.put({"event_type": "UserCreated"})  # sem payload
+        queue.close()
+
+        run(bus.run_subscription("s1", idle_timeout=0.5))
+
+        q = bus._open_subscription_queue("s1")
+        assert q.stats()["failed"] == 2
+        q.close()
+
+
+class TestTypedReconstruction:
+    def test_dispatch_com_somente_wildcard_reconstroi_evento(self, bus):
+        seen = []
+        bus.on("*", lambda e: seen.append(e), subscription="audit")
+
+        bus.dispatch(GroupEvent(seq=7))
+        run(bus.run_subscription("audit", idle_timeout=0.5))
+
+        assert len(seen) == 1
+        assert isinstance(seen[0], GroupEvent)
+        assert seen[0].seq == 7
+
+    def test_dispatch_com_handler_somente_string_reconstroi_evento(self, bus):
+        seen = []
+        bus.on("GroupEvent", lambda e: seen.append(e), subscription="s1")
+
+        bus.dispatch(GroupEvent(seq=8))
+        run(bus.run_subscription("s1", idle_timeout=0.5))
+
+        assert len(seen) == 1
+        assert isinstance(seen[0], GroupEvent)
+
+
+class TestAsyncioSafety:
+    def test_event_loop_nao_bloqueia_durante_get_e_handler_sync(self, bus):
+        blocking = []
+
+        def slow_handler(event):
+            time.sleep(0.3)  # bloqueante de propósito
+            blocking.append(event.user_id)
+
+        bus.on(UserCreated, slow_handler, subscription="s1")
+        bus.dispatch(UserCreated(user_id="1"))
+
+        async def main():
+            ticks = 0
+            task = asyncio.create_task(bus.run(idle_timeout=0.5))
+            started = asyncio.get_running_loop().time()
+            while asyncio.get_running_loop().time() - started < 0.6:
+                await asyncio.sleep(0.01)
+                ticks += 1
+            await task
+            return ticks
+
+        # Se get/handler bloqueassem o loop, os ticks parariam por ~0.3s.
+        assert run(main()) >= 40
+        assert blocking == ["1"]
+
+
+class TestLeaseSafety:
+    def test_handler_longo_com_heartbeat_faz_ack(self, tmp_path):
+        bus = EventBus(
+            str(tmp_path / "b"), name="t", lease_seconds=0.5, max_retries=1
+        )
+        seen = []
+
+        def long_handler(event):
+            time.sleep(1.2)  # mais que o dobro do lease
+            seen.append(event.user_id)
+
+        bus.on(UserCreated, long_handler, subscription="s1")
+        bus.dispatch(UserCreated(user_id="longo"))
+        run(bus.run_subscription("s1", idle_timeout=0.5))
+        bus.close()
+
+        assert seen == ["longo"]
+        bus2 = EventBus(
+            str(tmp_path / "b"), name="t", lease_seconds=0.5, max_retries=1
+        )
+        q = bus2._open_subscription_queue("s1")
+        assert q.stats()["acked"] == 1
+        assert q.stats()["failed"] == 0
+        q.close()
+        bus2.close()
+
+    def test_lease_expired_no_ack_nao_mata_consumer(self, bus, monkeypatch):
+        from localqueue.core import SimpleQueue
+
+        seen = []
+        bus.on(UserCreated, lambda e: seen.append(e.user_id),
+               subscription="s1")
+        bus.dispatch(UserCreated(user_id="a"))
+        bus.dispatch(UserCreated(user_id="b"))
+
+        original_ack = SimpleQueue.ack
+        failed_once = []
+
+        def ack_que_expira(self, job):
+            if not failed_once:
+                failed_once.append(job.id)
+                from localqueue import LeaseExpired
+
+                raise LeaseExpired("lease expirado simulado")
+            return original_ack(self, job)
+
+        monkeypatch.setattr(SimpleQueue, "ack", ack_que_expira)
+        run(bus.run_subscription("s1", idle_timeout=0.5))
+
+        # O consumer sobreviveu: os dois handlers rodaram.
+        assert "a" in seen and "b" in seen
+
+    def test_lease_perdido_descarta_resultado(self, bus, monkeypatch):
+        from localqueue import LeaseExpired
+        from localqueue.core import SimpleQueue
+
+        seen = []
+
+        def handler(event):
+            # Dorme o suficiente para o heartbeat (lease/3) disparar.
+            time.sleep(0.4)
+            seen.append(event.user_id)
+
+        bus.on(UserCreated, handler, subscription="s1")
+        bus.dispatch(UserCreated(user_id="x"))
+
+        def extend_que_falha(self, job, seconds):
+            raise LeaseExpired("lease perdido simulado")
+
+        monkeypatch.setattr(SimpleQueue, "extend_lease", extend_que_falha)
+        run(bus.run_subscription("s1", idle_timeout=0.5))
+
+        # Handler rodou (possivelmente reentregue, pois o lease expira de
+        # verdade), mas o ack foi sempre descartado por lease_lost.
+        assert "x" in seen
+        q = bus._open_subscription_queue("s1")
+        assert q.stats()["acked"] == 0
+        q.close()
+
+
+class TestConsumerGroup:
+    def test_dois_processos_competem_sem_duplicar(self, tmp_path):
+        import multiprocessing
+
+        path = str(tmp_path / "group")
+        num_events = 40
+
+        bus = EventBus(path, name="test", lease_seconds=5.0, max_retries=1)
+        bus.on("GroupEvent", lambda e: None, subscription="x")
+        for i in range(num_events):
+            bus.dispatch(GroupEvent(seq=i))
+        bus.close()
+
+        manager = multiprocessing.Manager()
+        seqs = manager.list()
+        processes = [
+            multiprocessing.Process(
+                target=_consumer_group_worker, args=(path, seqs, 2.0)
+            )
+            for _ in range(2)
+        ]
+        for p in processes:
+            p.start()
+        for p in processes:
+            p.join(timeout=60)
+            assert p.exitcode == 0
+
+        assert len(seqs) == num_events
+        assert sorted(seqs) == list(range(num_events))

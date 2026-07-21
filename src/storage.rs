@@ -56,7 +56,11 @@ impl Storage {
     /// A deduplicação por (queue, job_id) usa INSERT OR IGNORE + SELECT do id
     /// existente, retornando os ids na ordem de entrada. Em qualquer erro a
     /// transação é descartada (rollback) sem escrita parcial.
-    pub fn enqueue_batch(&self, entries: &[EnqueueEntry<'_>], max_attempts: i64) -> Result<Vec<i64>> {
+    pub fn enqueue_batch(
+        &self,
+        entries: &[EnqueueEntry<'_>],
+        max_attempts: i64,
+    ) -> Result<Vec<i64>> {
         if entries.is_empty() {
             return Ok(Vec::new());
         }
@@ -162,9 +166,21 @@ mod tests {
     fn enqueue_batch_retorna_ids_na_ordem() {
         let (_dir, storage) = open_storage();
         let entries = [
-            EnqueueEntry { queue_name: "q", payload: b"a", job_id: None },
-            EnqueueEntry { queue_name: "q", payload: b"b", job_id: None },
-            EnqueueEntry { queue_name: "q", payload: b"c", job_id: None },
+            EnqueueEntry {
+                queue_name: "q",
+                payload: b"a",
+                job_id: None,
+            },
+            EnqueueEntry {
+                queue_name: "q",
+                payload: b"b",
+                job_id: None,
+            },
+            EnqueueEntry {
+                queue_name: "q",
+                payload: b"c",
+                job_id: None,
+            },
         ];
         let ids = storage.enqueue_batch(&entries, 3).unwrap();
         assert_eq!(ids.len(), 3);
@@ -176,15 +192,31 @@ mod tests {
         let (_dir, storage) = open_storage();
         let first = storage
             .enqueue_batch(
-                &[EnqueueEntry { queue_name: "q", payload: b"orig", job_id: Some("j1") }],
+                &[EnqueueEntry {
+                    queue_name: "q",
+                    payload: b"orig",
+                    job_id: Some("j1"),
+                }],
                 3,
             )
             .unwrap();
         // Mesmo job_id repetido no mesmo batch e em batch posterior.
         let entries = [
-            EnqueueEntry { queue_name: "q", payload: b"dup", job_id: Some("j1") },
-            EnqueueEntry { queue_name: "q", payload: b"dup2", job_id: Some("j1") },
-            EnqueueEntry { queue_name: "q", payload: b"outro", job_id: Some("j2") },
+            EnqueueEntry {
+                queue_name: "q",
+                payload: b"dup",
+                job_id: Some("j1"),
+            },
+            EnqueueEntry {
+                queue_name: "q",
+                payload: b"dup2",
+                job_id: Some("j1"),
+            },
+            EnqueueEntry {
+                queue_name: "q",
+                payload: b"outro",
+                job_id: Some("j2"),
+            },
         ];
         let ids = storage.enqueue_batch(&entries, 3).unwrap();
         assert_eq!(ids[0], first[0]);
@@ -196,8 +228,16 @@ mod tests {
     fn enqueue_batch_mesmo_job_id_em_filas_diferentes() {
         let (_dir, storage) = open_storage();
         let entries = [
-            EnqueueEntry { queue_name: "qa", payload: b"x", job_id: Some("j1") },
-            EnqueueEntry { queue_name: "qb", payload: b"x", job_id: Some("j1") },
+            EnqueueEntry {
+                queue_name: "qa",
+                payload: b"x",
+                job_id: Some("j1"),
+            },
+            EnqueueEntry {
+                queue_name: "qb",
+                payload: b"x",
+                job_id: Some("j1"),
+            },
         ];
         let ids = storage.enqueue_batch(&entries, 3).unwrap();
         assert_ne!(ids[0], ids[1]);

@@ -109,9 +109,7 @@ impl NativeQueue {
                 .map(|(index, payload)| EnqueueEntry {
                     queue_name: &self.queue,
                     payload,
-                    job_id: job_ids
-                        .as_ref()
-                        .and_then(|ids| ids[index].as_deref()),
+                    job_id: job_ids.as_ref().and_then(|ids| ids[index].as_deref()),
                 })
                 .collect();
             Ok(self.storage.enqueue_batch(&entries, self.max_attempts)?)

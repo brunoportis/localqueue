@@ -108,6 +108,13 @@ Both run until cancelled — `CancelledError` closes the queues cleanly and
 propagates. For tests, pass `idle_timeout=seconds` to stop after the queue
 has been empty for that long.
 
+While a handler runs, a background heartbeat renews the delivery lease
+(roughly every `lease_seconds/3`), so long handlers are not redelivered
+mid-execution. If the lease is lost anyway (or expires before the final
+ack/nack/fail), the outcome is discarded and logged — a `LeaseExpired` never
+terminates the consumer. Blocking `get` calls and synchronous handlers run
+in worker threads, so consumers never stall the asyncio event loop.
+
 Each delivery is reconstructed into the event class (resolved from the
 process-wide registry) and validated with pydantic before the handler runs.
 Handlers may be sync or async:

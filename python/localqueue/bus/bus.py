@@ -60,6 +60,8 @@ class EventBus:
         registry: EventRegistry = EVENT_REGISTRY,
     ) -> None:
         self._validate_name(name, "name")
+        if not lease_seconds > 0:
+            raise ValueError("'lease_seconds' deve ser positivo")
         if max_retries < 0:
             raise ValueError("'max_retries' deve ser não negativo")
 
@@ -67,6 +69,7 @@ class EventBus:
         self.name = name
         self.lease_seconds = lease_seconds
         self.max_retries = max_retries
+        self.fsync = fsync
         self.require_subscribers = require_subscribers
         self.serializer = serializer
         self.registry = registry
@@ -121,6 +124,14 @@ class EventBus:
         """
         self._validate_name(subscription, "subscription")
         key = self._pattern_key(pattern)
+        if not isinstance(permanent_errors, (tuple, list)) or not all(
+            isinstance(exc, type) and issubclass(exc, BaseException)
+            for exc in permanent_errors
+        ):
+            raise TypeError(
+                "'permanent_errors' deve ser uma tupla/lista de classes "
+                "de exceção"
+            )
 
         def decorator(fn: Callable[[Any], Any]) -> Callable[[Any], Any]:
             combo = (subscription, key)
@@ -178,6 +189,10 @@ class EventBus:
         if not isinstance(event, BaseEvent):
             raise TypeError("'event' deve ser uma instância de BaseEvent")
 
+        # Garante que consumers (mesmo os registrados só com "*" ou string)
+        # consigam reconstruir o evento tipado.
+        self.registry.register(type(event))
+
         subscriptions = self._subscriptions_for(event.event_type)
         if not subscriptions:
             if self.require_subscribers:
@@ -214,6 +229,7 @@ class EventBus:
             name=self._queue_name(subscription),
             lease_seconds=self.lease_seconds,
             max_retries=self.max_retries,
+            fsync=self.fsync,
             serializer=self.serializer,
         )
 
