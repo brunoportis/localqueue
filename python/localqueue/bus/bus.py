@@ -102,8 +102,6 @@ class EventBus:
         return f"__bus__:{self.name}:{subscription}"
 
     def _pattern_key(self, pattern: EventPattern) -> str:
-        if isinstance(pattern, type) and issubclass(pattern, BaseEvent):
-            self.registry.register(pattern)
         try:
             return normalize_event_pattern(pattern)
         except (TypeError, ValueError) as error:
@@ -162,11 +160,15 @@ class EventBus:
             )
 
         def decorator(fn: Callable[[Any], Any]) -> Callable[[Any], Any]:
+            if not callable(fn):
+                raise TypeError("'handler' must be callable")
             combo = (subscription, key)
             if combo in self._handlers:
                 raise ValueError(
                     f"handler already registered for ({subscription!r}, {key!r})"
                 )
+            if isinstance(pattern, type) and issubclass(pattern, BaseEvent):
+                self.registry.register(pattern)
             self._handlers[combo] = _HandlerRegistration(
                 handler=fn, permanent_errors=tuple(permanent_errors)
             )

@@ -3,7 +3,13 @@ import multiprocessing
 
 import pytest
 
-from localqueue.bus import BaseEvent, BusTopology, EventBus, NoSubscribers
+from localqueue.bus import (
+    BaseEvent,
+    BusTopology,
+    EventBus,
+    EventRegistry,
+    NoSubscribers,
+)
 
 
 class UserCreated(BaseEvent):
@@ -183,6 +189,23 @@ class TestSubscriptionBinder:
                 bus.subscription("email").handler(
                     OrderPlaced, lambda event: None
                 )
+        finally:
+            bus.close()
+
+    def test_failed_handler_registration_does_not_mutate_registry(self, tmp_path):
+        registry = EventRegistry()
+        bus = EventBus(
+            str(tmp_path / "bus"),
+            topology=BusTopology({"email": [UserCreated]}),
+            registry=registry,
+        )
+        try:
+            with pytest.raises(ValueError, match="does not route"):
+                bus.subscription("email").handler(
+                    OrderPlaced, lambda event: None
+                )
+
+            assert registry.resolve("order.placed") is None
         finally:
             bus.close()
 
