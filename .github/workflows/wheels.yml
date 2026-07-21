@@ -36,10 +36,6 @@ jobs:
             target: x86_64-pc-windows-msvc
             manylinux: off
     runs-on: ${{ matrix.os }}
-    environment: pypi
-    permissions:
-      contents: read
-      id-token: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -75,7 +71,9 @@ jobs:
       - name: Install one wheel for smoke testing
         if: matrix.name != 'linux-aarch64'
         shell: bash
-        run: python -m pip install --force-reinstall --no-index target/wheels/*cp313*.whl
+        run: |
+          python -m pip install --upgrade "pydantic>=2,<3"
+          python -m pip install --force-reinstall --no-index target/wheels/*cp313*.whl
 
       - name: Smoke-test installed wheel outside the checkout
         if: matrix.name != 'linux-aarch64'
@@ -85,15 +83,34 @@ jobs:
           python - <<'PY'
           import tempfile
 
-          from localqueue import SimpleQueue
+          from localqueue import EnqueueItem, SimpleQueue
+          from localqueue.bus import BaseEvent, EventBus
+
+          class WheelEvent(BaseEvent):
+              value: int
 
           with tempfile.TemporaryDirectory() as path:
               queue = SimpleQueue(path)
-              queue.put({"platform": "wheel"})
+              queue.put_many([
+                  {"platform": "wheel"},
+                  EnqueueItem({"platform": "batch"}, job_id="batch-1"),
+              ])
               job = queue.get(block=False)
               queue.ack(job)
-              assert queue.stats()["acked"] == 1
+              job = queue.get(block=False)
+              queue.ack(job)
+              assert queue.stats()["acked"] == 2
               queue.close()
+
+              bus = EventBus(path)
+
+              @bus.on(WheelEvent, subscription="smoke")
+              def handle(event: WheelEvent) -> None:
+                  assert event.value == 1
+
+              receipt = bus.dispatch(WheelEvent(value=1))
+              assert receipt.subscriptions == ("smoke",)
+              bus.close()
           PY
 
       - name: Validate Linux ARM64 wheel artifact
@@ -101,18 +118,54 @@ jobs:
         shell: bash
         run: test -n "$(find target/wheels -name '*cp313*.whl' -print -quit)"
 
-      - name: Install release tools
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: python -m pip install --upgrade "maturin>=1.14,<2" uv
+      - name: Build source distribution
+        if: matrix.name == 'linux-x86_64'
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out target/dist
+          maturin-version: v1.14.1
 
-      - name: Build and publish source distribution
-        if: matrix.name == 'linux-x86_64' && startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          maturin sdist --out target/dist
-          uv publish target/dist/*.tar.gz
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.name }}
+          path: target/wheels/*.whl
+          if-no-files-found: error
 
-      - name: Publish wheel
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: uv publish target/wheels/*.whl
+      - name: Upload source distribution
+        if: matrix.name == 'linux-x86_64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-distribution
+          path: target/dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish complete release to PyPI
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download all release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: target/dist
+          merge-multiple: true
+
+      - name: Download source distribution
+        uses: actions/download-artifact@v4
+        with:
+          name: source-distribution
+          path: target/dist
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8
+
+      - name: Publish all artifacts
+        run: uv publish --trusted-publishing always target/dist/*
