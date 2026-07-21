@@ -23,7 +23,7 @@ class TestSimpleQueue:
         assert queue.stats()["ready"] == 0
 
     def test_empty_raises_empty(self, queue):
-        with pytest.raises(Empty):
+        with pytest.raises(Empty, match="queue is empty"):
             queue.get(block=False)
 
     def test_nack_returns_to_queue_and_increments_attempts(self, queue):
@@ -44,6 +44,16 @@ class TestSimpleQueue:
 
         with pytest.raises(Empty):
             queue.get(block=False)
+
+    @pytest.mark.parametrize("delay", [-0.001, -1.0])
+    def test_nack_rejects_negative_delay(self, queue, delay):
+        queue.put({"task": "invalid-delay"})
+        job = queue.get(block=False)
+
+        with pytest.raises(ValueError, match="delay.*non-negative"):
+            queue.nack(job, delay=delay)
+
+        queue.ack(job)
 
     def test_failed_goes_to_dead_letter(self, queue):
         queue.put({"task": "bad"})
@@ -158,6 +168,16 @@ class TestSimpleQueue:
 
         queue.ack(job)
 
+    @pytest.mark.parametrize("seconds", [0.0, -1.0])
+    def test_extend_lease_rejects_non_positive_duration(self, queue, seconds):
+        queue.put({"task": "invalid-extension"})
+        job = queue.get(block=False)
+
+        with pytest.raises(ValueError, match="seconds.*positive"):
+            job.extend_lease(seconds)
+
+        queue.ack(job)
+
     def test_ack_after_lease_expired_raises(self, queue):
         queue.put({"task": "stale"})
         job = queue.get(block=False)
@@ -172,7 +192,7 @@ class TestSimpleQueue:
         # ACK atrasado do primeiro worker deve ser rejeitado.
         from localqueue import LeaseExpired
 
-        with pytest.raises(LeaseExpired):
+        with pytest.raises(LeaseExpired, match="lease has expired"):
             queue.ack(job)
 
         # O segundo worker pode confirmar normalmente.

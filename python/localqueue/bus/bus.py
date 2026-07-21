@@ -1,4 +1,4 @@
-"""Barramento de eventos persistente sobre o localqueue."""
+"""Persistent event bus built on localqueue."""
 
 from __future__ import annotations
 
@@ -20,12 +20,12 @@ WILDCARD = "*"
 
 
 class NoSubscribers(Exception):
-    """Levantada por ``dispatch`` quando nenhum handler corresponde ao evento."""
+    """Raised by ``dispatch`` when no handler matches an event."""
 
 
 @dataclass(frozen=True)
 class DispatchReceipt:
-    """Resultado de um dispatch já commitado no banco."""
+    """Receipt for a dispatch that has already committed to the database."""
 
     event_id: UUID
     event_type: str
@@ -40,11 +40,11 @@ class _HandlerRegistration:
 
 
 class EventBus:
-    """Fan-out atômico de eventos para subscriptions persistidas.
+    """Atomically fan events out to durable subscriptions.
 
-    Cada subscription é uma fila interna ``__bus__:{bus}:{subscription}`` no
-    mesmo ``localqueue.db``; workers de vários processos competem pela mesma
-    fila (consumer group).
+    Each subscription is an internal ``__bus__:{bus}:{subscription}`` queue in
+    the same ``localqueue.db``. Workers in multiple processes compete for the
+    same queue as a consumer group.
     """
 
     def __init__(
@@ -61,9 +61,9 @@ class EventBus:
     ) -> None:
         self._validate_name(name, "name")
         if not lease_seconds > 0:
-            raise ValueError("'lease_seconds' deve ser positivo")
+            raise ValueError("'lease_seconds' must be positive")
         if max_retries < 0:
-            raise ValueError("'max_retries' deve ser não negativo")
+            raise ValueError("'max_retries' must be non-negative")
 
         self.path = Path(path)
         self.name = name
@@ -76,8 +76,8 @@ class EventBus:
 
         self.path.mkdir(parents=True, exist_ok=True)
         db_path = self.path / "localqueue.db"
-        # NativeQueue própria apenas para o fanout atômico do dispatch; a
-        # persistência é a mesma das SimpleQueue das subscriptions.
+        # This NativeQueue only owns atomic dispatch fan-out. Subscription
+        # SimpleQueue instances share the same persistent database.
         self._native_queue: Optional[_native.NativeQueue] = _native.NativeQueue(
             str(db_path),
             f"__bus__:{name}",
@@ -91,8 +91,7 @@ class EventBus:
     def _validate_name(value: str, field: str) -> None:
         if not isinstance(value, str) or not _NAME_RE.match(value):
             raise ValueError(
-                f"'{field}' inválido: use { _NAME_RE.pattern } "
-                "(sem ':' e não vazio)"
+                f"invalid '{field}': use {_NAME_RE.pattern} (non-empty and without ':')"
             )
 
     def _queue_name(self, subscription: str) -> str:
@@ -104,9 +103,7 @@ class EventBus:
             return event_type_of(pattern)
         if isinstance(pattern, str) and pattern.strip():
             return pattern
-        raise TypeError(
-            "'pattern' deve ser uma subclasse de BaseEvent ou string não vazia"
-        )
+        raise TypeError("'pattern' must be a BaseEvent subclass or a non-empty string")
 
     def on(
         self,
@@ -116,11 +113,12 @@ class EventBus:
         subscription: str,
         permanent_errors: tuple[type[BaseException], ...] = (),
     ) -> Callable[[Any], Any]:
-        """Registra ``handler`` para ``pattern`` em ``subscription``.
+        """Register ``handler`` for ``pattern`` in ``subscription``.
 
-        Serve como chamada direta ou decorator. ``pattern`` pode ser uma
-        classe :class:`BaseEvent`, uma string de ``event_type`` ou ``"*"``.
-        Handler exato vence wildcard dentro da mesma subscription.
+        This can be used directly or as a decorator. ``pattern`` can be a
+        :class:`BaseEvent` subclass, an ``event_type`` string, or ``"*"``.
+        An exact handler takes precedence over a wildcard in the same
+        subscription.
         """
         self._validate_name(subscription, "subscription")
         key = self._pattern_key(pattern)
@@ -129,15 +127,14 @@ class EventBus:
             for exc in permanent_errors
         ):
             raise TypeError(
-                "'permanent_errors' deve ser uma tupla/lista de classes "
-                "de exceção"
+                "'permanent_errors' must be a tuple or list of exception classes"
             )
 
         def decorator(fn: Callable[[Any], Any]) -> Callable[[Any], Any]:
             combo = (subscription, key)
             if combo in self._handlers:
                 raise ValueError(
-                    f"handler já registrado para ({subscription!r}, {key!r})"
+                    f"handler already registered for ({subscription!r}, {key!r})"
                 )
             self._handlers[combo] = _HandlerRegistration(
                 handler=fn, permanent_errors=tuple(permanent_errors)
@@ -149,7 +146,7 @@ class EventBus:
         return decorator(handler)
 
     def register(self, cls: type[BaseEvent]) -> type[BaseEvent]:
-        """Registra uma classe de evento no registry (sem handler)."""
+        """Register an event class without attaching a handler."""
         return self.registry.register(cls)
 
     def _subscriptions_for(self, event_type: str) -> tuple[str, ...]:
@@ -163,11 +160,11 @@ class EventBus:
     def _get_native(self) -> "_native.NativeQueue":
         native = self._native_queue
         if native is None:
-            raise RuntimeError("barramento fechado")
+            raise RuntimeError("event bus is closed")
         return native
 
     def serialize_envelope(self, event: BaseEvent) -> bytes:
-        """Serializa o envelope persistido (uma única vez por dispatch)."""
+        """Serialize the persistent envelope once per dispatch."""
         envelope = {
             "event_id": str(event.event_id),
             "event_type": event.event_type,
@@ -181,24 +178,22 @@ class EventBus:
         return serializer.dumps(envelope)
 
     def dispatch(self, event: BaseEvent) -> DispatchReceipt:
-        """Publica o evento em todas as subscriptions interessadas.
+        """Publish an event to every matching subscription.
 
-        Uma única serialização e uma única chamada nativa (uma transação);
-        só retorna após o commit.
+        The event is serialized once and passed through one native call and
+        one transaction. This method returns only after commit.
         """
         if not isinstance(event, BaseEvent):
-            raise TypeError("'event' deve ser uma instância de BaseEvent")
+            raise TypeError("'event' must be a BaseEvent instance")
 
-        # Garante que consumers (mesmo os registrados só com "*" ou string)
-        # consigam reconstruir o evento tipado.
+        # Ensure consumers registered only by wildcard or string can rebuild
+        # the typed event.
         self.registry.register(type(event))
 
         subscriptions = self._subscriptions_for(event.event_type)
         if not subscriptions:
             if self.require_subscribers:
-                raise NoSubscribers(
-                    f"nenhuma subscription para {event.event_type!r}"
-                )
+                raise NoSubscribers(f"no subscription for {event.event_type!r}")
             return DispatchReceipt(
                 event_id=event.event_id,
                 event_type=event.event_type,
@@ -220,7 +215,7 @@ class EventBus:
         )
 
     async def dispatch_async(self, event: BaseEvent) -> DispatchReceipt:
-        """Versão assíncrona de :meth:`dispatch`."""
+        """Asynchronous variant of :meth:`dispatch`."""
         return await asyncio.to_thread(self.dispatch, event)
 
     def _open_subscription_queue(self, subscription: str) -> SimpleQueue:
@@ -234,11 +229,11 @@ class EventBus:
         )
 
     async def run(self, *, idle_timeout: Optional[float] = None) -> None:
-        """Consome todas as subscriptions registradas neste processo.
+        """Consume every subscription registered in this process.
 
-        Roda até ser cancelada (``CancelledError`` fecha as filas e propaga).
-        ``idle_timeout`` (segundos de fila vazia) encerra graciosamente —
-        útil em testes.
+        Runs until cancelled. ``CancelledError`` closes the queues and
+        propagates. ``idle_timeout`` stops gracefully after the queues have
+        remained empty for that many seconds, which is useful in tests.
         """
         from localqueue.bus.consumer import run_consumer
 
@@ -253,14 +248,14 @@ class EventBus:
     async def run_subscription(
         self, subscription: str, *, idle_timeout: Optional[float] = None
     ) -> None:
-        """Consome apenas ``subscription`` (mesmo contrato de :meth:`run`)."""
+        """Consume only ``subscription`` with the same contract as :meth:`run`."""
         from localqueue.bus.consumer import run_consumer
 
         self._validate_name(subscription, "subscription")
         await run_consumer(self, subscription, idle_timeout=idle_timeout)
 
     def close(self) -> None:
-        """Fecha a NativeQueue usada no dispatch."""
+        """Close the NativeQueue used for dispatch."""
         if self._native_queue is not None:
             self._native_queue.close()
             self._native_queue = None

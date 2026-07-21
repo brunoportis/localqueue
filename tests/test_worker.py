@@ -234,6 +234,20 @@ class TestWorker:
         with pytest.raises(ValueError, match=message):
             Worker(queue, lambda job: None, **kwargs)
 
+    @pytest.mark.parametrize("heartbeat_interval", [10.0, 11.0])
+    def test_worker_rejects_heartbeat_not_shorter_than_lease(
+        self, queue, heartbeat_interval
+    ):
+        with pytest.raises(
+            ValueError,
+            match="heartbeat_interval.*smaller than.*lease",
+        ):
+            Worker(
+                queue,
+                lambda job: None,
+                heartbeat_interval=heartbeat_interval,
+            )
+
     def test_worker_no_longer_exposes_lease_reclaim_interval(self):
         parameters = inspect.signature(Worker).parameters
 

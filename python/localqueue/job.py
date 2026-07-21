@@ -1,4 +1,4 @@
-"""Modelo de job retornado pela fila."""
+"""Job model returned by the queue."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any
 
 @dataclass
 class Job:
-    """Representa um item retirado da fila para processamento."""
+    """An item leased from the queue for processing."""
 
     id: int
     data: Any
@@ -18,8 +18,8 @@ class Job:
     queue: "SimpleQueue"  # type: ignore[name-defined]  # noqa: F821
 
     def extend_lease(self, seconds: float) -> None:
-        """Estende o lease do job.
+        """Extend this job's lease.
 
-        Levanta :class:`LeaseExpired` se o lease já tiver expirado.
+        Raises :class:`LeaseExpired` if the lease has already expired.
         """
         self.queue.extend_lease(self, seconds)
