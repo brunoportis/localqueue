@@ -221,7 +221,7 @@ def run_fanout_comparison(
     durability: str,
 ) -> list[dict[str, Any]]:
     """Mede throughput de dispatch do EventBus com N subscriptions (fan-out)."""
-    from localqueue.bus import BaseEvent, EventBus
+    from localqueue.bus import BaseEvent, BusTopology, EventBus
 
     class BenchEvent(BaseEvent):
         seq: int
@@ -233,10 +233,18 @@ def run_fanout_comparison(
     for subscriptions in sizes:
         total_elapsed_ns = 0
         with tempfile.TemporaryDirectory(prefix="localqueue-bench-") as directory:
-            bus = EventBus(directory, name="bench", fsync=fsync)
-            for index in range(subscriptions):
-                bus.on("BenchEvent", lambda e: None,
-                       subscription=f"sub-{index:04d}")
+            topology = BusTopology(
+                {
+                    f"sub-{index:04d}": [BenchEvent]
+                    for index in range(subscriptions)
+                }
+            )
+            bus = EventBus(
+                directory,
+                name="bench",
+                topology=topology,
+                fsync=fsync,
+            )
             started = time.perf_counter_ns()
             for seq in range(messages):
                 bus.dispatch(BenchEvent(seq=seq, padding=padding))

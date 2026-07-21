@@ -13,6 +13,11 @@ All notable changes to `localqueue` are documented here.
 - Atomic event fan-out to durable subscriptions, wildcard handlers, consumer
   groups across processes, lease heartbeats, retries, and dead-letter handling.
 - Fan-out benchmarks and multiprocess coverage for the event bus.
+- Event routing now uses an explicit static `BusTopology`, allowing producers
+  and consumers to run in separate processes without producers importing
+  consumer handlers.
+- Handler registration is separate from subscription declaration through
+  `bus.subscription(...).handler(...)`.
 
 ### Changed
 

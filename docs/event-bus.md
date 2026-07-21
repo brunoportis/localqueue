@@ -1,167 +1,213 @@
 # Event bus
 
 `localqueue.bus` is an optional, persistent publish/subscribe layer built on
-top of the same SQLite-backed queues. It requires the `bus` extra:
+the same SQLite-backed queues. Install the `bus` extra:
 
 ```bash
 uv add "localqueue[bus]"   # or: pip install "localqueue[bus]"
 ```
 
-Importing `localqueue` alone never requires pydantic; importing
-`localqueue.bus` without the extra raises a clear `ImportError`.
+Importing `localqueue` alone does not require Pydantic. Importing
+`localqueue.bus` without the extra raises an `ImportError` with the required
+install command.
 
-## Event types
+> The topology decides where events are persisted. Handler registration
+> decides what the current process can execute.
 
-Events are pydantic models:
+These are separate configurations. A producer loads event definitions and the
+static topology, but does not import or register consumer handlers.
+
+## Define events
+
+Put event contracts in a module shared by producers and consumers:
 
 ```python
+# events.py
 from localqueue.bus import BaseEvent
 
+
 class UserCreated(BaseEvent):
+    event_name = "user.created"
+
     user_id: str
+
+
+class OrderPlaced(BaseEvent):
+    event_name = "order.placed"
+
+    order_id: str
 ```
 
-Each event carries an `event_id` (UUID) and `event_created_at` (UTC datetime)
-automatically. The persisted envelope is:
+Events are Pydantic models. Every event automatically carries an `event_id`
+(UUID) and `event_created_at` (UTC datetime). `event_type` defaults to the
+class name; setting `event_name` gives it a stable name independent of the
+Python class. `schema_version` defaults to `1` and is recorded in
+`event_schema` as `<event_type>@<version>`.
 
-```json
-{
-  "event_id": "...",
-  "event_type": "UserCreated",
-  "event_schema": "UserCreated@1",
-  "event_created_at": "2026-01-01T00:00:00+00:00",
-  "payload": {"user_id": "123"}
-}
-```
+## Declare the static topology
 
-- `event_type` defaults to the class name. Override it with the class variable
-  `event_name = "user.created"` (must be a non-empty string) to decouple the
-  persisted name from the Python class.
-- `schema_version` (class variable, default `1`) is recorded in
-  `event_schema` as `<event_type>@<version>` for future evolution.
-
-## Subscriptions and handlers
-
-Handlers are registered per subscription with `bus.on`, either directly or as
-a decorator. The pattern can be an event class, an `event_type` string, or
-`"*"` (wildcard):
+Declare every subscription and the event types routed to it in another shared
+module:
 
 ```python
-@bus.on(UserCreated, subscription="email")
-async def send_welcome(event: UserCreated) -> None: ...
+# topology.py
+from localqueue.bus import BusTopology
 
-bus.on("UserCreated", track, subscription="analytics")
+from .events import OrderPlaced, UserCreated
 
-@bus.on("*", subscription="audit")
-def audit(event: BaseEvent) -> None: ...
+
+TOPOLOGY = BusTopology(
+    {
+        "email": [UserCreated],
+        "analytics": [UserCreated, OrderPlaced],
+        "audit": ["*"],
+    }
+)
 ```
 
-- Each **subscription** is a durable queue named
-  `__bus__:{bus}:{subscription}` in the same `localqueue.db`. One delivery per
-  subscription, no matter how many handlers match within it.
-- Registering the same `(subscription, pattern)` twice is rejected. An exact
-  pattern wins over `"*"` inside the same subscription — only one handler
-  runs per delivery.
-- `name` (bus) and `subscription` must match
-  `^[A-Za-z0-9][A-Za-z0-9_.-]*$` (no `:`, never empty).
+Event patterns may be `BaseEvent` subclasses, exact event-type strings, or
+`"*"`. The wildcard routes every event type to that subscription. Subscription
+names must match `^[A-Za-z0-9][A-Za-z0-9_.-]*$`.
 
-## Consumer groups
+`BusTopology` copies and normalizes its input when constructed. Later changes
+to the caller's dictionary or lists do not affect routing. Matching
+subscription names are always returned in sorted order.
 
-Workers in multiple processes that call `bus.run_subscription("email")` (or
-`bus.run()`) compete for the same subscription queue: deliveries are claimed
-with leases, so each one is processed by a single worker. Add processes to
-scale out — there is nothing to coordinate.
+## Run an independent producer
 
-## Atomic dispatch
+The producer imports no consumer code and registers no handlers:
 
 ```python
-receipt = bus.dispatch(UserCreated(user_id="123"))
+# producer.py
+from localqueue.bus import EventBus
+
+from .events import UserCreated
+from .topology import TOPOLOGY
+
+
+bus = EventBus("./data", name="app", topology=TOPOLOGY)
+try:
+    receipt = bus.dispatch(UserCreated(user_id="123"))
+finally:
+    bus.close()
 ```
 
-`dispatch` resolves the interested subscriptions, serializes the envelope
-**once**, and writes to all target queues in **one SQLite transaction**. It
-only returns after the commit, and the receipt carries the subscriptions and
-the internal message ids:
+This dispatch persists one delivery in each matching durable queue:
+
+```text
+__bus__:app:analytics
+__bus__:app:audit
+__bus__:app:email
+```
+
+`dispatch()` serializes the envelope once and writes all targets with the
+existing native `fanout()` call in one SQLite transaction. It returns only
+after commit. The receipt contains the event id, event type, sorted
+subscriptions, and internal message ids. Re-dispatching the same event id is
+deduplicated independently in each subscription queue.
+
+If no route matches, `require_subscribers=True` raises `NoSubscribers`. With
+`require_subscribers=False`, dispatch returns an empty receipt and writes
+nothing. `await bus.dispatch_async(event)` runs dispatch outside the event-loop
+thread.
+
+## Run an independent consumer
+
+A consumer loads the same topology, then registers only the handlers it owns:
 
 ```python
-DispatchReceipt(event_id=..., event_type="UserCreated",
-                subscriptions=("analytics", "audit", "email"),
-                message_ids=(11, 12, 13))
+# consumer.py
+import asyncio
+
+from localqueue.bus import EventBus
+
+from .events import UserCreated
+from .topology import TOPOLOGY
+
+
+bus = EventBus("./data", name="app", topology=TOPOLOGY)
+email = bus.subscription("email")
+
+
+@email.handler(UserCreated)
+async def send_welcome_email(event: UserCreated) -> None:
+    ...
+
+
+asyncio.run(bus.run())
 ```
 
-The `event_id` is used as the queue `job_id`, so re-dispatching the same
-event instance is deduplicated per subscription.
-
-If no subscription matches, `require_subscribers=True` (the default) raises
-`NoSubscribers`; with `require_subscribers=False` the dispatch returns an
-empty receipt and writes nothing. `await bus.dispatch_async(event)` is the
-async variant (`asyncio.to_thread`).
-
-## Consuming
+Direct registration is also supported:
 
 ```python
-await bus.run()                          # all subscriptions registered in this process
-await bus.run_subscription("email")      # just one
+email.handler(UserCreated, send_welcome_email)
 ```
 
-Both run until cancelled — `CancelledError` closes the queues cleanly and
-propagates. For tests, pass `idle_timeout=seconds` to stop after the queue
-has been empty for that long.
-
-While a handler runs, a background heartbeat renews the delivery lease
-(roughly every `lease_seconds/3`), so long handlers are not redelivered
-mid-execution. If the lease is lost anyway (or expires before the final
-ack/nack/fail), the outcome is discarded and logged — a `LeaseExpired` never
-terminates the consumer. Blocking `get` calls and synchronous handlers run
-in worker threads, so consumers never stall the asyncio event loop.
-
-Each delivery is reconstructed into the event class (resolved from the
-process-wide registry) and validated with pydantic before the handler runs.
-Handlers may be sync or async:
+`bus.on(...)` remains a compatibility convenience and delegates to the same
+binder:
 
 ```python
-result = handler(event)
-if inspect.isawaitable(result):
-    await result
+bus.on(UserCreated, send_welcome_email, subscription="email")
 ```
 
-Outcome mapping (reusing the underlying queue semantics — no parallel retry
-logic in the bus):
+Neither form declares a subscription or changes dispatch routing. The
+canonical API is `bus.subscription(...).handler(...)`.
 
-| Outcome | Action |
-| --- | --- |
-| Handler returns | `ack` |
-| Handler raises any other exception | `nack` (transient: retried up to `max_retries`, then dead-letter) |
-| Handler raises an exception in `permanent_errors` | `fail` straight to dead-letter |
-| Unknown `event_type` | `fail` with descriptive `last_error` (payload kept in dead-letter) |
-| Payload fails pydantic validation | `fail` (permanent — retrying would not help) |
+An exact handler may be registered only when its subscription declares that
+event type or `"*"`. A wildcard handler may be registered for any declared
+subscription, but it is only a runtime fallback for deliveries the topology
+already routes. Inside one subscription, an exact handler wins over the
+wildcard handler.
 
-## Guarantees and idempotency
+## Consumption and consumer groups
 
-Delivery is **at-least-once**. There is an important distinction between:
+```python
+await bus.run()                       # subscriptions with local handlers only
+await bus.run_subscription("email")  # one locally handled subscription
+```
 
-- **event persisted** — `dispatch` returning means the event was committed to
-  every interested subscription queue; consumers will eventually see it, even
-  across process crashes; and
-- **handler completed** — a handler can perform an external side effect and
-  crash before the `ack`, causing redelivery.
+`run()` intentionally ignores declared subscriptions for which the current
+process has no handler. Loading the complete topology therefore does not let
+an email worker consume and dead-letter analytics deliveries.
+`run_subscription()` fails immediately if the subscription is undeclared or
+has no handler registered in the current process.
 
-Make handlers idempotent (for example, key side effects on `event.event_id`)
-when duplicate effects matter.
+Multiple processes running the same subscription compete for its durable
+queue as a consumer group. Claims use leases, so each delivery is processed by
+one worker at a time. Delivery remains at least once: a handler can complete
+an external side effect and crash before `ack()`, causing redelivery. Make
+handlers idempotent when duplicate effects matter.
 
-## MVP limitations
+Handlers may be synchronous or asynchronous. Blocking queue operations and
+synchronous handlers run outside the asyncio event-loop thread. A background
+heartbeat renews the delivery lease while a handler runs. Handler returns are
+acked; transient exceptions are retried up to `max_retries`; exceptions listed
+in `permanent_errors`, unknown event types, and invalid payloads go directly to
+dead letter.
 
-- **In-memory registration.** Handlers and event classes live in process
-  memory; nothing about subscriptions is stored in SQL. A consumer process
-  must import the modules containing the event classes and the `bus.on`
-  decorators (directly or via explicit imports) before calling `run()`.
-  Unknown event types go to the dead-letter queue instead of blocking.
-- **Local machine only.** This is not a distributed broker: there is no
-  network protocol, clustering, cross-machine replication, or broker-managed
-  consumer offsets. All processes share the same `localqueue.db` file.
+## Four distinct concepts
 
-## Out of scope
+- **Topology configuration:** the static in-memory declaration used by
+  producers for fan-out and by consumers to validate handler compatibility.
+- **Handler registry:** process-local callable registrations that determine
+  what that process can execute and which subscriptions `run()` consumes.
+- **Subscription queue:** the durable SQLite queue
+  `__bus__:{bus}:{subscription}` containing one delivery per routed event.
+- **Consumer group:** multiple processes competing for deliveries from the
+  same subscription queue.
 
-Deliberately not implemented in this iteration: `event_result` / RPC,
-`expect()`, child events, replay, priorities, SQL-persisted subscriptions,
-autodiscovery, per-subscription configuration, and dashboards.
+## Static-topology limitations
+
+- Every producer must load the same topology configuration.
+- Topology changes are deployment or configuration changes.
+- Subscription declarations are not persisted in SQLite.
+- A consumer created later does not receive events published before its
+  subscription existed in the producer's topology.
+- Topology consistency across separately deployed processes is the
+  application's responsibility; there is no automatic synchronization or
+  topology-version negotiation.
+- Event classes used for reconstruction must be registered in each consumer
+  process through a class-based handler or `bus.register(EventClass)`.
+- Communication is limited to processes sharing one local database on one
+  machine. There is no network protocol, cross-machine replication, replay,
+  retention, offsets, partitions, or dynamic subscription discovery.
