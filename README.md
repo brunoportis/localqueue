@@ -23,7 +23,8 @@ service.
 
 [Installation](#installation) · [Quick start](#quick-start) ·
 [Worker](#worker) · [Guarantees](#delivery-guarantees) ·
-[API](#api-overview) · [Development](#development)
+[API](#api-overview) · [Changelog](CHANGELOG.md) ·
+[Development](#development)
 
 ## Installation
 
@@ -189,6 +190,7 @@ queue = SimpleQueue(
 | Method | Purpose |
 | --- | --- |
 | `put(data, job_id=None)` | Enqueue a payload, with optional deduplication. |
+| `put_many(items)` | Atomically enqueue multiple payloads, optionally using `EnqueueItem` for per-item deduplication. |
 | `get(block=True, timeout=None)` | Claim a job and start its lease. |
 | `get_nowait()` | Claim immediately or raise `Empty`. |
 | `ack(job)` | Confirm successful processing. |
