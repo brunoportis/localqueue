@@ -52,6 +52,9 @@ backward-incompatible reimplementation. See
 
 ## Quick start
 
+Save the two labeled blocks as `producer.py` and `worker.py`, then run the
+producer before starting the worker.
+
 ```python
 # producer.py
 from localqueue import SimpleQueue
