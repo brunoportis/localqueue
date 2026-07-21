@@ -241,7 +241,14 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --dir target/dist
 
-          test "$(find target/dist -name '*.whl' | wc -l)" -eq 25
+          for python_tag in cp310 cp311 cp312 cp313 cp314; do
+            wheel_count=$(find target/dist -name "*-${python_tag}-${python_tag}-*.whl" | wc -l)
+            if [[ "$wheel_count" -ne 5 ]]; then
+              echo "expected 5 wheels for $python_tag, found $wheel_count" >&2
+              exit 1
+            fi
+          done
+
           test "$(find target/dist -name '*.tar.gz' | wc -l)" -eq 1
 
       - name: Install uv
