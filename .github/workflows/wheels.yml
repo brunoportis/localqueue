@@ -2,6 +2,11 @@ name: Wheels
 
 on:
   workflow_dispatch:
+    inputs:
+      release_ref:
+        description: Existing v* tag to publish; leave empty for a build-only run
+        required: false
+        type: string
   push:
     tags: ['v*']
 
@@ -9,8 +14,61 @@ permissions:
   contents: read
 
 jobs:
+  prepare-release:
+    name: Prepare release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_mode: ${{ steps.release.outputs.release_mode }}
+      release_ref: ${{ steps.release.outputs.release_ref }}
+    steps:
+      - name: Resolve release mode
+        id: release
+        env:
+          INPUT_RELEASE_REF: ${{ inputs.release_ref }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        shell: bash
+        run: |
+          if [[ -n "$INPUT_RELEASE_REF" ]]; then
+            release_ref="$INPUT_RELEASE_REF"
+            release_mode=true
+          elif [[ "$REF_TYPE" == "tag" && "$REF_NAME" == v* ]]; then
+            release_ref="$REF_NAME"
+            release_mode=true
+          else
+            release_ref="$REF_NAME"
+            release_mode=false
+          fi
+
+          if [[ "$release_mode" == true && "$release_ref" != v* ]]; then
+            echo "release_ref must start with v" >&2
+            exit 1
+          fi
+
+          echo "release_mode=$release_mode" >> "$GITHUB_OUTPUT"
+          echo "release_ref=$release_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Create draft GitHub release
+        if: steps.release.outputs.release_mode == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REF: ${{ steps.release.outputs.release_ref }}
+        run: |
+          gh release view "$RELEASE_REF" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$RELEASE_REF" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --draft \
+              --generate-notes \
+              --title "$RELEASE_REF"
+
   build:
     name: ${{ matrix.name }}
+    needs: prepare-release
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -39,6 +97,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare-release.outputs.release_ref }}
 
       - name: Set up QEMU for Linux ARM64
         if: matrix.name == 'linux-aarch64'
@@ -129,6 +189,7 @@ jobs:
           maturin-version: v1.14.1
 
       - name: Upload wheels
+        if: needs.prepare-release.outputs.release_mode != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.name }}
@@ -136,38 +197,69 @@ jobs:
           if-no-files-found: error
 
       - name: Upload source distribution
-        if: matrix.name == 'linux-x86_64'
+        if: matrix.name == 'linux-x86_64' && needs.prepare-release.outputs.release_mode != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: source-distribution
           path: target/dist/*.tar.gz
           if-no-files-found: error
 
+      - name: Upload distributions to draft GitHub release
+        if: needs.prepare-release.outputs.release_mode == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REF: ${{ needs.prepare-release.outputs.release_ref }}
+        run: |
+          gh release upload "$RELEASE_REF" target/wheels/*.whl \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+          if [[ "${{ matrix.name }}" == "linux-x86_64" ]]; then
+            gh release upload "$RELEASE_REF" target/dist/*.tar.gz \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+          fi
+
   publish:
     name: Publish complete release to PyPI
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    if: needs.prepare-release.outputs.release_mode == 'true'
+    needs: [prepare-release, build]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
-      contents: read
+      contents: write
       id-token: write
     steps:
-      - name: Download all release artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: wheels-*
-          path: target/dist
-          merge-multiple: true
+      - name: Download distributions from draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REF: ${{ needs.prepare-release.outputs.release_ref }}
+        run: |
+          mkdir -p target/dist
+          gh release download "$RELEASE_REF" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir target/dist
 
-      - name: Download source distribution
-        uses: actions/download-artifact@v4
-        with:
-          name: source-distribution
-          path: target/dist
+          test "$(find target/dist -name '*.whl' | wc -l)" -eq 25
+          test "$(find target/dist -name '*.tar.gz' | wc -l)" -eq 1
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8
 
       - name: Publish all artifacts
-        run: uv publish --trusted-publishing always target/dist/*
+        run: |
+          uv publish \
+            --trusted-publishing always \
+            --check-url https://pypi.org/simple/ \
+            target/dist/*
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REF: ${{ needs.prepare-release.outputs.release_ref }}
+        run: |
+          gh release edit "$RELEASE_REF" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false \
+            --latest
