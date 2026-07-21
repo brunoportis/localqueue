@@ -111,12 +111,8 @@ recommended. A handler can also renew it explicitly with
 Optional pub/sub on top of the same durable queues (requires the `bus` extra):
 
 ```bash
-uv add "localqueue[bus]>=1.1.0"
+uv add "localqueue[bus]"
 ```
-
-> [!NOTE]
-> The event bus API requires `localqueue` 1.1.0 or newer. If the PyPI badge
-> still shows 1.0.1, the 1.1.0 release rollout has not completed yet.
 
 ```python
 # shared.py
