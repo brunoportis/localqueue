@@ -82,7 +82,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out release source
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ needs.prepare-release.outputs.release_ref }}
 
@@ -122,16 +122,16 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ needs.prepare-release.outputs.release_ref }}
 
       - name: Set up QEMU for Linux ARM64
         if: matrix.name == 'linux-aarch64'
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
 
       - name: Set up Python interpreters
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: |
             3.10
@@ -141,7 +141,7 @@ jobs:
             3.14
 
       - name: Build wheels with maturin
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           command: build
           target: ${{ matrix.target }}
@@ -150,7 +150,7 @@ jobs:
           maturin-version: v1.14.1
 
       - name: Set up smoke-test Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13'
 
@@ -208,7 +208,7 @@ jobs:
 
       - name: Build source distribution
         if: matrix.name == 'linux-x86_64'
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           command: sdist
           args: --out target/dist
@@ -216,7 +216,7 @@ jobs:
 
       - name: Upload wheels
         if: needs.prepare-release.outputs.release_mode != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: wheels-${{ matrix.name }}
           path: target/wheels/*.whl
@@ -224,7 +224,7 @@ jobs:
 
       - name: Upload source distribution
         if: matrix.name == 'linux-x86_64' && needs.prepare-release.outputs.release_mode != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: source-distribution
           path: target/dist/*.tar.gz
@@ -278,7 +278,7 @@ jobs:
           test "$(find target/dist -name '*.tar.gz' | wc -l)" -eq 1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.3.2
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
 
       - name: Publish all artifacts
         run: |
