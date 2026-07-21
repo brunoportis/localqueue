@@ -10,6 +10,7 @@ on:
         type: boolean
 
 permissions:
+  actions: write
   contents: write
 
 concurrency:
@@ -102,3 +103,12 @@ jobs:
         if: inputs.dry_run == false && steps.version.outputs.release_needed == 'true'
         run: |
           git push --atomic origin HEAD:main "${{ steps.version.outputs.tag }}"
+
+      - name: Trigger distribution publication
+        if: inputs.dry_run == false && steps.version.outputs.release_needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run wheels.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            -f release_ref="${{ steps.version.outputs.tag }}"
