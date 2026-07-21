@@ -1,4 +1,4 @@
-"""Type stubs para o módulo nativo localqueue.localqueue."""
+"""Type stubs for the native ``localqueue.localqueue`` module."""
 
 from __future__ import annotations
 

@@ -4,35 +4,35 @@ pyo3::create_exception!(
     localqueue,
     LocalQueueError,
     pyo3::exceptions::PyException,
-    "Erro genérico do localqueue."
+    "Base exception for localqueue errors."
 );
 
 pyo3::create_exception!(
     localqueue,
     Empty,
     LocalQueueError,
-    "Levantada quando não há itens disponíveis na fila."
+    "Raised when no items are available in the queue."
 );
 
 pyo3::create_exception!(
     localqueue,
     LeaseExpired,
     LocalQueueError,
-    "Levantada quando o lease de um job expirou."
+    "Raised when a job lease has expired."
 );
 
 #[derive(thiserror::Error, Debug)]
 pub enum QueueError {
-    #[error("fila vazia")]
+    #[error("queue is empty")]
     Empty,
 
-    #[error("lease expirado")]
+    #[error("lease has expired")]
     LeaseExpired,
 
-    #[error("job não encontrado")]
+    #[error("job not found")]
     NotFound,
 
-    #[error("fila fechada")]
+    #[error("queue is closed")]
     Closed,
 
     #[error(transparent)]
@@ -47,10 +47,10 @@ pub type Result<T> = std::result::Result<T, QueueError>;
 impl From<QueueError> for PyErr {
     fn from(err: QueueError) -> PyErr {
         match err {
-            QueueError::Empty => PyErr::new::<Empty, _>("fila vazia"),
-            QueueError::LeaseExpired => PyErr::new::<LeaseExpired, _>("lease expirado"),
-            QueueError::NotFound => PyErr::new::<LocalQueueError, _>("job não encontrado"),
-            QueueError::Closed => PyErr::new::<LocalQueueError, _>("fila fechada"),
+            QueueError::Empty => PyErr::new::<Empty, _>("queue is empty"),
+            QueueError::LeaseExpired => PyErr::new::<LeaseExpired, _>("lease has expired"),
+            QueueError::NotFound => PyErr::new::<LocalQueueError, _>("job not found"),
+            QueueError::Closed => PyErr::new::<LocalQueueError, _>("queue is closed"),
             QueueError::Sqlite(e) => PyErr::new::<LocalQueueError, _>(format!("{}", e)),
             QueueError::Io(e) => PyErr::new::<LocalQueueError, _>(format!("{}", e)),
         }

@@ -1,4 +1,4 @@
-"""Barramento de eventos persistente sobre o localqueue (extra ``bus``)."""
+"""Persistent event bus built on localqueue (the optional ``bus`` extra)."""
 
 try:
     import pydantic as _pydantic  # noqa: F401

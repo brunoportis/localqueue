@@ -1,4 +1,4 @@
-"""Loop de consumo de subscriptions do barramento."""
+"""Event bus subscription consumption loop."""
 
 from __future__ import annotations
 
@@ -25,11 +25,11 @@ _POLL_INTERVAL = 0.1
 async def run_consumer(
     bus: "EventBus", subscription: str, *, idle_timeout: Optional[float] = None
 ) -> None:
-    """Consome a fila de ``subscription`` até cancelamento (ou idle).
+    """Consume ``subscription`` until cancellation or an idle timeout.
 
-    Cada sondagem não bloqueante roda em thread separada; quando a fila está
-    vazia, o intervalo é aguardado no event loop. ``CancelledError`` fecha a
-    fila no ``finally`` e propaga.
+    Each non-blocking poll runs in a worker thread. When the queue is empty,
+    the event loop waits for the polling interval. ``CancelledError`` closes
+    the queue in ``finally`` and propagates.
     """
     queue = bus._open_subscription_queue(subscription)
     try:
@@ -52,42 +52,39 @@ async def run_consumer(
 
 
 async def _heartbeat(queue: Any, job: Job, interval: float, state: dict) -> None:
-    """Renova o lease enquanto o handler roda; para ao perder o lease."""
+    """Renew the lease while the handler runs, stopping if it is lost."""
     lease_seconds = queue.lease_seconds
     while True:
         await asyncio.sleep(interval)
         try:
             await asyncio.to_thread(queue.extend_lease, job, lease_seconds)
-        except Exception:  # noqa: BLE001 - inclui LeaseExpired
-            log.warning("Lease do job %s perdido durante o handler", job.id)
+        except Exception:  # noqa: BLE001 - includes LeaseExpired
+            log.warning("Job %s lost its lease while the handler ran", job.id)
             state["lease_lost"] = True
             return
 
 
-async def _transition(
-    queue: Any, operation: Any, job: Job, **kwargs: Any
-) -> None:
-    """Aplica ack/nack/fail sem deixar LeaseExpired encerrar o consumer."""
+async def _transition(queue: Any, operation: Any, job: Job, **kwargs: Any) -> None:
+    """Apply ACK/NACK/fail without letting LeaseExpired stop the consumer."""
     try:
         await asyncio.to_thread(operation, job, **kwargs)
     except LeaseExpired:
         log.warning(
-            "Lease do job %s expirou antes da transição; resultado descartado",
+            "Job %s lost its lease before the transition; discarding the result",
             job.id,
         )
 
 
 def _envelope_error(envelope: Any) -> Optional[str]:
-    """Valida a estrutura mínima do envelope desserializado."""
+    """Validate the minimum structure of a deserialized envelope."""
     if not isinstance(envelope, dict):
         return (
-            f"envelope malformado: esperado objeto JSON, "
-            f"recebido {type(envelope).__name__}"
+            f"malformed envelope: expected a JSON object, got {type(envelope).__name__}"
         )
     if not isinstance(envelope.get("event_type"), str):
-        return "envelope malformado: 'event_type' ausente ou inválido"
+        return "malformed envelope: missing or invalid 'event_type'"
     if not isinstance(envelope.get("payload"), dict):
-        return "envelope malformado: 'payload' ausente ou inválido"
+        return "malformed envelope: missing or invalid 'payload'"
     return None
 
 
@@ -103,10 +100,12 @@ async def _process_delivery(
     event_type = envelope["event_type"]
     cls = bus.registry.resolve(event_type)
     if cls is None:
-        # Erro permanente: tipo desconhecido não adianta retentar.
+        # An unknown type is a permanent failure; retrying cannot fix it.
         await _transition(
-            queue, queue.fail, job,
-            last_error=f"evento desconhecido: {event_type!r}",
+            queue,
+            queue.fail,
+            job,
+            last_error=f"unknown event: {event_type!r}",
         )
         return
 
@@ -117,28 +116,32 @@ async def _process_delivery(
             **envelope["payload"],
         )
     except (ValidationError, KeyError, TypeError, ValueError) as exc:
-        # Erro permanente: payload inválido não vai validar numa retentativa.
+        # An invalid payload is a permanent failure; retrying cannot fix it.
         await _transition(
-            queue, queue.fail, job,
-            last_error=f"payload inválido para {event_type!r}: {exc}",
+            queue,
+            queue.fail,
+            job,
+            last_error=f"invalid payload for {event_type!r}: {exc}",
         )
         return
 
-    registration = bus._handlers.get(
-        (subscription, event_type)
-    ) or bus._handlers.get((subscription, WILDCARD))
+    registration = bus._handlers.get((subscription, event_type)) or bus._handlers.get(
+        (subscription, WILDCARD)
+    )
     if registration is None:
         await _transition(
-            queue, queue.fail, job,
+            queue,
+            queue.fail,
+            job,
             last_error=(
-                f"nenhum handler registrado para {event_type!r} "
-                f"em {subscription!r} neste processo"
+                f"no handler registered for {event_type!r} "
+                f"in {subscription!r} in this process"
             ),
         )
         return
 
-    # Heartbeat renova o lease enquanto o handler roda; se o lease for
-    # perdido, o resultado é descartado (outra worker pode ter assumido).
+    # The heartbeat renews the lease while the handler runs. If the lease is
+    # lost, discard the result because another worker may have claimed it.
     state = {"lease_lost": False}
     interval = max(queue.lease_seconds / 3, 0.05)
     heartbeat = asyncio.create_task(_heartbeat(queue, job, interval, state))
@@ -147,21 +150,21 @@ async def _process_delivery(
         if inspect.iscoroutinefunction(handler):
             result = await handler(event)
         else:
-            # Handler síncrono fora da thread do event loop.
+            # Run synchronous handlers outside the event-loop thread.
             result = await asyncio.to_thread(handler, event)
         if inspect.isawaitable(result):
-            # Rede de segurança: handler sync que retornou um awaitable.
+            # Safety net for a synchronous handler that returned an awaitable.
             await result
     except registration.permanent_errors as exc:
         await _transition(
-            queue, queue.fail, job, last_error=f"erro permanente: {exc}"
+            queue, queue.fail, job, last_error=f"permanent failure: {exc}"
         )
-    except Exception as exc:  # noqa: BLE001 - erro transitório: retenta
+    except Exception as exc:  # noqa: BLE001 - transient failure, retry it
         await _transition(queue, queue.nack, job, last_error=str(exc))
     else:
         if state["lease_lost"]:
             log.warning(
-                "Job %s perdeu o lease durante o handler; resultado descartado",
+                "Job %s lost its lease while the handler ran; discarding the result",
                 job.id,
             )
             return

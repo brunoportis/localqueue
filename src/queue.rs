@@ -88,7 +88,7 @@ impl NativeQueue {
         })
     }
 
-    /// Insere várias mensagens na fila em uma única transação.
+    /// Insert multiple messages into the queue in one transaction.
     pub fn put_many(
         &self,
         py: Python<'_>,
@@ -98,7 +98,7 @@ impl NativeQueue {
         if let Some(ids) = &job_ids {
             if ids.len() != payloads.len() {
                 return Err(pyo3::exceptions::PyValueError::new_err(
-                    "'job_ids' deve ter o mesmo tamanho de 'payloads'",
+                    "'job_ids' must have the same length as 'payloads'",
                 ));
             }
         }
@@ -116,10 +116,10 @@ impl NativeQueue {
         })
     }
 
-    /// Fan-out interno: mesmo payload para várias filas, em uma transação.
+    /// Internal fan-out of one payload to multiple queues in one transaction.
     ///
-    /// `targets` é uma lista de (queue_name, job_id). Uso interno (event bus);
-    /// não faz parte da facade pública Python.
+    /// `targets` is a list of (queue_name, job_id) pairs. This is used by the
+    /// event bus and is not part of the public Python facade.
     pub fn fanout(
         &self,
         py: Python<'_>,
@@ -147,9 +147,9 @@ impl NativeQueue {
             let mut guard = self.conn()?;
             let conn = guard.as_mut().unwrap();
 
-            // Fila realmente ociosa permanece no caminho read-only. Além de
-            // evitar duas UPDATEs inúteis, isso impede que cada polling tente
-            // adquirir o writer lock global do SQLite.
+            // Keep a genuinely idle queue on the read-only path. Besides
+            // avoiding two unnecessary UPDATEs, this prevents every poll from
+            // trying to acquire SQLite's global writer lock.
             let has_deliverable: bool = conn
                 .query_row(
                     "SELECT
@@ -175,7 +175,7 @@ impl NativeQueue {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(QueueError::from)?;
 
-            // Reclaim unificado: move leases expirados para ready ou failed.
+            // Reclaim expired leases into ready or failed in one pass.
             tx.execute(
                 "UPDATE messages SET
                 status = ?1,
@@ -518,7 +518,7 @@ impl NativeQueue {
         })
     }
 
-    /// Retorna as pragmas SQLite usadas pela conexão ativa.
+    /// Return the SQLite pragmas used by the active connection.
     pub fn pragma_settings(&self, py: Python<'_>) -> PyResult<(String, i64)> {
         py.detach(move || {
             let mut guard = self.conn()?;
@@ -533,7 +533,7 @@ impl NativeQueue {
         })
     }
 
-    /// Remove mensagens `acked` ou `failed` mais antigas que `older_than_ms`.
+    /// Remove `acked` or `failed` messages older than `older_than_ms`.
     #[pyo3(signature = (older_than_ms, status = None))]
     pub fn purge(&self, py: Python<'_>, older_than_ms: i64, status: Option<i64>) -> PyResult<i64> {
         py.detach(|| {
@@ -554,7 +554,7 @@ impl NativeQueue {
         })
     }
 
-    /// Lista mensagens na dead-letter (status = failed).
+    /// List dead-letter messages (status = failed).
     #[pyo3(signature = (limit = 100, offset = 0))]
     pub fn list_failed(
         &self,
@@ -596,7 +596,7 @@ impl NativeQueue {
         })
     }
 
-    /// Move uma mensagem `failed` de volta para `ready`.
+    /// Move a `failed` message back to `ready`.
     pub fn retry_failed(&self, py: Python<'_>, id: i64) -> PyResult<()> {
         py.detach(move || {
             let now = now_ms();
@@ -623,7 +623,7 @@ impl NativeQueue {
         })
     }
 
-    /// Executa VACUUM no banco para compactar.
+    /// Run VACUUM to compact the database.
     pub fn vacuum(&self, py: Python<'_>) -> PyResult<()> {
         py.detach(|| {
             let mut guard = self.conn()?;

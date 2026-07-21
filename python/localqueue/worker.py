@@ -1,4 +1,4 @@
-"""Worker genérico para processar jobs do localqueue."""
+"""Generic worker for processing localqueue jobs."""
 
 from __future__ import annotations
 
@@ -13,14 +13,14 @@ log = logging.getLogger(__name__)
 
 
 class Worker:
-    """Worker simples que consome jobs de uma :class:`SimpleQueue`.
+    """Simple worker that consumes jobs from a :class:`SimpleQueue`.
 
-    O handler recebe o ``Job`` completo. Ele pode levantar exceções para
-    sinalizar erro:
+    The handler receives the complete ``Job`` and can raise exceptions to
+    signal failure:
 
-    * Qualquer exceção não listada em ``permanent_errors``: o job volta para
-      a fila (ou dead-letter se atingir ``max_retries``).
-    * Exceção em ``permanent_errors``: o job vai para dead-letter.
+    * Exceptions not listed in ``permanent_errors`` return the job to the
+      queue, or to dead-letter after exhausting ``max_retries``.
+    * Exceptions in ``permanent_errors`` move the job directly to dead-letter.
     """
 
     def __init__(
@@ -32,21 +32,25 @@ class Worker:
         poll_interval: float = 1.0,
         heartbeat_interval: Optional[float] = None,
     ) -> None:
-        """Inicializa o worker.
+        """Initialize the worker.
 
-        :param queue: fila a ser consumida.
-        :param handler: função que processa o job.
-        :param permanent_errors: tupla de exceções que devem mover o job para
-            dead-letter.
-        :param poll_interval: intervalo entre tentativas quando a fila está
-            vazia.
-        :param heartbeat_interval: se definido, renova o lease
-            automaticamente durante o processamento.
+        :param queue: queue to consume.
+        :param handler: function that processes each job.
+        :param permanent_errors: exceptions that move a job to dead-letter.
+        :param poll_interval: interval between polls while the queue is empty.
+        :param heartbeat_interval: interval used to renew the lease during
+            processing. It must be shorter than ``queue.lease_seconds``;
+            one-third of the lease is recommended.
         """
         if not poll_interval > 0:
-            raise ValueError("'poll_interval' deve ser positivo")
-        if heartbeat_interval is not None and not heartbeat_interval > 0:
-            raise ValueError("'heartbeat_interval' deve ser positivo")
+            raise ValueError("'poll_interval' must be positive")
+        if heartbeat_interval is not None:
+            if not heartbeat_interval > 0:
+                raise ValueError("'heartbeat_interval' must be positive")
+            if heartbeat_interval >= queue.lease_seconds:
+                raise ValueError(
+                    "'heartbeat_interval' must be smaller than the queue lease"
+                )
 
         self.queue = queue
         self.handler = handler
@@ -56,7 +60,7 @@ class Worker:
         self._stop = False
 
     def run(self) -> None:
-        """Inicia o loop de consumo."""
+        """Start the consumption loop."""
         while not self._stop:
             try:
                 job = self.queue.get(block=True, timeout=self.poll_interval)
@@ -66,10 +70,9 @@ class Worker:
             self._process(job)
 
     def run_once(self) -> bool:
-        """Processa no máximo um job.
+        """Process at most one job.
 
-        :return: ``True`` se um job foi processado, ``False`` se a fila estava
-            vazia.
+        :return: ``True`` if a job was processed, otherwise ``False``.
         """
         try:
             job = self.queue.get(block=False)
@@ -79,7 +82,7 @@ class Worker:
         return True
 
     def _process(self, job: Job) -> None:
-        log.info("Processando job %s (tentativa %d)", job.id, job.attempts)
+        log.info("Processing job %s (attempt %d)", job.id, job.attempts)
         try:
             if self.heartbeat_interval is not None:
                 result = self._run_with_heartbeat(job)
@@ -87,34 +90,31 @@ class Worker:
                 result = self.handler(job)
         except LeaseExpired:
             log.warning(
-                "Lease do job %s foi perdido; resultado será descartado",
+                "Job %s lost its lease; discarding the result",
                 job.id,
             )
             return
         except self.permanent_errors:
-            log.exception("Erro permanente no job %s", job.id)
+            log.exception("Permanent failure processing job %s", job.id)
             self._transition(self.queue.fail, job)
         except Exception:
-            log.exception("Erro transitório no job %s; devolvendo à fila", job.id)
+            log.exception("Transient failure processing job %s; requeueing", job.id)
             self._transition(self.queue.nack, job)
         else:
-            log.debug("Job %s processado com sucesso: %s", job.id, result)
+            log.debug("Job %s processed successfully: %s", job.id, result)
             self._transition(self.queue.ack, job)
 
-    def _transition(
-        self, operation: Callable[[Job], None], job: Job
-    ) -> None:
+    def _transition(self, operation: Callable[[Job], None], job: Job) -> None:
         try:
             operation(job)
         except LeaseExpired:
             log.warning(
-                "Lease do job %s foi perdido antes da transição; "
-                "resultado será descartado",
+                "Job %s lost its lease before the transition; discarding the result",
                 job.id,
             )
 
     def _run_with_heartbeat(self, job: Job) -> Any:
-        """Executa o handler renovando o lease periodicamente."""
+        """Run the handler while periodically renewing the lease."""
         import threading
 
         result: list[Any] = []
@@ -137,7 +137,7 @@ class Worker:
             try:
                 job.extend_lease(self.queue.lease_seconds)
             except Exception:
-                log.warning("Perdeu o lease do job %s", job.id)
+                log.warning("Lost the lease for job %s", job.id)
                 lease_lost = True
                 break
 
@@ -145,12 +145,12 @@ class Worker:
         done.wait()
 
         if lease_lost:
-            raise LeaseExpired(f"job {job.id} perdeu o lease durante o processamento")
+            raise LeaseExpired(f"job {job.id} lost its lease during processing")
 
         if error:
             raise error[0]
         return result[0] if result else None
 
     def stop(self) -> None:
-        """Sinaliza para o worker parar no próximo ciclo."""
+        """Signal the worker to stop on its next loop iteration."""
         self._stop = True

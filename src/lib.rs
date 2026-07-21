@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 use error::{Empty, LeaseExpired, LocalQueueError};
 use queue::{FailedMessage, Lease, NativeQueue, Stats};
 
-/// Módulo nativo `localqueue`.
+/// Native `localqueue` module.
 #[pymodule]
 fn localqueue(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<NativeQueue>()?;
