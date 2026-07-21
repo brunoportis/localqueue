@@ -16,7 +16,7 @@ configuração do token Codecov**.
 - [x] Executar literalmente os snippets.
 - [x] Explicar persistência em `localqueue.db` e limites de `fsync`.
 - [x] Corrigir cache da badge Python sem pin de versão do pacote.
-- [ ] Validar renderização no GitHub e no PyPI.
+- [x] Validar renderização no GitHub e no PyPI; corrigir a fence do Quick start.
 
 ## PR 2 — Qualidade e desempenho
 
@@ -42,7 +42,8 @@ configuração do token Codecov**.
 - [x] Preservar últimos artifacts úteis e releases.
 - [x] Excluir 21 artifacts antigos, preservando os dois mais recentes.
 - [x] Registrar IDs, tamanhos e espaço recuperado (3,85 GiB).
-- [ ] Confirmar que upload de Pages volta a funcionar.
+- [ ] Confirmar que upload de Pages volta a funcionar após a recalculação de
+  quota indicada pelo GitHub.
 
 ## PR 3 — Zensical e Pages
 
@@ -69,7 +70,8 @@ configuração do token Codecov**.
 - [x] Validar versão/tag antes dos builds de wheels.
 - [x] Garantir que apenas `wheels.yml` publique GitHub Release e PyPI.
 - [x] Reconciliar o histórico com a tag bootstrap ancestral `v1.1.1`, sem reescrever `v1.1.0`.
-- [ ] Testar patch, minor e major em branches descartáveis.
+- [x] Testar patch, minor e major em clones descartáveis (`1.1.2`, `1.2.0`,
+  `2.0.0`).
 - [x] Testar ausência de release (dry-run informa corretamente que `v1.1.1` é atual).
 - [ ] Testar falha por divergência de versão.
 - [ ] Testar tag válida sem publicar uma versão real.
@@ -78,8 +80,22 @@ configuração do token Codecov**.
 
 - [x] Executar a validação local descrita no plano.
 - [x] Executar a matriz final no GitHub Actions.
-- [ ] Revisar permissões e pinagem das GitHub Actions.
-- [ ] Confirmar badges PyPI, Python, CI e Codecov.
+- [x] Revisar permissões e pinagem das GitHub Actions; todas as Actions usam
+  SHA completo e cada workflow mantém apenas as permissões necessárias.
+- [ ] Confirmar badges PyPI, Python, CI e Codecov (Codecov aguarda token e
+  primeiro upload autenticado).
 - [ ] Confirmar site público do Zensical.
 - [x] Executar dry-run documentado do próximo release.
-- [ ] Atualizar este checklist com resultados e links dos PRs.
+- [x] Atualizar este checklist com resultados e links finais.
+
+## Evidências finais
+
+- [CI completo](https://github.com/brunoportis/localqueue/actions/runs/29849538917):
+  aprovado, incluindo wheel smoke test e cobertura de 89,55%.
+- [Release v1.1.1](https://github.com/brunoportis/localqueue/releases/tag/v1.1.1):
+  32 artefatos publicados no PyPI por Trusted Publishing.
+- [Dry-run SemVer](https://github.com/brunoportis/localqueue/actions/runs/29849958301):
+  confirmou corretamente que não havia release pendente após `v1.1.1`.
+- GitHub Pages está configurado para o workflow oficial; o primeiro upload foi
+  temporariamente recusado porque a quota de Actions ainda estava em
+  recalculação após a limpeza de artifacts.
