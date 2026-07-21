@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from localqueue.core import SimpleQueue
 
 
 @dataclass
@@ -15,7 +18,7 @@ class Job:
     attempts: int
     receipt: str
     lease_expires_at: float
-    queue: "SimpleQueue"  # type: ignore[name-defined]  # noqa: F821
+    queue: SimpleQueue
 
     def extend_lease(self, seconds: float) -> None:
         """Extend this job's lease.

@@ -42,7 +42,7 @@ jobs:
       - name: Run Pyrefly
         env:
           PYTHONPATH: python
-        run: pyrefly check --preset default --progress-bar no python/localqueue
+        run: pyrefly check --progress-bar no
 
   secrets:
     name: Secret scan

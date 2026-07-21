@@ -51,7 +51,9 @@ async def run_consumer(
         queue.close()
 
 
-async def _heartbeat(queue: Any, job: Job, interval: float, state: dict) -> None:
+async def _heartbeat(
+    queue: Any, job: Job, interval: float, state: dict[str, bool]
+) -> None:
     """Renew the lease while the handler runs, stopping if it is lost."""
     lease_seconds = queue.lease_seconds
     while True:
