@@ -167,6 +167,7 @@ jobs:
           fi
           python -m pip install --upgrade \
             "maturin>=1.14,<2" \
+            "hypothesis>=6,<7" \
             "pytest>=8,<10" \
             "pytest-cov>=7,<8" \
             "pydantic>=2,<3"
