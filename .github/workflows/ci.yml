@@ -56,6 +56,7 @@ jobs:
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # The CLI result is the quality gate. Keep SARIF uploads opt-in so
           # a transient Actions artifact quota cannot hide scan results.
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
