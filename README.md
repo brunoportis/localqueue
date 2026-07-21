@@ -97,6 +97,36 @@ For long-running handlers, `heartbeat_interval` renews the lease in the
 background. A handler can also renew it explicitly with
 `job.extend_lease(seconds)`.
 
+## Event bus
+
+Optional pub/sub on top of the same durable queues (requires the `bus` extra):
+
+```bash
+uv add "localqueue[bus]"
+```
+
+```python
+import asyncio
+from localqueue.bus import BaseEvent, EventBus
+
+class UserCreated(BaseEvent):
+    user_id: str
+
+bus = EventBus("./data", name="app")
+
+@bus.on(UserCreated, subscription="email")
+async def send_welcome(event: UserCreated) -> None:
+    ...
+
+receipt = bus.dispatch(UserCreated(user_id="123"))  # atomic fan-out, committed
+asyncio.run(bus.run())  # consume all subscriptions until cancelled
+```
+
+Each subscription is a durable queue (`__bus__:{bus}:{subscription}`), so
+workers in multiple processes act as consumer groups. Handlers get the same
+retry, lease, and dead-letter semantics as regular jobs. See
+[docs/event-bus.md](https://github.com/brunoportis/localqueue/blob/main/docs/event-bus.md).
+
 ## Delivery guarantees
 
 > [!IMPORTANT]

@@ -21,6 +21,9 @@ dev = [
 benchmark = [
     "persist-queue==1.1.0",
 ]
+bus = [
+    "pydantic>=2,<3",
+]
 
 [build-system]
 requires = ["maturin>=1.14"]
