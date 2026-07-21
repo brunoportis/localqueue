@@ -26,6 +26,8 @@ Operações disponíveis:
 - `write`: somente `put()`;
 - `read_ack`: fila previamente carregada, medindo `get() + ack()`;
 - `roundtrip`: `put() + get() + ack()` por item.
+- `fanout`: `EventBus.dispatch()` para 1, 10 e 100 subscriptions declaradas
+  em uma `BusTopology`, sem registrar handlers no processo produtor.
 
 O benchmark usa payloads equivalentes serializados com pickle nos dois
 backends. Ele mede o caminho single-processo; concorrência e multiprocessos

@@ -2,7 +2,8 @@
 
 The registry is process-global. Consumers resolve an event class from its
 persisted envelope, so the module defining that class only needs to be imported
-through ``bus.on(EventClass, ...)`` or an explicit ``register`` call.
+through ``subscription.handler(EventClass, ...)`` or an explicit ``register``
+call.
 """
 
 from __future__ import annotations
