@@ -1,7 +1,8 @@
 # Checklist de execução
 
-Este checklist acompanha `tasks/plan.md`. Estado atual: **implementação local
-concluída; aguardando CI e reconciliação do histórico de release**.
+Este checklist acompanha `tasks/plan.md`. Estado atual: **implementação e
+publicação `v1.1.1` concluídas; aguardando propagação externa de Pages e
+configuração do token Codecov**.
 
 ## Preparação
 
@@ -20,7 +21,7 @@ concluída; aguardando CI e reconciliação do histórico de release**.
 ## PR 2 — Qualidade e desempenho
 
 - [x] Adicionar pytest-cov e baseline branch de 80%.
-- [ ] Integrar Codecov e executar primeiro upload do `main`.
+- [ ] Integrar Codecov e executar primeiro upload autenticado do `main`.
 - [x] Adicionar badge Codecov.
 - [x] Configurar Ruff check/format.
 - [x] Corrigir achados objetivos do Ruff.
@@ -32,8 +33,8 @@ concluída; aguardando CI e reconciliação do histórico de release**.
 - [x] Adicionar cache Cargo à matriz Python.
 - [x] Usar build debug na suíte, mantendo release para wheels.
 - [x] Preservar timeouts de lease; não reduzir polling sem profiling adicional.
-- [ ] Rodar a suíte completa nas quatro combinações atuais.
-- [ ] Confirmar melhora mínima de 25% no Windows com cache quente.
+- [x] Rodar a suíte completa nas quatro combinações atuais.
+- [x] Confirmar melhora mínima de 25% no Windows (2m12 → 1m37, ~27%).
 
 ## Cota de artifacts
 
@@ -67,17 +68,18 @@ concluída; aguardando CI e reconciliação do histórico de release**.
 - [x] Impedir releases concorrentes.
 - [x] Validar versão/tag antes dos builds de wheels.
 - [x] Garantir que apenas `wheels.yml` publique GitHub Release e PyPI.
-- [ ] Reconciliar `v1.1.0` com `main`: a tag publicada não é ancestral do branch e o Semantic Release a ignora.
-- [ ] Testar patch, minor, major e ausência de release.
+- [x] Reconciliar o histórico com a tag bootstrap ancestral `v1.1.1`, sem reescrever `v1.1.0`.
+- [ ] Testar patch, minor e major em branches descartáveis.
+- [x] Testar ausência de release (dry-run informa corretamente que `v1.1.1` é atual).
 - [ ] Testar falha por divergência de versão.
 - [ ] Testar tag válida sem publicar uma versão real.
 
 ## Fechamento
 
 - [x] Executar a validação local descrita no plano.
-- [ ] Executar a matriz final no GitHub Actions.
+- [x] Executar a matriz final no GitHub Actions.
 - [ ] Revisar permissões e pinagem das GitHub Actions.
 - [ ] Confirmar badges PyPI, Python, CI e Codecov.
 - [ ] Confirmar site público do Zensical.
-- [ ] Executar dry-run documentado do próximo release.
+- [x] Executar dry-run documentado do próximo release.
 - [ ] Atualizar este checklist com resultados e links dos PRs.

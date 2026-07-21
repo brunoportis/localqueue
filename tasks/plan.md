@@ -1,6 +1,6 @@
 # Plano de evolução: documentação, qualidade, CI e releases
 
-Status: **proposta para revisão — nenhuma implementação iniciada**
+Status: **implementado em `main`; publicação `v1.1.1` concluída**
 
 Data do baseline: 2026-07-21
 
