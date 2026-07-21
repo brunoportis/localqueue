@@ -94,7 +94,8 @@ jobs:
           python scripts/check_release_version.py --tag "${{ steps.version.outputs.tag }}"
           cargo fmt --all --check
           cargo check --locked
-          maturin develop --release --locked
+          maturin build --release --locked -i python
+          python -m pip install --force-reinstall target/wheels/*.whl
           pytest -ra
 
       - name: Push release commit and tag atomically
