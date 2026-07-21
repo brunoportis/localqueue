@@ -52,6 +52,7 @@ backward-incompatible reimplementation. See
 
 ## Quick start
 
+```python
 # producer.py
 from localqueue import SimpleQueue
 
