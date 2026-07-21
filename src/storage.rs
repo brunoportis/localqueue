@@ -6,8 +6,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::error::{QueueError, Result};
 use crate::schema::SCHEMA_SQL;
 
-/// Item de uma inserção em lote. O payload é emprestado para não copiar
-/// dados ao atravessar a fronteira PyO3.
+/// An item in a batch insertion. The payload is borrowed to avoid copying data
+/// across the PyO3 boundary.
 pub struct EnqueueEntry<'a> {
     pub queue_name: &'a str,
     pub payload: &'a [u8],
@@ -40,7 +40,7 @@ impl Storage {
     }
 
     pub fn connection(&self) -> std::sync::MutexGuard<'_, Option<Connection>> {
-        self.conn.lock().expect("mutex envenenado")
+        self.conn.lock().expect("mutex poisoned")
     }
 
     pub fn close(&self) -> Result<()> {
@@ -51,11 +51,11 @@ impl Storage {
         Ok(())
     }
 
-    /// Insere um lote de mensagens em uma única transação BEGIN IMMEDIATE.
+    /// Insert a batch of messages in one BEGIN IMMEDIATE transaction.
     ///
-    /// A deduplicação por (queue, job_id) usa INSERT OR IGNORE + SELECT do id
-    /// existente, retornando os ids na ordem de entrada. Em qualquer erro a
-    /// transação é descartada (rollback) sem escrita parcial.
+    /// Deduplication by (queue, job_id) uses INSERT OR IGNORE followed by a
+    /// SELECT of the existing ID. IDs are returned in input order. Any error
+    /// rolls the transaction back without a partial write.
     pub fn enqueue_batch(
         &self,
         entries: &[EnqueueEntry<'_>],
@@ -140,7 +140,7 @@ fn enable_wal(conn: &Connection) -> Result<()> {
 pub fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("relógio do sistema anterior ao Unix epoch")
+        .expect("system clock is before the Unix epoch")
         .as_millis() as i64
 }
 

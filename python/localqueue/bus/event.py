@@ -1,4 +1,4 @@
-"""Modelo base de eventos do barramento."""
+"""Base event model for the event bus."""
 
 from __future__ import annotations
 
@@ -10,11 +10,11 @@ from pydantic import BaseModel, Field
 
 
 class BaseEvent(BaseModel):
-    """Evento persistido no barramento.
+    """An event persisted by the bus.
 
-    Subclasses definem os campos de negócio. ``schema_version`` permite
-    evoluir o formato; ``event_name`` permite sobrescrever o nome do evento
-    sem depender do nome da classe.
+    Subclasses define business fields. ``schema_version`` supports format
+    evolution, while ``event_name`` overrides the persisted event name so it
+    does not depend on the Python class name.
     """
 
     schema_version: ClassVar[int] = 1
@@ -30,7 +30,7 @@ class BaseEvent(BaseModel):
         if cls.event_name is not None and not (
             isinstance(cls.event_name, str) and cls.event_name.strip()
         ):
-            raise ValueError("'event_name' deve ser uma string não vazia")
+            raise ValueError("'event_name' must be a non-empty string")
 
     @property
     def event_type(self) -> str:
@@ -42,5 +42,5 @@ class BaseEvent(BaseModel):
 
 
 def event_type_of(cls: type[BaseEvent]) -> str:
-    """Resolve o ``event_type`` de uma classe sem instanciá-la."""
+    """Resolve a class's ``event_type`` without instantiating it."""
     return cls.event_name or cls.__name__

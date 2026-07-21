@@ -67,9 +67,9 @@ class TestRegistration:
 
     def test_registro_duplicado_rejeitado(self, bus):
         bus.on(UserCreated, lambda e: None, subscription="s1")
-        with pytest.raises(ValueError, match="já registrado"):
+        with pytest.raises(ValueError, match="already registered"):
             bus.on(UserCreated, lambda e: None, subscription="s1")
-        with pytest.raises(ValueError, match="já registrado"):
+        with pytest.raises(ValueError, match="already registered"):
             bus.on("UserCreated", lambda e: None, subscription="s1")
 
     def test_colisao_de_event_type_rejeitada(self, bus):
@@ -78,7 +78,7 @@ class TestRegistration:
         class Impostor(BaseEvent):
             event_name = "UserCreated"
 
-        with pytest.raises(ValueError, match="já registrado"):
+        with pytest.raises(ValueError, match="already registered"):
             bus.on(Impostor, lambda e: None, subscription="s1")
 
     def test_override_de_nome_de_evento(self, bus):
@@ -96,10 +96,10 @@ class TestRegistration:
 
     @pytest.mark.parametrize("name", ["", "tem:dois-pontos", "-abc", "com espaço"])
     def test_nomes_invalidos(self, tmp_path, name):
-        with pytest.raises(ValueError, match="inválido"):
+        with pytest.raises(ValueError, match="invalid"):
             EventBus(str(tmp_path / "b"), name=name)
         bus = EventBus(str(tmp_path / "ok"), name="ok")
-        with pytest.raises(ValueError, match="inválido"):
+        with pytest.raises(ValueError, match="invalid"):
             bus.on(UserCreated, lambda e: None, subscription=name)
         bus.close()
 
@@ -268,7 +268,7 @@ class TestConsumption:
 
         q = bus._open_subscription_queue("s1")
         assert q.stats()["failed"] == 1
-        assert "payload inválido" in q.list_failed()[0]["last_error"]
+        assert "invalid payload" in q.list_failed()[0]["last_error"]
         q.close()
 
     def test_evento_desconhecido_vai_para_dead_letter(self, bus):
@@ -289,7 +289,7 @@ class TestConsumption:
 
         q = bus._open_subscription_queue("s1")
         assert q.stats()["failed"] == 1
-        assert "evento desconhecido" in q.list_failed()[0]["last_error"]
+        assert "unknown event" in q.list_failed()[0]["last_error"]
         q.close()
 
     def test_duas_subscriptions_recebem_o_mesmo_evento(self, bus):
@@ -412,7 +412,7 @@ class TestEnvelopeMalformed:
 
         q = bus._open_subscription_queue("s1")
         assert q.stats()["failed"] == 1
-        assert "envelope malformado" in q.list_failed()[0]["last_error"]
+        assert "malformed envelope" in q.list_failed()[0]["last_error"]
         q.close()
 
     def test_envelope_sem_chaves_obrigatorias(self, bus):

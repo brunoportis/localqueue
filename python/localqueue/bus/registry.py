@@ -1,8 +1,8 @@
-"""Registry de classes de eventos por ``event_type``.
+"""Registry of event classes by ``event_type``.
 
-O registry é global ao processo: consumidores resolvem a classe do evento a
-partir do envelope persistido, então basta que o módulo com a classe tenha
-sido importado (via ``bus.on(Classe, ...)`` ou ``register`` explícito).
+The registry is process-global. Consumers resolve an event class from its
+persisted envelope, so the module defining that class only needs to be imported
+through ``bus.on(EventClass, ...)`` or an explicit ``register`` call.
 """
 
 from __future__ import annotations
@@ -18,12 +18,12 @@ class EventRegistry:
 
     def register(self, cls: type[BaseEvent]) -> type[BaseEvent]:
         if not (isinstance(cls, type) and issubclass(cls, BaseEvent)):
-            raise TypeError("'cls' deve ser uma subclasse de BaseEvent")
+            raise TypeError("'cls' must be a BaseEvent subclass")
         event_type = event_type_of(cls)
         existing = self._classes.get(event_type)
         if existing is not None and existing is not cls:
             raise ValueError(
-                f"event_type {event_type!r} já registrado por "
+                f"event_type {event_type!r} is already registered by "
                 f"{existing.__module__}.{existing.__qualname__}"
             )
         self._classes[event_type] = cls

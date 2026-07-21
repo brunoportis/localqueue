@@ -1,4 +1,4 @@
-"""Facade Python para a fila persistente localqueue."""
+"""Python facade for the persistent localqueue queue."""
 
 from __future__ import annotations
 
@@ -10,14 +10,14 @@ from pathlib import Path
 from typing import Any, Optional, Protocol, Union
 
 from localqueue import localqueue as _native
-from localqueue.exceptions import Empty, LeaseExpired, LocalQueueError
+from localqueue.exceptions import Empty, LocalQueueError
 from localqueue.job import Job
 
 log = logging.getLogger(__name__)
 
 
 class Serializer(Protocol):
-    """Protocolo para serializadores compatíveis."""
+    """Protocol implemented by compatible serializers."""
 
     def dumps(self, obj: Any) -> bytes: ...
 
@@ -25,7 +25,7 @@ class Serializer(Protocol):
 
 
 class JsonSerializer:
-    """Serializador JSON padrão."""
+    """Default JSON serializer."""
 
     def dumps(self, obj: Any) -> bytes:
         return json.dumps(obj).encode("utf-8")
@@ -36,17 +36,17 @@ class JsonSerializer:
 
 @dataclass
 class EnqueueItem:
-    """Item de um :meth:`SimpleQueue.put_many` com ``job_id`` opcional."""
+    """A :meth:`SimpleQueue.put_many` item with an optional ``job_id``."""
 
     data: Any
     job_id: Optional[str] = None
 
 
 class SimpleQueue:
-    """Fila persistente baseada em SQLite com ACK/NACK, lease e retry.
+    """Persistent SQLite queue with ACK/NACK, leases, and retries.
 
-    O motor transacional é implementado em Rust (extensão nativa), garantindo
-    atomicidade mesmo com múltiplos processos/threads.
+    A native Rust extension implements the transactional engine and preserves
+    atomicity across multiple processes and threads.
     """
 
     def __init__(
@@ -59,19 +59,19 @@ class SimpleQueue:
         fsync: bool = False,
         serializer: Optional[Serializer] = None,
     ) -> None:
-        """Inicializa a fila.
+        """Initialize the queue.
 
-        :param path: diretório onde o banco SQLite será armazenado.
-        :param name: nome da fila.
-        :param lease_seconds: tempo de lease para cada job retirado.
-        :param max_retries: número máximo de tentativas antes de dead-letter.
-        :param fsync: quando ``True`` usa ``PRAGMA synchronous=FULL``.
-        :param serializer: serializador com métodos ``dumps`` e ``loads``.
+        :param path: directory where the SQLite database is stored.
+        :param name: logical queue name.
+        :param lease_seconds: lease duration for each claimed job.
+        :param max_retries: retries allowed before moving to dead-letter.
+        :param fsync: use ``PRAGMA synchronous=FULL`` when ``True``.
+        :param serializer: object providing ``dumps`` and ``loads`` methods.
         """
         if not lease_seconds > 0:
-            raise ValueError("'lease_seconds' deve ser positivo")
+            raise ValueError("'lease_seconds' must be positive")
         if max_retries < 0:
-            raise ValueError("'max_retries' deve ser não negativo")
+            raise ValueError("'max_retries' must be non-negative")
 
         self.path = Path(path)
         self.name = name
@@ -92,25 +92,25 @@ class SimpleQueue:
     def _get_native(self) -> "_native.NativeQueue":
         native = self._native
         if native is None:
-            raise LocalQueueError("fila fechada")
+            raise LocalQueueError("queue is closed")
         return native
 
     def put(self, data: Any, job_id: Optional[str] = None) -> int:
-        """Adiciona um item à fila.
+        """Add an item to the queue.
 
-        :param data: payload a ser enfileirado.
-        :param job_id: identificador único opcional para deduplicação.
-        :return: id interno do item na fila.
+        :param data: payload to enqueue.
+        :param job_id: optional unique identifier used for deduplication.
+        :return: internal queue item ID.
         """
         payload = self.serializer.dumps(data)
         return self._get_native().put(payload, job_id)
 
     def put_many(self, items: list[Union[Any, EnqueueItem]]) -> list[int]:
-        """Adiciona vários itens à fila em uma única transação.
+        """Add multiple items to the queue in one transaction.
 
-        :param items: payloads simples ou instâncias de :class:`EnqueueItem`
-            (para deduplicação por ``job_id``).
-        :return: ids internos dos itens, na ordem de entrada.
+        :param items: plain payloads or :class:`EnqueueItem` instances for
+            per-item ``job_id`` deduplication.
+        :return: internal item IDs in input order.
         """
         payloads: list[bytes] = []
         job_ids: list[Optional[str]] = []
@@ -123,31 +123,27 @@ class SimpleQueue:
             else:
                 payloads.append(self.serializer.dumps(item))
                 job_ids.append(None)
-        return self._get_native().put_many(
-            payloads, job_ids if has_job_id else None
-        )
+        return self._get_native().put_many(payloads, job_ids if has_job_id else None)
 
-    def get(
-        self, block: bool = True, timeout: Optional[float] = None
-    ) -> Job:
-        """Retira um item da fila com lease.
+    def get(self, block: bool = True, timeout: Optional[float] = None) -> Job:
+        """Claim an item from the queue with a lease.
 
-        :param block: se ``True``, bloqueia até haver um item disponível.
-        :param timeout: tempo máximo de espera em segundos.
-        :return: instância de :class:`Job`.
-        :raises Empty: se ``block=False`` e a fila estiver vazia, ou se
-            ``block=True`` e ``timeout`` expirar.
+        :param block: wait for an available item when ``True``.
+        :param timeout: maximum wait in seconds.
+        :return: a :class:`Job` instance.
+        :raises Empty: if ``block=False`` and the queue is empty, or if the
+            timeout expires while ``block=True``.
         """
         lease_ms = int(self.lease_seconds * 1000)
 
         if not block:
             lease = self._get_native().get(lease_ms)
             if lease is None:
-                raise Empty("fila vazia")
+                raise Empty("queue is empty")
             return self._to_job(lease)
 
         if timeout is not None and timeout < 0:
-            raise ValueError("'timeout' deve ser não negativo")
+            raise ValueError("'timeout' must be non-negative")
 
         start = _time.monotonic()
         sleep = 0.01
@@ -160,17 +156,17 @@ class SimpleQueue:
             if timeout is not None:
                 elapsed = _time.monotonic() - start
                 if elapsed >= timeout:
-                    raise Empty("fila vazia")
+                    raise Empty("queue is empty")
 
             _time.sleep(sleep)
             sleep = min(sleep * 1.5, max_sleep)
 
     def get_nowait(self) -> Job:
-        """Variação não bloqueante de :meth:`get`."""
+        """Non-blocking variant of :meth:`get`."""
         return self.get(block=False)
 
     def ack(self, job: Job) -> None:
-        """Confirma o processamento bem-sucedido de um job."""
+        """Acknowledge successful processing of a job."""
         self._get_native().ack(job.id, job.receipt)
 
     def nack(
@@ -180,37 +176,39 @@ class SimpleQueue:
         delay: float = 0.0,
         last_error: Optional[str] = None,
     ) -> None:
-        """Devolve o job à fila (erro transitório).
+        """Return a job to the queue after a transient failure.
 
-        Se o job já atingiu ``max_retries``, ele é movido para dead-letter.
+        A job that has exhausted ``max_retries`` moves to dead-letter.
         """
+        if not delay >= 0:
+            raise ValueError("'delay' must be non-negative")
         delay_ms = int(delay * 1000)
         self._get_native().nack(job.id, job.receipt, delay_ms, last_error)
 
     def fail(self, job: Job, last_error: Optional[str] = None) -> None:
-        """Marca o job como falha definitiva (dead-letter)."""
+        """Mark a job as permanently failed and move it to dead-letter."""
         self._get_native().fail(job.id, job.receipt, last_error)
 
     def extend_lease(self, job: Job, seconds: float) -> None:
-        """Estende o lease de um job.
+        """Extend a job's lease.
 
-        Levanta :class:`LeaseExpired` se o lease já tiver expirado.
+        Raises :class:`LeaseExpired` if the lease has already expired.
         """
+        if not seconds > 0:
+            raise ValueError("'seconds' must be positive")
         extend_ms = int(seconds * 1000)
-        new_expiration = self._get_native().extend_lease(
-            job.id, job.receipt, extend_ms
-        )
+        new_expiration = self._get_native().extend_lease(job.id, job.receipt, extend_ms)
         job.lease_expires_at = new_expiration / 1000.0
 
     def reclaim_expired_leases(self) -> int:
-        """Recupera jobs cujo lease expirou.
+        """Reclaim jobs whose leases have expired.
 
-        :return: número de leases recuperados.
+        :return: number of reclaimed leases.
         """
         return self._get_native().reclaim_expired(None)
 
     def stats(self) -> dict[str, int]:
-        """Retorna estatísticas da fila."""
+        """Return queue statistics."""
         stats = self._get_native().stats()
         return {
             "ready": stats.ready,
@@ -231,16 +229,15 @@ class SimpleQueue:
         )
 
     def purge(self, older_than: float, *, include_failed: bool = False) -> int:
-        """Remove mensagens antigas da fila.
+        """Remove old messages from the queue.
 
-        :param older_than: idade máxima em segundos. Mensagens mais antigas
-            serão removidas.
-        :param include_failed: quando ``True``, também remove mensagens
-            ``failed``. Por padrão apenas ``acked`` são removidas.
-        :return: número de mensagens removidas.
+        :param older_than: maximum age in seconds; older messages are removed.
+        :param include_failed: also remove ``failed`` messages when ``True``;
+            by default only ``acked`` messages are removed.
+        :return: number of removed messages.
         """
         if older_than < 0:
-            raise ValueError("'older_than' deve ser não negativo")
+            raise ValueError("'older_than' must be non-negative")
 
         older_than_ms = int(older_than * 1000)
         removed = 0
@@ -249,19 +246,17 @@ class SimpleQueue:
             removed += self._get_native().purge(older_than_ms, 3)  # failed
         return removed
 
-    def list_failed(
-        self, limit: int = 100, offset: int = 0
-    ) -> list[dict[str, Any]]:
-        """Lista mensagens na dead-letter.
+    def list_failed(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+        """List messages in dead-letter.
 
-        :param limit: número máximo de mensagens.
-        :param offset: deslocamento para paginação.
-        :return: lista de dicionários com informações das mensagens.
+        :param limit: maximum number of messages.
+        :param offset: pagination offset.
+        :return: dictionaries containing message information.
         """
         if limit < 0:
-            raise ValueError("'limit' deve ser não negativo")
+            raise ValueError("'limit' must be non-negative")
         if offset < 0:
-            raise ValueError("'offset' deve ser não negativo")
+            raise ValueError("'offset' must be non-negative")
 
         failed = self._get_native().list_failed(limit, offset)
         return [
@@ -277,21 +272,21 @@ class SimpleQueue:
         ]
 
     def retry_failed(self, message_id: int) -> None:
-        """Move uma mensagem da dead-letter de volta para a fila.
+        """Move a dead-letter message back to the queue.
 
-        :param message_id: id da mensagem a ser retentada.
+        :param message_id: ID of the message to retry.
         """
         self._get_native().retry_failed(message_id)
 
     def vacuum(self) -> None:
-        """Compacta todo o ``localqueue.db`` compartilhado pelas filas.
+        """Compact the ``localqueue.db`` shared by all queues.
 
-        A operação pode disputar o lock do SQLite com workers ativos.
+        This operation can contend for the SQLite lock with active workers.
         """
         self._get_native().vacuum()
 
     def close(self) -> None:
-        """Fecha a conexão com o banco."""
+        """Close the database connection."""
         if self._native is not None:
             self._native.close()
             self._native = None

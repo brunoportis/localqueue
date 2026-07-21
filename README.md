@@ -42,6 +42,10 @@ python -m pip install localqueue
 
 `localqueue` requires Python 3.10 or newer.
 
+Upgrading from 0.5.0 requires code and storage changes because 1.x is a
+backward-incompatible reimplementation. See
+[Migrating from 0.5.0](CHANGELOG.md#migrating-from-050).
+
 ## Quick start
 
 ```python
@@ -95,8 +99,9 @@ with SimpleQueue("./data", lease_seconds=30, max_retries=3) as queue:
 ```
 
 For long-running handlers, `heartbeat_interval` renews the lease in the
-background. A handler can also renew it explicitly with
-`job.extend_lease(seconds)`.
+background. It must be shorter than `lease_seconds`; one-third of the lease is
+recommended. A handler can also renew it explicitly with
+`job.extend_lease(seconds)`, using a positive duration.
 
 ## Event bus
 
@@ -194,9 +199,9 @@ queue = SimpleQueue(
 | `get(block=True, timeout=None)` | Claim a job and start its lease. |
 | `get_nowait()` | Claim immediately or raise `Empty`. |
 | `ack(job)` | Confirm successful processing. |
-| `nack(job, delay=0, last_error=None)` | Return a transient failure to the queue, optionally with a delay. |
+| `nack(job, delay=0, last_error=None)` | Return a transient failure to the queue, optionally with a non-negative delay. |
 | `fail(job, last_error=None)` | Move a permanent failure to the dead-letter state. |
-| `extend_lease(job, seconds)` | Renew the current delivery lease. |
+| `extend_lease(job, seconds)` | Renew the current delivery lease by a positive duration. |
 | `reclaim_expired_leases()` | Reclaim expired leases explicitly; `get()` also does this automatically. |
 | `stats()` | Return `ready`, `processing`, `acked`, and `failed` counts. |
 | `list_failed(limit=100, offset=0)` | Inspect dead-letter jobs. |
