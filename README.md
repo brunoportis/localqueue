@@ -298,6 +298,12 @@ uv run maturin develop
 uv run pytest
 ```
 
+Run the configured strict type check for the production package:
+
+```bash
+uv run pyrefly check --progress-bar no
+```
+
 Rust quality checks:
 
 ```bash

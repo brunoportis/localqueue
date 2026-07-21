@@ -53,6 +53,11 @@ features = ["pyo3/extension-module"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
+[tool.pyrefly]
+preset = "strict"
+project-includes = ["python/localqueue/**/*.py", "python/localqueue/**/*.pyi"]
+disable-project-excludes-heuristics = true
+
 [tool.coverage.run]
 branch = true
 source = ["localqueue"]

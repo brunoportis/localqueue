@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import ClassVar
+from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
@@ -25,7 +25,7 @@ class BaseEvent(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc)
     )
 
-    def __init_subclass__(cls, **kwargs):  # noqa: ANN001, ANN204
+    def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         if cls.event_name is not None and not (
             isinstance(cls.event_name, str) and cls.event_name.strip()
