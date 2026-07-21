@@ -20,9 +20,12 @@ service.
   acknowledge a newer delivery.
 - **Flexible:** use multiple named queues, optional job deduplication, automatic
   worker heartbeats, and custom serializers.
+- **Event-driven:** optional durable pub/sub with explicit static topology,
+  atomic fan-out, consumer groups, retries, and dead-letter handling.
 
 [Installation](#installation) · [Quick start](#quick-start) ·
-[Worker](#worker) · [Guarantees](#delivery-guarantees) ·
+[Worker](#worker) · [Event bus](#event-bus) ·
+[Guarantees](#delivery-guarantees) ·
 [API](#api-overview) · [Changelog](CHANGELOG.md) ·
 [Development](#development)
 
@@ -108,34 +111,66 @@ recommended. A handler can also renew it explicitly with
 Optional pub/sub on top of the same durable queues (requires the `bus` extra):
 
 ```bash
-uv add "localqueue[bus]"
+uv add "localqueue[bus]>=1.1.0"
 ```
 
+> [!NOTE]
+> The event bus API requires `localqueue` 1.1.0 or newer. If the PyPI badge
+> still shows 1.0.1, the 1.1.0 release rollout has not completed yet.
+
 ```python
-import asyncio
-from localqueue.bus import BaseEvent, BusTopology, EventBus
+# shared.py
+from localqueue.bus import BaseEvent, BusTopology
+
 
 class UserCreated(BaseEvent):
     event_name = "user.created"
+
     user_id: str
 
-topology = BusTopology({"email": [UserCreated]})
-bus = EventBus("./data", name="app", topology=topology)
+
+TOPOLOGY = BusTopology({"email": [UserCreated]})
+```
+
+```python
+# producer.py
+from localqueue.bus import EventBus
+
+from shared import TOPOLOGY, UserCreated
+
+
+bus = EventBus("./data", name="app", topology=TOPOLOGY)
+bus.dispatch(UserCreated(user_id="123"))  # atomic fan-out, committed
+bus.close()
+```
+
+```python
+# email_worker.py
+import asyncio
+
+from localqueue.bus import EventBus
+
+from shared import TOPOLOGY, UserCreated
+
+
+bus = EventBus("./data", name="app", topology=TOPOLOGY)
 email = bus.subscription("email")
+
 
 @email.handler(UserCreated)
 async def send_welcome(event: UserCreated) -> None:
     ...
 
-receipt = bus.dispatch(UserCreated(user_id="123"))  # atomic fan-out, committed
-asyncio.run(bus.run())  # consume all subscriptions until cancelled
+
+asyncio.run(bus.run())  # consume subscriptions handled by this process
 ```
 
 Each subscription is a durable queue (`__bus__:{bus}:{subscription}`), so
 workers in multiple processes act as consumer groups. Handlers get the same
 retry, lease, and dead-letter semantics as regular jobs. The static topology
 decides where events are persisted; local handlers decide what the current
-process consumes. See
+process consumes. Producers do not import handlers, and workers do not
+participate in dispatch. See
 [docs/event-bus.md](https://github.com/brunoportis/localqueue/blob/main/docs/event-bus.md).
 
 ## Delivery guarantees
