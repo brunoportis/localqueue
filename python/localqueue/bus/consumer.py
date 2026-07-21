@@ -61,10 +61,12 @@ async def _heartbeat(queue: Any, job: Job, interval: float, state: dict) -> None
             return
 
 
-def _transition(queue: Any, operation: Any, job: Job, **kwargs: Any) -> None:
+async def _transition(
+    queue: Any, operation: Any, job: Job, **kwargs: Any
+) -> None:
     """Aplica ack/nack/fail sem deixar LeaseExpired encerrar o consumer."""
     try:
-        operation(job, **kwargs)
+        await asyncio.to_thread(operation, job, **kwargs)
     except LeaseExpired:
         log.warning(
             "Lease do job %s expirou antes da transição; resultado descartado",
@@ -92,14 +94,14 @@ async def _process_delivery(
     envelope = job.data
     error = _envelope_error(envelope)
     if error is not None:
-        _transition(queue, queue.fail, job, last_error=error)
+        await _transition(queue, queue.fail, job, last_error=error)
         return
 
     event_type = envelope["event_type"]
     cls = bus.registry.resolve(event_type)
     if cls is None:
         # Erro permanente: tipo desconhecido não adianta retentar.
-        _transition(
+        await _transition(
             queue, queue.fail, job,
             last_error=f"evento desconhecido: {event_type!r}",
         )
@@ -113,7 +115,7 @@ async def _process_delivery(
         )
     except (ValidationError, KeyError, TypeError, ValueError) as exc:
         # Erro permanente: payload inválido não vai validar numa retentativa.
-        _transition(
+        await _transition(
             queue, queue.fail, job,
             last_error=f"payload inválido para {event_type!r}: {exc}",
         )
@@ -123,7 +125,7 @@ async def _process_delivery(
         (subscription, event_type)
     ) or bus._handlers.get((subscription, WILDCARD))
     if registration is None:
-        _transition(
+        await _transition(
             queue, queue.fail, job,
             last_error=(
                 f"nenhum handler registrado para {event_type!r} "
@@ -148,11 +150,11 @@ async def _process_delivery(
             # Rede de segurança: handler sync que retornou um awaitable.
             await result
     except registration.permanent_errors as exc:
-        _transition(
+        await _transition(
             queue, queue.fail, job, last_error=f"erro permanente: {exc}"
         )
     except Exception as exc:  # noqa: BLE001 - erro transitório: retenta
-        _transition(queue, queue.nack, job, last_error=str(exc))
+        await _transition(queue, queue.nack, job, last_error=str(exc))
     else:
         if state["lease_lost"]:
             log.warning(
@@ -160,7 +162,7 @@ async def _process_delivery(
                 job.id,
             )
             return
-        _transition(queue, queue.ack, job)
+        await _transition(queue, queue.ack, job)
     finally:
         heartbeat.cancel()
         with contextlib.suppress(asyncio.CancelledError):

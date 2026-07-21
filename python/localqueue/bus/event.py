@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import ClassVar
 from uuid import UUID, uuid4
 
@@ -22,7 +22,7 @@ class BaseEvent(BaseModel):
 
     event_id: UUID = Field(default_factory=uuid4)
     event_created_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC)
+        default_factory=lambda: datetime.now(timezone.utc)
     )
 
     def __init_subclass__(cls, **kwargs):  # noqa: ANN001, ANN204

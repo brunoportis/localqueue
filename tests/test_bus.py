@@ -345,10 +345,29 @@ class GroupEvent(BaseEvent):
     seq: int
 
 
-def _consumer_group_worker(path, seqs, idle_timeout):
+def _consumer_group_worker(
+    path, processed, active, concurrent_duplicates, lock, idle_timeout
+):
     """Worker de consumer group em processo separado."""
     bus = EventBus(path, name="test", lease_seconds=5.0, max_retries=1)
-    bus.on(GroupEvent, lambda e: seqs.append(e.seq), subscription="x")
+
+    def handle(event):
+        import os
+
+        event_id = str(event.event_id)
+        process_id = os.getpid()
+        with lock:
+            if event_id in active:
+                concurrent_duplicates.append(
+                    (event_id, active[event_id], process_id)
+                )
+            active[event_id] = process_id
+        time.sleep(0.02)
+        with lock:
+            processed.append((event_id, process_id))
+            active.pop(event_id, None)
+
+    bus.on(GroupEvent, handle, subscription="x")
     try:
         asyncio.run(bus.run_subscription("x", idle_timeout=idle_timeout))
     finally:
@@ -435,28 +454,55 @@ class TestTypedReconstruction:
 
 class TestAsyncioSafety:
     def test_event_loop_nao_bloqueia_durante_get_e_handler_sync(self, bus):
-        blocking = []
+        import threading
+
+        handler_started = threading.Event()
+        release_handler = threading.Event()
+        released_by_event_loop = []
 
         def slow_handler(event):
-            time.sleep(0.3)  # bloqueante de propósito
-            blocking.append(event.user_id)
+            handler_started.set()
+            released_by_event_loop.append(release_handler.wait(timeout=1.0))
 
         bus.on(UserCreated, slow_handler, subscription="s1")
         bus.dispatch(UserCreated(user_id="1"))
 
         async def main():
-            ticks = 0
             task = asyncio.create_task(bus.run(idle_timeout=0.5))
-            started = asyncio.get_running_loop().time()
-            while asyncio.get_running_loop().time() - started < 0.6:
-                await asyncio.sleep(0.01)
-                ticks += 1
+            assert await asyncio.to_thread(handler_started.wait, 2.0)
+            release_handler.set()
             await task
-            return ticks
 
-        # Se get/handler bloqueassem o loop, os ticks parariam por ~0.3s.
-        assert run(main()) >= 40
-        assert blocking == ["1"]
+        run(main())
+        assert released_by_event_loop == [True]
+
+    def test_event_loop_nao_bloqueia_durante_ack(self, bus, monkeypatch):
+        import threading
+
+        from localqueue.core import SimpleQueue
+
+        ack_started = threading.Event()
+        release_ack = threading.Event()
+        released_by_event_loop = []
+        original_ack = SimpleQueue.ack
+
+        def slow_ack(self, job):
+            ack_started.set()
+            released_by_event_loop.append(release_ack.wait(timeout=1.0))
+            return original_ack(self, job)
+
+        monkeypatch.setattr(SimpleQueue, "ack", slow_ack)
+        bus.on(UserCreated, lambda event: None, subscription="s1")
+        bus.dispatch(UserCreated(user_id="1"))
+
+        async def main():
+            task = asyncio.create_task(bus.run(idle_timeout=0.5))
+            assert await asyncio.to_thread(ack_started.wait, 2.0)
+            release_ack.set()
+            await task
+
+        run(main())
+        assert released_by_event_loop == [True]
 
 
 class TestLeaseSafety:
@@ -545,26 +591,61 @@ class TestConsumerGroup:
 
         path = str(tmp_path / "group")
         num_events = 40
+        expected_event_ids = []
 
         bus = EventBus(path, name="test", lease_seconds=5.0, max_retries=1)
         bus.on("GroupEvent", lambda e: None, subscription="x")
         for i in range(num_events):
-            bus.dispatch(GroupEvent(seq=i))
+            event = GroupEvent(seq=i)
+            expected_event_ids.append(str(event.event_id))
+            bus.dispatch(event)
         bus.close()
 
-        manager = multiprocessing.Manager()
-        seqs = manager.list()
-        processes = [
-            multiprocessing.Process(
-                target=_consumer_group_worker, args=(path, seqs, 2.0)
-            )
-            for _ in range(2)
-        ]
-        for p in processes:
-            p.start()
-        for p in processes:
-            p.join(timeout=60)
-            assert p.exitcode == 0
+        context = multiprocessing.get_context("spawn")
+        with context.Manager() as manager:
+            processed = manager.list()
+            active = manager.dict()
+            concurrent_duplicates = manager.list()
+            lock = manager.Lock()
+            processes = [
+                context.Process(
+                    target=_consumer_group_worker,
+                    args=(
+                        path,
+                        processed,
+                        active,
+                        concurrent_duplicates,
+                        lock,
+                        2.0,
+                    ),
+                )
+                for _ in range(2)
+            ]
+            try:
+                for process in processes:
+                    process.start()
+                for process in processes:
+                    process.join(timeout=60)
 
-        assert len(seqs) == num_events
-        assert sorted(seqs) == list(range(num_events))
+                assert [process.exitcode for process in processes] == [0, 0]
+                assert list(concurrent_duplicates) == []
+                processed_event_ids = [event_id for event_id, _ in processed]
+                assert sorted(processed_event_ids) == sorted(expected_event_ids)
+                assert len(processed_event_ids) == num_events
+            finally:
+                for process in processes:
+                    if process.is_alive():
+                        process.terminate()
+                    process.join(timeout=5)
+
+        verification_bus = EventBus(path, name="test")
+        queue = verification_bus._open_subscription_queue("x")
+        try:
+            stats = queue.stats()
+            assert stats["acked"] == num_events
+            assert stats["ready"] == 0
+            assert stats["processing"] == 0
+            assert stats["failed"] == 0
+        finally:
+            queue.close()
+            verification_bus.close()
