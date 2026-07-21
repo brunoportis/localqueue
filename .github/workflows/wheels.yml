@@ -84,7 +84,7 @@ jobs:
           import tempfile
 
           from localqueue import EnqueueItem, SimpleQueue
-          from localqueue.bus import BaseEvent, EventBus
+          from localqueue.bus import BaseEvent, BusTopology, EventBus
 
           class WheelEvent(BaseEvent):
               value: int
@@ -102,9 +102,11 @@ jobs:
               assert queue.stats()["acked"] == 2
               queue.close()
 
-              bus = EventBus(path)
+              topology = BusTopology({"smoke": [WheelEvent]})
+              bus = EventBus(path, topology=topology)
+              smoke = bus.subscription("smoke")
 
-              @bus.on(WheelEvent, subscription="smoke")
+              @smoke.handler(WheelEvent)
               def handle(event: WheelEvent) -> None:
                   assert event.value == 1
 

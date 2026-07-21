@@ -113,14 +113,17 @@ uv add "localqueue[bus]"
 
 ```python
 import asyncio
-from localqueue.bus import BaseEvent, EventBus
+from localqueue.bus import BaseEvent, BusTopology, EventBus
 
 class UserCreated(BaseEvent):
+    event_name = "user.created"
     user_id: str
 
-bus = EventBus("./data", name="app")
+topology = BusTopology({"email": [UserCreated]})
+bus = EventBus("./data", name="app", topology=topology)
+email = bus.subscription("email")
 
-@bus.on(UserCreated, subscription="email")
+@email.handler(UserCreated)
 async def send_welcome(event: UserCreated) -> None:
     ...
 
@@ -130,7 +133,9 @@ asyncio.run(bus.run())  # consume all subscriptions until cancelled
 
 Each subscription is a durable queue (`__bus__:{bus}:{subscription}`), so
 workers in multiple processes act as consumer groups. Handlers get the same
-retry, lease, and dead-letter semantics as regular jobs. See
+retry, lease, and dead-letter semantics as regular jobs. The static topology
+decides where events are persisted; local handlers decide what the current
+process consumes. See
 [docs/event-bus.md](https://github.com/brunoportis/localqueue/blob/main/docs/event-bus.md).
 
 ## Delivery guarantees

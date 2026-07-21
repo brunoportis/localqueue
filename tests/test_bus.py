@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from localqueue.bus import BaseEvent, EventBus, NoSubscribers
+from localqueue.bus import BaseEvent, BusTopology, EventBus, NoSubscribers
 
 
 class UserCreated(BaseEvent):
@@ -23,7 +23,13 @@ class RenamedEvent(BaseEvent):
 
 @pytest.fixture
 def bus(tmp_path):
-    b = EventBus(str(tmp_path / "bus"), name="test", lease_seconds=0.5, max_retries=1)
+    b = EventBus(
+        str(tmp_path / "bus"),
+        name="test",
+        topology=BusTopology({"s1": ["*"]}),
+        lease_seconds=0.5,
+        max_retries=1,
+    )
     yield b
     b.close()
 
@@ -50,20 +56,31 @@ class TestRegistration:
 
         bus.on(UserCreated, direct, subscription="s1")
 
-        @bus.on(UserCreated, subscription="s2")
+        @bus.on(OrderPlaced, subscription="s1")
         def decorated(event):
             calls.append("decorated")
 
         assert ("s1", "UserCreated") in bus._handlers
-        assert ("s2", "UserCreated") in bus._handlers
+        assert ("s1", "OrderPlaced") in bus._handlers
 
-    def test_pattern_por_classe_string_e_wildcard(self, bus):
+    def test_pattern_por_classe_string_e_wildcard(self, tmp_path):
+        bus = EventBus(
+            str(tmp_path / "bus"),
+            topology=BusTopology(
+                {
+                    "s1": [UserCreated],
+                    "s2": [OrderPlaced],
+                    "s3": ["*"],
+                }
+            ),
+        )
         bus.on(UserCreated, lambda e: None, subscription="s1")
         bus.on("OrderPlaced", lambda e: None, subscription="s2")
         bus.on("*", lambda e: None, subscription="s3")
 
         assert bus._subscriptions_for("UserCreated") == ("s1", "s3")
         assert bus._subscriptions_for("OrderPlaced") == ("s2", "s3")
+        bus.close()
 
     def test_registro_duplicado_rejeitado(self, bus):
         bus.on(UserCreated, lambda e: None, subscription="s1")
@@ -97,21 +114,34 @@ class TestRegistration:
     @pytest.mark.parametrize("name", ["", "tem:dois-pontos", "-abc", "com espaço"])
     def test_nomes_invalidos(self, tmp_path, name):
         with pytest.raises(ValueError, match="invalid"):
-            EventBus(str(tmp_path / "b"), name=name)
-        bus = EventBus(str(tmp_path / "ok"), name="ok")
-        with pytest.raises(ValueError, match="invalid"):
+            EventBus(
+                str(tmp_path / "b"), name=name, topology=BusTopology({})
+            )
+        bus = EventBus(
+            str(tmp_path / "ok"),
+            name="ok",
+            topology=BusTopology({"s1": [UserCreated]}),
+        )
+        with pytest.raises(ValueError):
             bus.on(UserCreated, lambda e: None, subscription=name)
         bus.close()
 
 
 class TestDispatch:
-    def test_dispatch_sem_subscribers_levanta(self, bus):
-        with pytest.raises(NoSubscribers):
-            bus.dispatch(UserCreated(user_id="1"))
+    def test_dispatch_sem_subscribers_levanta(self, tmp_path):
+        bus = EventBus(str(tmp_path / "bus"), topology=BusTopology({}))
+        try:
+            with pytest.raises(NoSubscribers):
+                bus.dispatch(UserCreated(user_id="1"))
+        finally:
+            bus.close()
 
     def test_dispatch_sem_subscribers_permitido(self, tmp_path):
         bus = EventBus(
-            str(tmp_path / "bus"), name="t", require_subscribers=False
+            str(tmp_path / "bus"),
+            name="t",
+            topology=BusTopology({}),
+            require_subscribers=False,
         )
         receipt = bus.dispatch(UserCreated(user_id="1"))
         assert receipt.subscriptions == ()
@@ -122,7 +152,13 @@ class TestDispatch:
         queue.close()
         bus.close()
 
-    def test_fanout_uma_chamada_nativa_por_dispatch(self, bus, monkeypatch):
+    def test_fanout_uma_chamada_nativa_por_dispatch(self, tmp_path, monkeypatch):
+        bus = EventBus(
+            str(tmp_path / "bus"),
+            topology=BusTopology(
+                {"s1": [UserCreated], "s2": [UserCreated], "s3": ["*"]}
+            ),
+        )
         bus.on(UserCreated, lambda e: None, subscription="s1")
         bus.on(UserCreated, lambda e: None, subscription="s2")
         bus.on("*", lambda e: None, subscription="s3")
@@ -135,6 +171,9 @@ class TestDispatch:
                 calls.append(targets)
                 return native.fanout(payload, targets)
 
+            def close(self):
+                return native.close()
+
         monkeypatch.setattr(bus, "_native_queue", SpyNative())
 
         receipt = bus.dispatch(UserCreated(user_id="7"))
@@ -142,6 +181,7 @@ class TestDispatch:
         assert len(calls[0]) == 3
         assert receipt.subscriptions == ("s1", "s2", "s3")
         assert len(receipt.message_ids) == 3
+        bus.close()
 
     def test_dispatch_async(self, bus):
         bus.on(UserCreated, lambda e: None, subscription="s1")
@@ -150,7 +190,15 @@ class TestDispatch:
 
 
 class TestConsumption:
-    def test_handler_sync_e_async_ack(self, bus):
+    def test_handler_sync_e_async_ack(self, tmp_path):
+        bus = EventBus(
+            str(tmp_path / "bus"),
+            topology=BusTopology(
+                {"sync": [UserCreated], "async": [UserCreated]}
+            ),
+            lease_seconds=0.5,
+            max_retries=1,
+        )
         seen = []
         bus.on(UserCreated, lambda e: seen.append(("sync", e.user_id)),
                subscription="sync")
@@ -170,6 +218,7 @@ class TestConsumption:
             assert q.stats()["acked"] == 1
             assert q.stats()["ready"] == 0
             q.close()
+        bus.close()
 
     def test_uma_delivery_por_subscription_exato_vence_wildcard(self, bus):
         seen = []
@@ -292,7 +341,15 @@ class TestConsumption:
         assert "unknown event" in q.list_failed()[0]["last_error"]
         q.close()
 
-    def test_duas_subscriptions_recebem_o_mesmo_evento(self, bus):
+    def test_duas_subscriptions_recebem_o_mesmo_evento(self, tmp_path):
+        bus = EventBus(
+            str(tmp_path / "bus"),
+            topology=BusTopology(
+                {"sa": [UserCreated], "sb": [UserCreated]}
+            ),
+            lease_seconds=0.5,
+            max_retries=1,
+        )
         seen = []
         bus.on(UserCreated, lambda e: seen.append("a"), subscription="sa")
         bus.on(UserCreated, lambda e: seen.append("b"), subscription="sb")
@@ -300,16 +357,30 @@ class TestConsumption:
         bus.dispatch(UserCreated(user_id="1"))
         run(bus.run(idle_timeout=0.5))
         assert sorted(seen) == ["a", "b"]
+        bus.close()
 
     def test_persistencia_apos_crash(self, tmp_path):
         path = str(tmp_path / "bus")
-        bus = EventBus(path, name="test", lease_seconds=0.5, max_retries=1)
+        topology = BusTopology({"s1": [UserCreated]})
+        bus = EventBus(
+            path,
+            name="test",
+            topology=topology,
+            lease_seconds=0.5,
+            max_retries=1,
+        )
         bus.on(UserCreated, lambda e: None, subscription="s1")
         bus.dispatch(UserCreated(user_id="sobrevive"))
         bus.close()  # "crash" antes de consumir
 
         seen = []
-        bus2 = EventBus(path, name="test", lease_seconds=0.5, max_retries=1)
+        bus2 = EventBus(
+            path,
+            name="test",
+            topology=topology,
+            lease_seconds=0.5,
+            max_retries=1,
+        )
         bus2.on(UserCreated, lambda e: seen.append(e.user_id),
                 subscription="s1")
         run(bus2.run_subscription("s1", idle_timeout=0.5))
@@ -349,7 +420,13 @@ def _consumer_group_worker(
     path, processed, active, concurrent_duplicates, lock, idle_timeout
 ):
     """Worker de consumer group em processo separado."""
-    bus = EventBus(path, name="test", lease_seconds=5.0, max_retries=1)
+    bus = EventBus(
+        path,
+        name="test",
+        topology=BusTopology({"x": [GroupEvent]}),
+        lease_seconds=5.0,
+        max_retries=1,
+    )
 
     def handle(event):
         import os
@@ -381,7 +458,12 @@ class TestValidations:
     )
     def test_constructor_rejeita_limites_invalidos(self, tmp_path, kwargs):
         with pytest.raises(ValueError):
-            EventBus(str(tmp_path / "b"), name="t", **kwargs)
+            EventBus(
+                str(tmp_path / "b"),
+                name="t",
+                topology=BusTopology({}),
+                **kwargs,
+            )
 
     @pytest.mark.parametrize(
         "permanent_errors",
@@ -393,7 +475,12 @@ class TestValidations:
                    permanent_errors=permanent_errors)
 
     def test_fsync_repassado_para_subscription_queue(self, tmp_path):
-        bus = EventBus(str(tmp_path / "b"), name="t", fsync=True)
+        bus = EventBus(
+            str(tmp_path / "b"),
+            name="t",
+            topology=BusTopology({"s1": ["*"]}),
+            fsync=True,
+        )
         queue = bus._open_subscription_queue("s1")
         _, synchronous = queue._native.pragma_settings()
         queue.close()
@@ -432,10 +519,10 @@ class TestEnvelopeMalformed:
 class TestTypedReconstruction:
     def test_dispatch_com_somente_wildcard_reconstroi_evento(self, bus):
         seen = []
-        bus.on("*", lambda e: seen.append(e), subscription="audit")
+        bus.on("*", lambda e: seen.append(e), subscription="s1")
 
         bus.dispatch(GroupEvent(seq=7))
-        run(bus.run_subscription("audit", idle_timeout=0.5))
+        run(bus.run_subscription("s1", idle_timeout=0.5))
 
         assert len(seen) == 1
         assert isinstance(seen[0], GroupEvent)
@@ -535,7 +622,11 @@ class TestAsyncioSafety:
 class TestLeaseSafety:
     def test_handler_longo_com_heartbeat_faz_ack(self, tmp_path):
         bus = EventBus(
-            str(tmp_path / "b"), name="t", lease_seconds=0.5, max_retries=1
+            str(tmp_path / "b"),
+            name="t",
+            topology=BusTopology({"s1": [UserCreated]}),
+            lease_seconds=0.5,
+            max_retries=1,
         )
         seen = []
 
@@ -550,7 +641,11 @@ class TestLeaseSafety:
 
         assert seen == ["longo"]
         bus2 = EventBus(
-            str(tmp_path / "b"), name="t", lease_seconds=0.5, max_retries=1
+            str(tmp_path / "b"),
+            name="t",
+            topology=BusTopology({"s1": [UserCreated]}),
+            lease_seconds=0.5,
+            max_retries=1,
         )
         q = bus2._open_subscription_queue("s1")
         assert q.stats()["acked"] == 1
@@ -620,8 +715,14 @@ class TestConsumerGroup:
         num_events = 40
         expected_event_ids = []
 
-        bus = EventBus(path, name="test", lease_seconds=5.0, max_retries=1)
-        bus.on("GroupEvent", lambda e: None, subscription="x")
+        topology = BusTopology({"x": [GroupEvent]})
+        bus = EventBus(
+            path,
+            name="test",
+            topology=topology,
+            lease_seconds=5.0,
+            max_retries=1,
+        )
         for i in range(num_events):
             event = GroupEvent(seq=i)
             expected_event_ids.append(str(event.event_id))
@@ -665,7 +766,7 @@ class TestConsumerGroup:
                         process.terminate()
                     process.join(timeout=5)
 
-        verification_bus = EventBus(path, name="test")
+        verification_bus = EventBus(path, name="test", topology=topology)
         queue = verification_bus._open_subscription_queue("x")
         try:
             stats = queue.stats()

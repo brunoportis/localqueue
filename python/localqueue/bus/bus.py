@@ -3,24 +3,27 @@
 from __future__ import annotations
 
 import asyncio
-import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Optional
 from uuid import UUID
 
 from localqueue import localqueue as _native
-from localqueue.bus.event import BaseEvent, event_type_of
+from localqueue.bus.event import BaseEvent
 from localqueue.bus.registry import EVENT_REGISTRY, EventRegistry
+from localqueue.bus.subscription import Subscription
+from localqueue.bus.topology import (
+    WILDCARD,
+    BusTopology,
+    EventPattern,
+    normalize_event_pattern,
+    validate_name,
+)
 from localqueue.core import JsonSerializer, Serializer, SimpleQueue
-
-_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-
-WILDCARD = "*"
 
 
 class NoSubscribers(Exception):
-    """Raised by ``dispatch`` when no handler matches an event."""
+    """Raised by ``dispatch`` when the topology has no matching route."""
 
 
 @dataclass(frozen=True)
@@ -52,6 +55,7 @@ class EventBus:
         path: str,
         name: str = "default",
         *,
+        topology: BusTopology,
         lease_seconds: float = 60.0,
         max_retries: int = 3,
         fsync: bool = False,
@@ -60,6 +64,8 @@ class EventBus:
         registry: EventRegistry = EVENT_REGISTRY,
     ) -> None:
         self._validate_name(name, "name")
+        if not isinstance(topology, BusTopology):
+            raise TypeError("'topology' must be a BusTopology")
         if not lease_seconds > 0:
             raise ValueError("'lease_seconds' must be positive")
         if max_retries < 0:
@@ -67,6 +73,7 @@ class EventBus:
 
         self.path = Path(path)
         self.name = name
+        self.topology = topology
         self.lease_seconds = lease_seconds
         self.max_retries = max_retries
         self.fsync = fsync
@@ -89,39 +96,61 @@ class EventBus:
 
     @staticmethod
     def _validate_name(value: str, field: str) -> None:
-        if not isinstance(value, str) or not _NAME_RE.match(value):
-            raise ValueError(
-                f"invalid '{field}': use {_NAME_RE.pattern} (non-empty and without ':')"
-            )
+        validate_name(value, field)
 
     def _queue_name(self, subscription: str) -> str:
         return f"__bus__:{self.name}:{subscription}"
 
-    def _pattern_key(self, pattern: Union[type[BaseEvent], str]) -> str:
-        if isinstance(pattern, type) and issubclass(pattern, BaseEvent):
-            self.registry.register(pattern)
-            return event_type_of(pattern)
-        if isinstance(pattern, str) and pattern.strip():
-            return pattern
-        raise TypeError("'pattern' must be a BaseEvent subclass or a non-empty string")
+    def _pattern_key(self, pattern: EventPattern) -> str:
+        try:
+            return normalize_event_pattern(pattern)
+        except (TypeError, ValueError) as error:
+            raise type(error)(
+                "'pattern' must be a BaseEvent subclass, a non-empty event type, "
+                "or '*'"
+            ) from error
 
     def on(
         self,
-        pattern: Union[type[BaseEvent], str],
+        pattern: EventPattern,
         handler: Optional[Callable[[Any], Any]] = None,
         *,
         subscription: str,
         permanent_errors: tuple[type[BaseException], ...] = (),
     ) -> Callable[[Any], Any]:
-        """Register ``handler`` for ``pattern`` in ``subscription``.
+        """Register a handler through a declared subscription."""
+        return self.subscription(subscription).handler(
+            pattern,
+            handler,
+            permanent_errors=permanent_errors,
+        )
 
-        This can be used directly or as a decorator. ``pattern`` can be a
-        :class:`BaseEvent` subclass, an ``event_type`` string, or ``"*"``.
-        An exact handler takes precedence over a wildcard in the same
-        subscription.
-        """
-        self._validate_name(subscription, "subscription")
+    def subscription(self, name: str) -> Subscription:
+        """Return a local handler binder for a declared subscription."""
+        if not self.topology.has_subscription(name):
+            raise ValueError(
+                f"subscription {name!r} is not declared in the bus topology"
+            )
+        return Subscription(self, name)
+
+    def _register_handler(
+        self,
+        subscription: str,
+        pattern: EventPattern,
+        handler: Optional[Callable[[Any], Any]] = None,
+        *,
+        permanent_errors: tuple[type[BaseException], ...] = (),
+    ) -> Callable[[Any], Any]:
+        """Register a process-local handler without changing bus topology."""
+        if not self.topology.has_subscription(subscription):
+            raise ValueError(
+                f"subscription {subscription!r} is not declared in the bus topology"
+            )
         key = self._pattern_key(pattern)
+        if key != WILDCARD and not self.topology.routes(subscription, key):
+            raise ValueError(
+                f"subscription {subscription!r} does not route event type {key!r}"
+            )
         if not isinstance(permanent_errors, (tuple, list)) or not all(
             isinstance(exc, type) and issubclass(exc, BaseException)
             for exc in permanent_errors
@@ -131,11 +160,15 @@ class EventBus:
             )
 
         def decorator(fn: Callable[[Any], Any]) -> Callable[[Any], Any]:
+            if not callable(fn):
+                raise TypeError("'handler' must be callable")
             combo = (subscription, key)
             if combo in self._handlers:
                 raise ValueError(
                     f"handler already registered for ({subscription!r}, {key!r})"
                 )
+            if isinstance(pattern, type) and issubclass(pattern, BaseEvent):
+                self.registry.register(pattern)
             self._handlers[combo] = _HandlerRegistration(
                 handler=fn, permanent_errors=tuple(permanent_errors)
             )
@@ -150,12 +183,7 @@ class EventBus:
         return self.registry.register(cls)
 
     def _subscriptions_for(self, event_type: str) -> tuple[str, ...]:
-        subscriptions = {
-            subscription
-            for (subscription, key) in self._handlers
-            if key == event_type or key == WILDCARD
-        }
-        return tuple(sorted(subscriptions))
+        return self.topology.subscriptions_for(event_type)
 
     def _get_native(self) -> "_native.NativeQueue":
         native = self._native_queue
@@ -252,6 +280,17 @@ class EventBus:
         from localqueue.bus.consumer import run_consumer
 
         self._validate_name(subscription, "subscription")
+        if not self.topology.has_subscription(subscription):
+            raise ValueError(
+                f"subscription {subscription!r} is not declared in the bus topology"
+            )
+        if not any(
+            registered_subscription == subscription
+            for registered_subscription, _pattern in self._handlers
+        ):
+            raise RuntimeError(
+                f"no handler is registered for subscription {subscription!r}"
+            )
         await run_consumer(self, subscription, idle_timeout=idle_timeout)
 
     def close(self) -> None:
