@@ -74,6 +74,14 @@ class IDValidation:
     observed: dict[str, Any]
     ok: bool
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "method": self.method,
+            "expected": dict(self.expected),
+            "observed": dict(self.observed),
+            "ok": self.ok,
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class LargeDatabaseResult:
