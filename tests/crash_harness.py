@@ -134,7 +134,7 @@ queue = SimpleQueue(DB_PATH, lease_seconds=60.0, max_retries=3)
 if counts["ready"]:
     job = queue.get(block=False)
     queue.ack(job)
-elif counts["processing"]:
+elif CHECK_RECEIPT and counts["processing"]:
     with sqlite3.connect(DB_PATH + "/localqueue.db") as connection:
         message_id, receipt, lease_until = connection.execute(
             "SELECT id, receipt, lease_until FROM messages "
@@ -171,12 +171,14 @@ def _prepare(path: Path, operation: str) -> None:
     queue.close()
 
 
-def _validate(path: Path) -> dict[str, Any]:
+def _validate(path: Path, check_receipt: bool) -> dict[str, Any]:
     result = subprocess.run(
         [
             sys.executable,
             "-c",
-            VALIDATOR_CODE.replace("DB_PATH", repr(str(path))),
+            VALIDATOR_CODE.replace("DB_PATH", repr(str(path))).replace(
+                "CHECK_RECEIPT", repr(check_receipt)
+            ),
         ],
         capture_output=True,
         text=True,
@@ -272,7 +274,7 @@ def run(scenario: str, output: Path) -> int:
             if not crash:
                 report["child_exit_mode"] = "normal"
 
-            validation = _validate(path)
+            validation = _validate(path, crash)
             report["integrity_check"] = validation["integrity_check"]
             report["observed_counts"] = validation["observed_counts"]
             report["recovery"] = validation["recovery"]
