@@ -73,3 +73,7 @@ SimpleQueue("./data", fsync=True)
 
 See [Delivery guarantees](guarantees.md) for the full lease, retry,
 deduplication, ordering, and durability contract.
+
+To bound logical backlog, pass a positive `max_pending_jobs`. Pending is the
+sum of ready and processing jobs, not database bytes. See
+[Bounded backlog and producer backpressure](backpressure.md).

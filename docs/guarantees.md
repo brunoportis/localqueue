@@ -77,3 +77,7 @@ After `purge()` removes the record, the same `job_id` can be used again.
 - infinite retries after `max_retries` is reached;
 - durability against power failure with `fsync=False`;
 - indefinite retention of messages removed by maintenance.
+
+An optional `max_pending_jobs` contract atomically bounds ready + processing
+jobs for participating producers. It does not bound disk usage or persist a
+database policy. See [Bounded backlog and producer backpressure](backpressure.md).

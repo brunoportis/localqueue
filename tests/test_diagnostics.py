@@ -27,7 +27,7 @@ def test_empty_queue_returns_versioned_immutable_json_report(tmp_path: Path) -> 
     report = queue.diagnostics()
 
     assert isinstance(report, QueueDiagnostics)
-    assert report.schema_version == 1
+    assert report.schema_version == 2
     assert report.package_version
     assert report.package_version != "unknown"
     assert report.sqlite_version
@@ -35,6 +35,7 @@ def test_empty_queue_returns_versioned_immutable_json_report(tmp_path: Path) -> 
     assert report.serializer_identity == "localqueue.JsonSerializer"
     assert report.lease_seconds == 60.0
     assert report.max_retries == 3
+    assert report.max_pending_jobs is None
     assert report.journal_mode == "wal"
     assert report.synchronous == 1
     assert report.durability_mode == "normal"
@@ -50,6 +51,8 @@ def test_empty_queue_returns_versioned_immutable_json_report(tmp_path: Path) -> 
         0,
         0,
     )
+    assert report.pending_jobs == 0
+    assert report.available_slots is None
     assert report.oldest_available_age_seconds is None
     assert report.oldest_processing_updated_age_seconds is None
     assert report.active_leases == 0

@@ -6,7 +6,7 @@ use crate::error::{QueueError, Result};
 use crate::queue::{STATUS_ACKED, STATUS_FAILED, STATUS_LEASED, STATUS_READY};
 use crate::storage::{now_ms, sqlite_sidecar_path, Storage};
 
-pub const DIAGNOSTICS_SCHEMA_VERSION: i64 = 1;
+pub const DIAGNOSTICS_SCHEMA_VERSION: i64 = 2;
 
 #[derive(Debug, Clone)]
 #[pyclass(skip_from_py_object)]
@@ -46,6 +46,12 @@ pub struct DiagnosticsSnapshot {
     #[pyo3(get)]
     pub failed: i64,
     #[pyo3(get)]
+    pub max_pending_jobs: Option<i64>,
+    #[pyo3(get)]
+    pub pending_jobs: i64,
+    #[pyo3(get)]
+    pub available_slots: Option<i64>,
+    #[pyo3(get)]
     pub oldest_available_age_ms: Option<i64>,
     #[pyo3(get)]
     pub oldest_processing_updated_age_ms: Option<i64>,
@@ -57,13 +63,18 @@ pub struct DiagnosticsSnapshot {
     pub oldest_expired_lease_age_ms: Option<i64>,
 }
 
-pub fn collect(storage: &Storage, queue: &str) -> Result<DiagnosticsSnapshot> {
-    collect_after_transaction(storage, queue, now_ms, || {})
+pub fn collect(
+    storage: &Storage,
+    queue: &str,
+    max_pending_jobs: Option<i64>,
+) -> Result<DiagnosticsSnapshot> {
+    collect_after_transaction(storage, queue, max_pending_jobs, now_ms, || {})
 }
 
 fn collect_after_transaction<F, H>(
     storage: &Storage,
     queue: &str,
+    max_pending_jobs: Option<i64>,
     clock: F,
     snapshot_started: H,
 ) -> Result<DiagnosticsSnapshot>
@@ -117,14 +128,14 @@ where
         ],
         |row| {
             Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
                 row.get::<_, Option<i64>>(4)?,
                 row.get::<_, Option<i64>>(5)?,
-                row.get(6)?,
-                row.get(7)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
                 row.get::<_, Option<i64>>(8)?,
             ))
         },
@@ -140,6 +151,8 @@ where
     drop(guard);
 
     let database_path = storage.path();
+    let pending_jobs = ready.saturating_add(processing);
+    let available_slots = max_pending_jobs.map(|limit| limit.saturating_sub(pending_jobs).max(0));
     Ok(DiagnosticsSnapshot {
         schema_version: DIAGNOSTICS_SCHEMA_VERSION,
         sqlite_version: rusqlite::version().to_owned(),
@@ -158,6 +171,9 @@ where
         processing,
         acked,
         failed,
+        max_pending_jobs,
+        pending_jobs,
+        available_slots,
         oldest_available_age_ms: age_ms(observed_at_ms, oldest_available_at),
         oldest_processing_updated_age_ms: age_ms(observed_at_ms, oldest_processing_updated_at),
         active_leases,
@@ -247,6 +263,7 @@ mod tests {
             collect_after_transaction(
                 &worker_storage,
                 "queue",
+                None,
                 || clock_value_rx.recv().unwrap(),
                 || snapshot_started_tx.send(()).unwrap(),
             )

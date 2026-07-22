@@ -17,6 +17,20 @@ pyo3::create_exception!(
 
 pyo3::create_exception!(
     localqueue,
+    Full,
+    LocalQueueError,
+    "Raised when the configured logical queue capacity is exhausted."
+);
+
+pyo3::create_exception!(
+    localqueue,
+    _FullImpossible,
+    Full,
+    "Private signal for an enqueue batch that can never fit."
+);
+
+pyo3::create_exception!(
+    localqueue,
     LeaseExpired,
     LocalQueueError,
     "Raised when a job lease has expired."
@@ -26,6 +40,12 @@ pyo3::create_exception!(
 pub enum QueueError {
     #[error("queue is empty")]
     Empty,
+
+    #[error("queue is full")]
+    Full,
+
+    #[error("queue is full")]
+    FullImpossible,
 
     #[error("lease has expired")]
     LeaseExpired,
@@ -61,6 +81,8 @@ impl From<QueueError> for PyErr {
     fn from(err: QueueError) -> PyErr {
         match err {
             QueueError::Empty => PyErr::new::<Empty, _>("queue is empty"),
+            QueueError::Full => PyErr::new::<Full, _>("queue is full"),
+            QueueError::FullImpossible => PyErr::new::<_FullImpossible, _>("queue is full"),
             QueueError::LeaseExpired => PyErr::new::<LeaseExpired, _>("lease has expired"),
             QueueError::NotFound => PyErr::new::<LocalQueueError, _>("job not found"),
             QueueError::Closed => PyErr::new::<LocalQueueError, _>("queue is closed"),

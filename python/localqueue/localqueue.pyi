@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+class _FullImpossible(Exception): ...
+
 class Lease:
     id: int
     payload: bytes
@@ -43,6 +45,9 @@ class DiagnosticsSnapshot:
     processing: int
     acked: int
     failed: int
+    max_pending_jobs: Optional[int]
+    pending_jobs: int
+    available_slots: Optional[int]
     oldest_available_age_ms: Optional[int]
     oldest_processing_updated_age_ms: Optional[int]
     active_leases: int
@@ -74,12 +79,19 @@ class NativeQueue:
         queue: str,
         max_attempts: int = 3,
         fsync: bool = False,
+        max_pending_jobs: Optional[int] = None,
     ) -> None: ...
-    def put(self, payload: bytes, job_id: Optional[str] = None) -> int: ...
+    def put(
+        self,
+        payload: bytes,
+        job_id: Optional[str] = None,
+        busy_timeout_ms: Optional[int] = None,
+    ) -> int: ...
     def put_many(
         self,
         payloads: list[bytes],
         job_ids: Optional[list[Optional[str]]] = None,
+        busy_timeout_ms: Optional[int] = None,
     ) -> list[int]: ...
     def fanout(
         self,
@@ -112,4 +124,5 @@ class NativeQueue:
 
 class LocalQueueError(Exception): ...
 class Empty(LocalQueueError): ...
+class Full(LocalQueueError): ...
 class LeaseExpired(LocalQueueError): ...

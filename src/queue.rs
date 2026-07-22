@@ -6,7 +6,7 @@ use crate::backup::{create as create_backup, BackupSnapshot};
 use crate::diagnostics::{collect as collect_diagnostics, DiagnosticsSnapshot};
 use crate::error::QueueError;
 use crate::integrity::{check as check_integrity, IntegrityCheckSnapshot};
-use crate::storage::{now_ms, EnqueueEntry, Storage};
+use crate::storage::{now_ms, CapacityPolicy, EnqueueEntry, Storage};
 
 pub const STATUS_READY: i64 = 0;
 pub const STATUS_LEASED: i64 = 1;
@@ -63,18 +63,31 @@ pub struct NativeQueue {
     storage: Storage,
     queue: String,
     max_attempts: i64,
+    max_pending_jobs: Option<i64>,
 }
 
 #[pymethods]
 impl NativeQueue {
     #[new]
-    #[pyo3(signature = (path, queue, max_attempts = 3, fsync = false))]
-    pub fn new(path: &str, queue: &str, max_attempts: i64, fsync: bool) -> PyResult<Self> {
+    #[pyo3(signature = (path, queue, max_attempts = 3, fsync = false, max_pending_jobs = None))]
+    pub fn new(
+        path: &str,
+        queue: &str,
+        max_attempts: i64,
+        fsync: bool,
+        max_pending_jobs: Option<i64>,
+    ) -> PyResult<Self> {
+        if matches!(max_pending_jobs, Some(limit) if limit <= 0) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "'max_pending_jobs' must be positive",
+            ));
+        }
         let storage = Storage::new(path, fsync)?;
         Ok(Self {
             storage,
             queue: queue.to_string(),
             max_attempts,
+            max_pending_jobs,
         })
     }
 
@@ -121,7 +134,14 @@ impl NativeQueue {
             .map_err(Into::into)
     }
 
-    pub fn put(&self, py: Python<'_>, payload: Vec<u8>, job_id: Option<&str>) -> PyResult<i64> {
+    #[pyo3(signature = (payload, job_id = None, busy_timeout_ms = None))]
+    pub fn put(
+        &self,
+        py: Python<'_>,
+        payload: Vec<u8>,
+        job_id: Option<&str>,
+        busy_timeout_ms: Option<u64>,
+    ) -> PyResult<i64> {
         let job_id = job_id.map(str::to_owned);
         py.detach(move || {
             let entries = [EnqueueEntry {
@@ -129,17 +149,24 @@ impl NativeQueue {
                 payload: &payload,
                 job_id: job_id.as_deref(),
             }];
-            let ids = self.storage.enqueue_batch(&entries, self.max_attempts)?;
+            let ids = self.storage.enqueue_batch(
+                &entries,
+                self.max_attempts,
+                self.capacity_policy(),
+                busy_timeout_ms,
+            )?;
             Ok(ids[0])
         })
     }
 
     /// Insert multiple messages into the queue in one transaction.
+    #[pyo3(signature = (payloads, job_ids = None, busy_timeout_ms = None))]
     pub fn put_many(
         &self,
         py: Python<'_>,
         payloads: Vec<Vec<u8>>,
         job_ids: Option<Vec<Option<String>>>,
+        busy_timeout_ms: Option<u64>,
     ) -> PyResult<Vec<i64>> {
         if let Some(ids) = &job_ids {
             if ids.len() != payloads.len() {
@@ -158,7 +185,12 @@ impl NativeQueue {
                     job_id: job_ids.as_ref().and_then(|ids| ids[index].as_deref()),
                 })
                 .collect();
-            Ok(self.storage.enqueue_batch(&entries, self.max_attempts)?)
+            Ok(self.storage.enqueue_batch(
+                &entries,
+                self.max_attempts,
+                self.capacity_policy(),
+                busy_timeout_ms,
+            )?)
         })
     }
 
@@ -181,7 +213,10 @@ impl NativeQueue {
                     job_id: job_id.as_deref(),
                 })
                 .collect();
-            Ok(self.storage.enqueue_batch(&entries, self.max_attempts)?)
+            // EventBus fanout deliberately remains unlimited in issue #25.
+            Ok(self
+                .storage
+                .enqueue_batch(&entries, self.max_attempts, None, None)?)
         })
     }
 
@@ -582,7 +617,10 @@ impl NativeQueue {
 
     /// Capture a bounded, read-only operational snapshot.
     pub fn diagnostics(&self, py: Python<'_>) -> PyResult<DiagnosticsSnapshot> {
-        py.detach(move || collect_diagnostics(&self.storage, &self.queue).map_err(Into::into))
+        py.detach(move || {
+            collect_diagnostics(&self.storage, &self.queue, self.max_pending_jobs)
+                .map_err(Into::into)
+        })
     }
 
     /// Run a read-only SQLite full or quick integrity check.
@@ -689,27 +727,9 @@ impl NativeQueue {
     /// Move a `failed` message back to `ready`.
     pub fn retry_failed(&self, py: Python<'_>, id: i64) -> PyResult<()> {
         py.detach(move || {
-            let now = now_ms();
-            let mut guard = self.conn()?;
-            let conn = guard.as_mut().unwrap();
-            let changed = conn
-                .execute(
-                    "UPDATE messages SET
-                    status = ?1,
-                    available_at = ?2,
-                    attempts = 0,
-                    receipt = NULL,
-                    lease_until = NULL,
-                    last_error = NULL,
-                    updated_at = ?3
-                 WHERE id = ?4 AND queue = ?5 AND status = ?6",
-                    params![STATUS_READY, now, now, id, self.queue, STATUS_FAILED],
-                )
-                .map_err(QueueError::from)?;
-            if changed == 0 {
-                return Err(QueueError::NotFound.into());
-            }
-            Ok(())
+            self.storage
+                .retry_failed(&self.queue, id, self.max_pending_jobs)
+                .map_err(Into::into)
         })
     }
 
@@ -733,6 +753,14 @@ impl NativeQueue {
 }
 
 impl NativeQueue {
+    fn capacity_policy(&self) -> Option<CapacityPolicy<'_>> {
+        self.max_pending_jobs
+            .map(|max_pending_jobs| CapacityPolicy {
+                queue_name: &self.queue,
+                max_pending_jobs,
+            })
+    }
+
     fn conn(&self) -> PyResult<MutexGuard<'_, Option<Connection>>> {
         let guard = self.storage.connection();
         if guard.is_none() {

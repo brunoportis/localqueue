@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
+import threading
 import time as _time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Optional, Protocol, Union
+from typing import Any, Callable, Literal, Optional, Protocol, TypeVar, Union
 
 from localqueue import localqueue as _native
 from localqueue.diagnostics import QueueDiagnostics, build_diagnostics
-from localqueue.exceptions import Empty, LocalQueueError
+from localqueue.exceptions import Empty, Full, LocalQueueError
 from localqueue.job import Job
 from localqueue.maintenance import (
     BackupResult,
@@ -22,6 +24,10 @@ from localqueue.maintenance import (
 )
 
 log = logging.getLogger(__name__)
+_ResultT = TypeVar("_ResultT")
+
+_BACKPRESSURE_MIN_SLEEP_SECONDS = 0.01
+_BACKPRESSURE_MAX_SLEEP_SECONDS = 0.25
 
 
 class Serializer(Protocol):
@@ -66,6 +72,7 @@ class SimpleQueue:
         max_retries: int = 3,
         fsync: bool = False,
         serializer: Optional[Serializer] = None,
+        max_pending_jobs: Optional[int] = None,
     ) -> None:
         """Initialize the queue.
 
@@ -75,17 +82,28 @@ class SimpleQueue:
         :param max_retries: retries allowed before moving to dead-letter.
         :param fsync: use ``PRAGMA synchronous=FULL`` when ``True``.
         :param serializer: object providing ``dumps`` and ``loads`` methods.
+        :param max_pending_jobs: optional positive logical backlog limit.
         """
         if not lease_seconds > 0:
             raise ValueError("'lease_seconds' must be positive")
         if max_retries < 0:
             raise ValueError("'max_retries' must be non-negative")
+        if max_pending_jobs is not None:
+            if not isinstance(max_pending_jobs, int) or isinstance(
+                max_pending_jobs, bool
+            ):
+                raise TypeError("'max_pending_jobs' must be an integer or None")
+            if max_pending_jobs <= 0:
+                raise ValueError("'max_pending_jobs' must be positive")
 
         self.path = Path(path)
         self.name = name
         self.lease_seconds = lease_seconds
         self.max_retries = max_retries
+        self.max_pending_jobs = max_pending_jobs
         self.serializer = serializer or JsonSerializer()
+        self._closed = threading.Event()
+        self._enqueue_close_lock = threading.Lock()
 
         self.path.mkdir(parents=True, exist_ok=True)
         db_path = self.path / "localqueue.db"
@@ -95,6 +113,7 @@ class SimpleQueue:
             name,
             max_attempts=max_retries + 1,
             fsync=fsync,
+            max_pending_jobs=max_pending_jobs,
         )
 
     def _get_native(self) -> "_native.NativeQueue":
@@ -103,23 +122,50 @@ class SimpleQueue:
             raise LocalQueueError("queue is closed")
         return native
 
-    def put(self, data: Any, job_id: Optional[str] = None) -> int:
+    def put(
+        self,
+        data: Any,
+        job_id: Optional[str] = None,
+        *,
+        block: bool = True,
+        timeout: Optional[float] = None,
+    ) -> int:
         """Add an item to the queue.
 
         :param data: payload to enqueue.
         :param job_id: optional unique identifier used for deduplication.
+        :param block: wait for logical capacity when ``True``.
+        :param timeout: maximum total capacity wait in seconds.
         :return: internal queue item ID.
+        :raises Full: when capacity is unavailable without further waiting.
         """
+        if timeout is not None and timeout < 0:
+            raise ValueError("'timeout' must be non-negative")
         payload = self.serializer.dumps(data)
-        return self._get_native().put(payload, job_id)
+        return self._wait_for_capacity(
+            lambda native, busy_timeout_ms: native.put(
+                payload, job_id, busy_timeout_ms
+            ),
+            block=block,
+            timeout=timeout,
+        )
 
-    def put_many(self, items: list[Union[Any, EnqueueItem]]) -> list[int]:
+    def put_many(
+        self,
+        items: list[Union[Any, EnqueueItem]],
+        *,
+        block: bool = True,
+        timeout: Optional[float] = None,
+    ) -> list[int]:
         """Add multiple items to the queue in one transaction.
 
         :param items: plain payloads or :class:`EnqueueItem` instances for
             per-item ``job_id`` deduplication.
         :return: internal item IDs in input order.
+        :raises Full: when the complete batch cannot fit without further waiting.
         """
+        if timeout is not None and timeout < 0:
+            raise ValueError("'timeout' must be non-negative")
         payloads: list[bytes] = []
         job_ids: list[Optional[str]] = []
         has_job_id = False
@@ -131,7 +177,74 @@ class SimpleQueue:
             else:
                 payloads.append(self.serializer.dumps(item))
                 job_ids.append(None)
-        return self._get_native().put_many(payloads, job_ids if has_job_id else None)
+        if not payloads:
+            self._get_native()
+            return []
+        native_job_ids = job_ids if has_job_id else None
+        return self._wait_for_capacity(
+            lambda native, busy_timeout_ms: native.put_many(
+                payloads, native_job_ids, busy_timeout_ms
+            ),
+            block=block,
+            timeout=timeout,
+        )
+
+    def _wait_for_capacity(
+        self,
+        operation: Callable[["_native.NativeQueue", Optional[int]], _ResultT],
+        *,
+        block: bool,
+        timeout: Optional[float],
+    ) -> _ResultT:
+        if timeout is not None and timeout < 0:
+            raise ValueError("'timeout' must be non-negative")
+
+        if not block:
+            try:
+                return self._run_enqueue_attempt(operation, None)
+            except _native._FullImpossible:
+                raise Full("queue is full") from None
+
+        deadline = None if timeout is None else _time.monotonic() + timeout
+        sleep_seconds = _BACKPRESSURE_MIN_SLEEP_SECONDS
+        while True:
+            if self._closed.is_set():
+                raise LocalQueueError("queue is closed")
+            remaining = (
+                None if deadline is None else max(0.0, deadline - _time.monotonic())
+            )
+            busy_timeout_ms = (
+                None
+                if remaining is None
+                else math.ceil(min(remaining, _BACKPRESSURE_MAX_SLEEP_SECONDS) * 1000)
+            )
+            try:
+                return self._run_enqueue_attempt(operation, busy_timeout_ms)
+            except _native._FullImpossible:
+                raise Full("queue is full") from None
+            except Full:
+                if deadline is not None:
+                    remaining = deadline - _time.monotonic()
+                    if remaining <= 0:
+                        raise
+                    wait_seconds = min(sleep_seconds, remaining)
+                else:
+                    wait_seconds = sleep_seconds
+                if self._closed.wait(wait_seconds):
+                    raise LocalQueueError("queue is closed") from None
+                sleep_seconds = min(
+                    sleep_seconds * 1.5, _BACKPRESSURE_MAX_SLEEP_SECONDS
+                )
+
+    def _run_enqueue_attempt(
+        self,
+        operation: Callable[["_native.NativeQueue", Optional[int]], _ResultT],
+        busy_timeout_ms: Optional[int],
+    ) -> _ResultT:
+        with self._enqueue_close_lock:
+            if self._closed.is_set():
+                raise LocalQueueError("queue is closed")
+            return operation(self._get_native(), busy_timeout_ms)
 
     def get(self, block: bool = True, timeout: Optional[float] = None) -> Job:
         """Claim an item from the queue with a lease.
@@ -350,9 +463,11 @@ class SimpleQueue:
 
     def close(self) -> None:
         """Close the database connection."""
-        if self._native is not None:
-            self._native.close()
-            self._native = None
+        self._closed.set()
+        with self._enqueue_close_lock:
+            if self._native is not None:
+                self._native.close()
+                self._native = None
 
     def __enter__(self) -> SimpleQueue:
         return self

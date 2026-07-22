@@ -27,6 +27,7 @@ service.
 [Installation](#installation) · [Quick start](#quick-start) ·
 [Worker](#worker) · [Event bus](#event-bus) ·
 [Guarantees](#delivery-guarantees) ·
+[Backpressure](#bounded-backlog-and-backpressure) ·
 [Diagnostics](#runtime-diagnostics) · [API](#api-overview) ·
 [Changelog](CHANGELOG.md) ·
 [Development](#development)
@@ -233,6 +234,7 @@ queue = SimpleQueue(
     max_retries=3,
     fsync=False,
     serializer=None,
+    max_pending_jobs=None,
 )
 ```
 
@@ -244,13 +246,48 @@ queue = SimpleQueue(
 | `max_retries` | `3` | Retries allowed after the first delivery. |
 | `fsync` | `False` | Use SQLite `synchronous=FULL` when enabled. |
 | `serializer` | JSON | Object implementing `dumps(obj) -> bytes` and `loads(bytes) -> obj`. |
+| `max_pending_jobs` | `None` | Optional positive limit for ready + processing jobs in this logical queue. |
+
+## Bounded backlog and backpressure
+
+Limit one logical queue by job count and choose whether producers wait:
+
+```python
+from localqueue import Full, SimpleQueue
+
+
+queue = SimpleQueue("./data", max_pending_jobs=10_000)
+try:
+    queue.put(payload, block=False)
+except Full:
+    ...
+
+queue.put(payload, timeout=5.0)
+```
+
+Pending means `ready + processing`: delayed jobs, active leases, and expired
+unreclaimed leases count; ACKed and failed jobs do not. The native capacity
+check, deduplication calculation, and complete insert share one
+`BEGIN IMMEDIATE` transaction, so participating processes using the same
+configured limit cannot oversubscribe it. `put_many()` is all or nothing, and
+duplicates that do not create rows consume no new slots, even above the limit.
+A batch whose deduplicated new-row count exceeds the limit raises `Full`
+immediately because it can never fit.
+
+This limits logical backlog, not SQLite/WAL bytes, disk space, or retained
+terminal records. The setting belongs to each `SimpleQueue` object and is not
+persisted: all producers for a logical queue must use the same limit, while an
+unlimited or direct-SQL client can bypass the contract. EventBus fanout remains
+unlimited. See the
+[backpressure reference](https://github.com/brunoportis/localqueue/blob/main/docs/backpressure.md)
+for polling, timeout, transition, multiprocess, and error details.
 
 ## API overview
 
 | Method | Purpose |
 | --- | --- |
-| `put(data, job_id=None)` | Enqueue a payload, with optional deduplication. |
-| `put_many(items)` | Atomically enqueue multiple payloads, optionally using `EnqueueItem` for per-item deduplication. |
+| `put(data, job_id=None, *, block=True, timeout=None)` | Enqueue with optional deduplication and capacity waiting. |
+| `put_many(items, *, block=True, timeout=None)` | Atomically enqueue a complete batch, optionally using `EnqueueItem` for per-item deduplication. |
 | `get(block=True, timeout=None)` | Claim a job and start its lease. |
 | `get_nowait()` | Claim immediately or raise `Empty`. |
 | `ack(job)` | Confirm successful processing. |
@@ -263,7 +300,7 @@ queue = SimpleQueue(
 | `check_integrity(*, mode="full", max_errors=100)` | Run a bounded, typed full or quick SQLite integrity check. |
 | `backup(destination_directory)` | Create a verified online backup in a new exclusive directory. |
 | `list_failed(limit=100, offset=0)` | Inspect dead-letter jobs. |
-| `retry_failed(message_id)` | Move a dead-letter job back to `ready`. |
+| `retry_failed(message_id)` | Non-blockingly move a dead-letter job back to `ready`, or raise `Full`. |
 | `purge(older_than, include_failed=False)` | Delete old terminal records. |
 | `vacuum()` | Compact the shared SQLite database. Run during a maintenance window. |
 
@@ -286,7 +323,8 @@ print(json.dumps(report.to_dict(), indent=2))
 queue.close()
 ```
 
-Diagnostics reports logical counts and ages for the selected queue together
+Diagnostics schema v2 reports logical counts, configured capacity, pending
+jobs, available slots, and ages for the selected queue together
 with effective SQLite settings and best-effort shared database/WAL/SHM sizes.
 It is read-only and does not reclaim leases, checkpoint WAL, or run an
 integrity check. See the

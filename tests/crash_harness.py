@@ -94,7 +94,12 @@ SCENARIOS: dict[str, dict[str, Any]] = {
 
 CHILD_CODE = r"""
 from localqueue import SimpleQueue
-queue = SimpleQueue(DB_PATH, lease_seconds=60.0, max_retries=3)
+queue = SimpleQueue(
+    DB_PATH,
+    lease_seconds=60.0,
+    max_retries=3,
+    max_pending_jobs=1 if OPERATION == "enqueue" else None,
+)
 if FAILPOINT:
     hook = getattr(queue._native, "_test_configure_failpoint")
     hook(FAILPOINT, CONTROL_ADDRESS)
