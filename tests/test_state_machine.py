@@ -17,7 +17,7 @@ import pytest
 from hypothesis import HealthCheck, note, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, precondition, rule
-from localqueue import Empty, EnqueueItem, LeaseExpired, SimpleQueue
+from localqueue import Empty, EnqueueItem, Full, LeaseExpired, SimpleQueue
 
 
 class FailsBeforeNativeSerializer:
@@ -58,6 +58,7 @@ class QueueStateMachine(RuleBasedStateMachine):
 
     lease_seconds = 30.0
     max_retries = 2
+    max_pending_jobs = 4
 
     def __init__(self) -> None:
         super().__init__()
@@ -67,6 +68,7 @@ class QueueStateMachine(RuleBasedStateMachine):
             str(self.path),
             lease_seconds=self.lease_seconds,
             max_retries=self.max_retries,
+            max_pending_jobs=self.max_pending_jobs,
         )
         self.jobs: dict[int, ReferenceJob] = {}
         self.by_job_id: dict[str, int] = {}
@@ -95,6 +97,9 @@ class QueueStateMachine(RuleBasedStateMachine):
     def _assert_stats(self) -> None:
         assert self.queue.stats() == self._stats(self.queue, self.jobs)
 
+    def _pending(self) -> int:
+        return sum(job.status in ("ready", "processing") for job in self.jobs.values())
+
     def _new_reference(
         self, data: dict[str, int], job_id: str | None, message_id: int
     ) -> None:
@@ -119,8 +124,14 @@ class QueueStateMachine(RuleBasedStateMachine):
     def put(self, value: int, job_id: str | None) -> None:
         data = {"value": value}
         self._record(f"put({value}, {job_id!r})")
-        message_id = self.queue.put(data, job_id=job_id)
-        if job_id is not None and job_id in self.by_job_id:
+        duplicate = job_id is not None and job_id in self.by_job_id
+        if not duplicate and self._pending() >= self.max_pending_jobs:
+            with pytest.raises(Full):
+                self.queue.put(data, job_id=job_id, block=False)
+            self._assert_stats()
+            return
+        message_id = self.queue.put(data, job_id=job_id, block=False)
+        if duplicate:
             assert message_id == self.by_job_id[job_id]
         else:
             self._new_reference(data, job_id, message_id)
@@ -144,12 +155,29 @@ class QueueStateMachine(RuleBasedStateMachine):
             for value, job_id in items
         ]
         self._record(f"put_many({items!r})")
-        message_ids = self.queue.put_many(public_items)
+        seen_new_job_ids: set[str] = set()
+        new_rows = 0
+        for _value, job_id in items:
+            if job_id is None:
+                new_rows += 1
+            elif job_id not in self.by_job_id and job_id not in seen_new_job_ids:
+                seen_new_job_ids.add(job_id)
+                new_rows += 1
+        if self._pending() + new_rows > self.max_pending_jobs:
+            before = self.queue.stats()
+            with pytest.raises(Full):
+                self.queue.put_many(public_items, block=False)
+            assert self.queue.stats() == before
+            self._assert_stats()
+            return
+        message_ids = self.queue.put_many(public_items, block=False)
         assert len(message_ids) == len(items)
         for (value, job_id), message_id in zip(items, message_ids):
             data = {"value": value}
             if job_id is not None and job_id in self.by_job_id:
                 assert message_id == self.by_job_id[job_id]
+            elif message_id in self.jobs:
+                assert self.jobs[message_id].job_id == job_id
             else:
                 self._new_reference(data, job_id, message_id)
         self._assert_stats()
@@ -162,6 +190,7 @@ class QueueStateMachine(RuleBasedStateMachine):
             str(self.path),
             lease_seconds=self.lease_seconds,
             max_retries=self.max_retries,
+            max_pending_jobs=self.max_pending_jobs,
             serializer=FailsBeforeNativeSerializer(),
         )
         try:
@@ -269,6 +298,7 @@ class QueueStateMachine(RuleBasedStateMachine):
             str(self.path),
             lease_seconds=self.lease_seconds,
             max_retries=self.max_retries,
+            max_pending_jobs=self.max_pending_jobs,
         )
         self._assert_stats()
 
@@ -311,6 +341,11 @@ class QueueStateMachine(RuleBasedStateMachine):
         failed = self.queue.list_failed()
         assert any(message["id"] == self._reference_id(reference) for message in failed)
         self._record(f"retry_failed({self._reference_id(reference)})")
+        if self._pending() >= self.max_pending_jobs:
+            with pytest.raises(Full):
+                self.queue.retry_failed(self._reference_id(reference))
+            self._assert_stats()
+            return
         self.queue.retry_failed(self._reference_id(reference))
         reference.status = "ready"
         reference.attempts = 0
@@ -332,6 +367,9 @@ class QueueStateMachine(RuleBasedStateMachine):
     def stats_are_coherent(self) -> None:
         stats = self.queue.stats()
         assert sum(stats.values()) == len(self.jobs)
+        report = self.queue.diagnostics()
+        assert report.pending_jobs == self._pending()
+        assert report.available_slots == max(0, self.max_pending_jobs - self._pending())
         self._assert_stats()
 
 

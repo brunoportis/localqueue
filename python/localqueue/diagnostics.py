@@ -24,6 +24,7 @@ class QueueDiagnostics:
     serializer_identity: str
     lease_seconds: float
     max_retries: int
+    max_pending_jobs: Optional[int]
     journal_mode: str
     synchronous: int
     durability_mode: DurabilityMode
@@ -38,6 +39,8 @@ class QueueDiagnostics:
     processing: int
     acked: int
     failed: int
+    pending_jobs: int
+    available_slots: Optional[int]
     oldest_available_age_seconds: Optional[float]
     oldest_processing_updated_age_seconds: Optional[float]
     active_leases: int
@@ -55,6 +58,7 @@ class QueueDiagnostics:
             "serializer_identity": self.serializer_identity,
             "lease_seconds": self.lease_seconds,
             "max_retries": self.max_retries,
+            "max_pending_jobs": self.max_pending_jobs,
             "journal_mode": self.journal_mode,
             "synchronous": self.synchronous,
             "durability_mode": self.durability_mode,
@@ -69,6 +73,8 @@ class QueueDiagnostics:
             "processing": self.processing,
             "acked": self.acked,
             "failed": self.failed,
+            "pending_jobs": self.pending_jobs,
+            "available_slots": self.available_slots,
             "oldest_available_age_seconds": self.oldest_available_age_seconds,
             "oldest_processing_updated_age_seconds": (
                 self.oldest_processing_updated_age_seconds
@@ -103,6 +109,7 @@ def build_diagnostics(
         serializer_identity=serializer_identity,
         lease_seconds=float(lease_seconds),
         max_retries=max_retries,
+        max_pending_jobs=snapshot.max_pending_jobs,
         journal_mode=snapshot.journal_mode,
         synchronous=snapshot.synchronous,
         durability_mode=mode,
@@ -117,6 +124,8 @@ def build_diagnostics(
         processing=snapshot.processing,
         acked=snapshot.acked,
         failed=snapshot.failed,
+        pending_jobs=snapshot.pending_jobs,
+        available_slots=snapshot.available_slots,
         oldest_available_age_seconds=_seconds(snapshot.oldest_available_age_ms),
         oldest_processing_updated_age_seconds=_seconds(
             snapshot.oldest_processing_updated_age_ms
