@@ -1,4 +1,6 @@
 mod error;
+#[cfg(feature = "__crash_test")]
+mod failpoints;
 mod queue;
 mod schema;
 mod storage;

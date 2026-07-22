@@ -73,6 +73,9 @@ impl Storage {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(QueueError::from)?;
 
+        #[cfg(feature = "__crash_test")]
+        crate::failpoints::hit(crate::failpoints::Failpoint::EnqueueAfterBegin);
+
         let mut insert = tx
             .prepare(
                 "INSERT OR IGNORE INTO messages (
@@ -112,6 +115,8 @@ impl Storage {
         }
         drop(insert);
 
+        #[cfg(feature = "__crash_test")]
+        crate::failpoints::hit(crate::failpoints::Failpoint::EnqueueBeforeCommit);
         tx.commit().map_err(QueueError::from)?;
         Ok(ids)
     }
