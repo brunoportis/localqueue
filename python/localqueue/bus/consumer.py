@@ -203,13 +203,27 @@ async def _process_delivery(
     try:
         handler = registration.handler
         if inspect.iscoroutinefunction(handler):
-            result = await handler(event)
+            result = handler(event)
+            if registration.timeout is not None:
+                result = await asyncio.wait_for(result, timeout=registration.timeout)
+            elif inspect.isawaitable(result):
+                result = await result
         else:
             # Run synchronous handlers outside the event-loop thread.
             result = await asyncio.to_thread(handler, event)
         if inspect.isawaitable(result):
             # Safety net for a synchronous handler that returned an awaitable.
             await result
+    except TimeoutError:
+        if state["lease_lost"]:
+            log.warning(
+                "Job %s lost its lease while its handler timed out; discarding the result",
+                job.id,
+            )
+            return
+        timeout_error = f"handler timeout after {registration.timeout} seconds"
+        log.warning("Job %s %s", job.id, timeout_error)
+        await _transition(queue, queue.nack, job, last_error=timeout_error)
     except registration.permanent_errors as exc:
         await _transition(
             queue, queue.fail, job, last_error=f"permanent failure: {exc}"

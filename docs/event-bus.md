@@ -232,6 +232,39 @@ acked; transient exceptions are retried up to `max_retries`; exceptions listed
 in `permanent_errors`, unknown event types, and invalid payloads go directly to
 dead letter.
 
+## Async handler timeouts
+
+Set a positive, finite timeout in seconds on an individual `async def` handler:
+
+```python
+@email.handler(UserCreated, timeout=30.0)
+async def send_welcome_email(event: UserCreated) -> None:
+    await email_provider.send(event.user_id)
+```
+
+The timer is local, in-memory handler configuration. It is neither persisted
+nor shared with other processes, and it does not change subscription
+concurrency, the delivery envelope, topology, or any other handler.
+
+When an async handler exceeds its deadline, EventBus cancels it at an await
+boundary and NACKs the delivery with a `last_error` beginning `handler timeout
+after ... seconds`; normal retry and dead-letter policy then applies. Its
+heartbeat remains active until the delivery cleanup completes, and the
+heartbeat task is always cancelled and awaited afterwards. A registered
+`permanent_errors` exception raised before the deadline is still a permanent
+failure.
+
+External cancellation of `run()` or `run_subscription()` takes precedence over
+the handler timeout and is propagated as `CancelledError`, without being
+reported as a timeout. Lease loss takes precedence over a successful handler
+result: EventBus never ACKs a result after it knows the lease is lost, and the
+receipt-fenced queue transition also rejects any lease lost concurrently.
+
+Timeouts intentionally do not apply to synchronous handlers. Registering a
+timeout for a non-`async def` handler raises `TypeError`; Python cannot safely
+stop arbitrary code running in a thread. Use a process-isolated worker if hard
+execution limits are required.
+
 ## Per-subscription concurrency
 
 Each process can bound simultaneous deliveries for a subscription when creating
