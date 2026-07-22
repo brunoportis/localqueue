@@ -26,17 +26,58 @@ async def run_consumer(
 ) -> None:
     """Consume ``subscription`` until cancellation or an idle timeout.
 
-    Each non-blocking poll runs in a worker thread. When the queue is empty,
-    the event loop waits for the polling interval. ``CancelledError`` closes
-    the queue in ``finally`` and propagates.
+    Each non-blocking poll runs in a worker thread. A bounded set of delivery
+    tasks keeps heartbeats and transitions independent while preventing new
+    claims when every configured subscription slot is occupied.
+
+    When cancelled, active delivery tasks are cancelled before the queue is
+    closed, and ``CancelledError`` propagates to the caller.
     """
-    queue = bus._open_subscription_queue(subscription)
+    bus._begin_consuming(subscription)
+    queue: Any | None = None
+    active: set[asyncio.Task[None]] = set()
+    delivery_order: dict[asyncio.Task[None], int] = {}
+    next_delivery_order = 0
+
+    def reap(done: set[asyncio.Task[None]]) -> None:
+        """Observe every completed delivery before propagating one failure."""
+        primary: BaseException | None = None
+        for task in sorted(done, key=delivery_order.__getitem__):
+            active.discard(task)
+            delivery_order.pop(task)
+            try:
+                task.result()
+            except BaseException as error:
+                if primary is None:
+                    primary = error
+        if primary is not None:
+            raise primary
+
+    async def wait_for_delivery(timeout: Optional[float] = None) -> None:
+        """Wait for one delivery completion and consume its result."""
+        if not active:
+            return
+        done, _ = await asyncio.wait(
+            active,
+            timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        reap(done)
+
     try:
+        queue = bus._open_subscription_queue(subscription)
+        concurrency = bus._concurrency_for(subscription)
         idle_since: Optional[float] = None
         while True:
+            if len(active) >= concurrency:
+                await wait_for_delivery()
+                continue
             try:
                 job = await asyncio.to_thread(queue.get, False)
             except Empty:
+                if active:
+                    await wait_for_delivery(timeout=_POLL_INTERVAL)
+                    continue
                 if idle_timeout is not None:
                     now = asyncio.get_running_loop().time()
                     idle_since = idle_since if idle_since is not None else now
@@ -45,9 +86,18 @@ async def run_consumer(
                 await asyncio.sleep(_POLL_INTERVAL)
                 continue
             idle_since = None
-            await _process_delivery(bus, subscription, queue, job)
+            task = asyncio.create_task(_process_delivery(bus, subscription, queue, job))
+            active.add(task)
+            delivery_order[task] = next_delivery_order
+            next_delivery_order += 1
     finally:
-        queue.close()
+        for task in active:
+            task.cancel()
+        if active:
+            await asyncio.gather(*active, return_exceptions=True)
+        if queue is not None:
+            queue.close()
+        bus._end_consuming(subscription)
 
 
 async def _heartbeat(

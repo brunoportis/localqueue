@@ -17,6 +17,11 @@ class Subscription:
         self._bus = bus
         self.name = name
 
+    @property
+    def concurrency(self) -> int:
+        """Return the subscription's current process-local concurrency bound."""
+        return self._bus._concurrency_for(self.name)
+
     def handler(
         self,
         pattern: EventPattern,

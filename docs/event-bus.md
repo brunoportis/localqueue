@@ -167,11 +167,17 @@ from .topology import TOPOLOGY
 
 
 bus = EventBus("./data", name="app", topology=TOPOLOGY)
-email = bus.subscription("email")
+email = bus.subscription("email", concurrency=8)
+billing = bus.subscription("billing", concurrency=1)
 
 
 @email.handler(UserCreated)
 async def send_welcome_email(event: UserCreated) -> None:
+    ...
+
+
+@billing.handler(OrderPlaced)
+async def charge(event: OrderPlaced) -> None:
     ...
 
 
@@ -225,6 +231,57 @@ heartbeat renews the delivery lease while a handler runs. Handler returns are
 acked; transient exceptions are retried up to `max_retries`; exceptions listed
 in `permanent_errors`, unknown event types, and invalid payloads go directly to
 dead letter.
+
+## Per-subscription concurrency
+
+Each process can bound simultaneous deliveries for a subscription when creating
+its local binder:
+
+```python
+email = bus.subscription("email", concurrency=8)
+billing = bus.subscription("billing", concurrency=1)
+```
+
+`concurrency` is a positive integer and defaults to `1`. It is process-local,
+in-memory configuration: it is not stored in the topology or SQLite. Reusing a
+subscription binder keeps its configured value; assigning a conflicting value
+in the same process raises `ValueError`. Configure it before the first
+`run()` or `run_subscription()` for that subscription; later explicit changes
+raise `RuntimeError` rather than resizing active work.
+
+At most that many deliveries are claimed and handled by this process at once.
+When all slots are occupied, the consumer does not claim another delivery
+until a handler reaches its ACK, NACK, permanent-failure, or lease-loss path.
+Every active delivery retains its own heartbeat and receipt-fenced transition.
+Other processes still compete normally for the same durable subscription
+queue, so this setting is not a global limit.
+
+Within one `EventBus` instance, a subscription has one active consumer runner.
+Starting that same subscription again while it runs raises `RuntimeError`; this
+prevents two local claim loops from multiplying its configured bound.
+
+With the default `concurrency=1`, one process claims and processes deliveries
+sequentially: a delivery completes its transition before the next claim. With
+a larger value, claims follow the queue's available order, but handler and ACK
+completion order are intentionally unspecified; retries can change it further.
+Choose a value from the concurrency the downstream dependency and SQLite can
+safely absorb (for example, email-provider and database connection limits),
+considering external I/O and lease duration, then measure and adjust. Raising
+the limit does not guarantee more throughput; it is not automatic CPU sizing
+and it is not a handler timeout.
+
+This bound limits active local handlers, not durable backlog or producer rate.
+Use `SimpleQueue(max_pending_jobs=...)` for producer-side backlog limits and
+the resulting `Full` backpressure policy. EventBus fan-out itself remains
+unlimited.
+
+Cancelling `run()` or `run_subscription()` stops further claims, cancels active
+async delivery tasks, closes the subscription queue, and propagates
+`CancelledError`. A synchronous handler already running in `asyncio.to_thread()`
+cannot be forcibly stopped; its result is not transitioned after cancellation,
+its heartbeat stops, and normal lease expiry/retry recovery applies. Such
+handlers must be idempotent; hard isolation or handler timeouts are outside
+this API.
 
 ## Four distinct concepts
 
