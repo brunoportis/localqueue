@@ -3,30 +3,44 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
 from localqueue.benchmark.config import BenchmarkConfig
+from localqueue.benchmark.environment import environment, subject
 from localqueue.benchmark.errors import sanitize_error_message
-from localqueue.benchmark.runner import run_profile
 from localqueue.benchmark.multiprocess import run_multiprocess_scenario
 from localqueue.benchmark.profiles import multiprocess_matrix
 from localqueue.benchmark.render import render_file
-import json
+from localqueue.benchmark.runner import run_profile
 
 
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
     if argv and argv[0] == "render":
-        parser = argparse.ArgumentParser(); parser.add_argument("input", type=Path); parser.add_argument("--output", type=Path, required=True)
-        try: args = parser.parse_args(argv[1:]); render_file(args.input, args.output); return 0
+        parser = argparse.ArgumentParser()
+        parser.add_argument("input", type=Path)
+        parser.add_argument("--output", type=Path, required=True)
+        try:
+            args = parser.parse_args(argv[1:])
+            render_file(args.input, args.output)
+            return 0
         except (OSError, ValueError, json.JSONDecodeError) as error:
-            print(f"benchmark render error: {type(error).__name__}: {error}", file=sys.stderr); return 2
+            print(
+                f"benchmark render error: {type(error).__name__}: {error}",
+                file=sys.stderr,
+            )
+            return 2
     parser = argparse.ArgumentParser(
         description="Run the canonical single-process localqueue benchmark."
     )
-    parser.add_argument("--profile", choices=("smoke", "standard", "multiprocess-ci", "multiprocess-release"), required=True)
+    parser.add_argument(
+        "--profile",
+        choices=("smoke", "standard", "multiprocess-ci", "multiprocess-release"),
+        required=True,
+    )
     parser.add_argument("--durability", choices=("normal", "full"))
     parser.add_argument("--workdir", type=Path)
     parser.add_argument("--output", type=Path, required=True)
@@ -37,16 +51,46 @@ def main(argv: list[str] | None = None) -> int:
             workdir.mkdir(parents=True, exist_ok=True)
             scenarios = []
             for p, c, size in multiprocess_matrix(args.profile):
-                for durability in ((args.durability,) if args.durability else ("normal", "full")):
-                    scenarios.append(run_multiprocess_scenario(workdir, producers=p, consumers=c, messages=20 if args.profile.endswith("ci") else 100, payload_bytes=size, durability=durability))
-            data = {"schema_version": 1, "subject": {"package_version": "unknown", "commit_sha": None}, "environment": {}, "profile": {"name": args.profile, "canonical": args.profile.endswith("release"), "matrix": multiprocess_matrix(args.profile)}, "run": {"status": "passed" if all(s["status"] == "passed" for s in scenarios) else "failed"}, "scenarios": scenarios}
-            args.output.write_text(json.dumps(data, sort_keys=True, allow_nan=False, indent=2) + "\n", encoding="utf-8")
+                for durability in (
+                    (args.durability,) if args.durability else ("normal", "full")
+                ):
+                    scenarios.append(
+                        run_multiprocess_scenario(
+                            workdir,
+                            producers=p,
+                            consumers=c,
+                            messages=200 if args.profile.endswith("ci") else 5000,
+                            payload_bytes=size,
+                            durability=durability,
+                        )
+                    )
+            data = {
+                "schema_version": 1,
+                "subject": subject(),
+                "environment": environment(workdir),
+                "profile": {
+                    "profile_schema_version": 1,
+                    "name": args.profile,
+                    "canonical": args.profile.endswith("release"),
+                    "matrix": multiprocess_matrix(args.profile),
+                },
+                "run": {
+                    "status": "passed"
+                    if all(s["status"] == "passed" for s in scenarios)
+                    else "failed"
+                },
+                "scenarios": scenarios,
+            }
+            args.output.write_text(
+                json.dumps(data, sort_keys=True, allow_nan=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
             report = None
         else:
             report = run_profile(
-            BenchmarkConfig.from_profile(args.profile, args.durability),
-            args.output,
-            args.workdir,
+                BenchmarkConfig.from_profile(args.profile, args.durability),
+                args.output,
+                args.workdir,
             )
     except (OSError, ValueError) as error:
         print(
@@ -66,7 +110,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.profile.startswith("multiprocess-"):
         print(f"profile={args.profile} canonical={args.profile.endswith('release')}")
-        for scenario in data["scenarios"]: print(f"{scenario['scenario_id']} {scenario['status']}")
+        for scenario in data["scenarios"]:
+            print(f"{scenario['scenario_id']} {scenario['status']}")
         return 0 if data["run"]["status"] == "passed" else 1
     profile = report.profile
     print(

@@ -1,63 +1,302 @@
-"""Spawn-only, deterministic multiprocess benchmark scenarios."""
+"""Spawn-only multiprocess benchmark implementation."""
+
 from __future__ import annotations
 
-import hashlib, multiprocessing, os, platform, resource, time
+import hashlib
+import json
+import multiprocessing
+import platform
+import time
 from pathlib import Path
 from typing import Any
+
 from localqueue import Empty, SimpleQueue
 from localqueue.benchmark.metrics import MetricSummary
 
-def _rss() -> int | None:
-    try:
-        value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        return int(value * (1024 if platform.system() == "Linux" else 1))
-    except (AttributeError, OSError):
+try:  # resource is unavailable on Windows
+    import resource as _resource
+except ImportError:  # pragma: no cover - exercised on Windows
+    _resource = None
+
+
+def peak_rss_bytes() -> int | None:
+    if _resource is None or platform.system() not in {"Linux", "Darwin"}:
         return None
+    value = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
+    return int(value * 1024 if platform.system() == "Linux" else value)
 
-def _payload(identifier: int, requested: int) -> dict[str, Any]:
-    base = {"id": f"{identifier:012d}", "producer_index": identifier, "padding": ""}
-    raw = __import__("json").dumps(base, separators=(",", ":"), sort_keys=True).encode()
-    base["padding"] = (hashlib.sha256(str(identifier).encode()).hexdigest() * ((requested // 64) + 2))[: max(0, requested - len(raw))]
-    return base
 
-def _producer(path: str, name: str, index: int, start: int, count: int, payload: int, fsync: bool, out: Any) -> None:
-    produced = 0; samples: list[int] = []; queue = SimpleQueue(path, name, fsync=fsync)
+def make_payload(
+    identifier: int, producer_index: int, requested: int
+) -> tuple[dict[str, Any], int]:
+    value: dict[str, Any] = {
+        "id": f"{identifier:012d}",
+        "producer_index": producer_index,
+        "created_ns": time.monotonic_ns(),
+        "padding": "",
+    }
+    envelope = len(json.dumps(value, separators=(",", ":"), sort_keys=True).encode())
+    value["padding"] = (
+        hashlib.sha256(f"{identifier}:{producer_index}".encode()).hexdigest()
+        * (requested // 64 + 2)
+    )[: max(0, requested - envelope)]
+    return value, len(json.dumps(value, separators=(",", ":"), sort_keys=True).encode())
+
+
+def producer_target(
+    path: str,
+    name: str,
+    index: int,
+    start: int,
+    count: int,
+    requested: int,
+    full: bool,
+    ready: Any,
+    done: Any,
+    output: Any,
+) -> None:
+    produced = 0
+    puts: list[int] = []
+    actual = 0
+    queue = SimpleQueue(path, name, fsync=full)
     try:
+        ready.wait()
         for identifier in range(start, start + count):
-            t = time.monotonic_ns(); queue.put(_payload(identifier, payload), job_id=f"{identifier:012d}"); produced += 1
-            if len(samples) < 1000: samples.append(time.monotonic_ns() - t)
-        out.put({"id": f"producer-{index}", "role": "producer", "status": "passed", "produced": produced, "samples": samples, "peak_rss_bytes": _rss()})
-    except Exception as exc:
-        out.put({"id": f"producer-{index}", "role": "producer", "status": "failed", "produced": produced, "samples": samples, "error": str(exc), "peak_rss_bytes": _rss()})
-    finally: queue.close()
-
-def _consumer(path: str, name: str, index: int, expected: int, fsync: bool, out: Any) -> None:
-    claimed = 0; acked = 0; claims: list[int] = []; roundtrips: list[int] = []; queue = SimpleQueue(path, name, fsync=fsync)
-    try:
-        while acked < expected:
+            value, actual = make_payload(identifier, index, requested)
             before = time.monotonic_ns()
-            try: job = queue.get_nowait()
-            except Empty: time.sleep(0.002); continue
-            claims.append(time.monotonic_ns() - before); claimed += 1
-            queue.ack(job); acked += 1; roundtrips.append(time.monotonic_ns() - before)
-        out.put({"id": f"consumer-{index}", "role": "consumer", "status": "passed", "claimed": claimed, "acked": acked, "claim_samples": claims[:1000], "roundtrip_samples": roundtrips[:1000], "peak_rss_bytes": _rss()})
+            queue.put(value, job_id=value["id"])
+            puts.append(time.monotonic_ns() - before)
+            produced += 1
+        output.put(
+            {
+                "id": f"producer-{index}",
+                "role": "producer",
+                "status": "passed",
+                "exit_code": 0,
+                "produced": produced,
+                "claim_samples": [],
+                "roundtrip_samples": [],
+                "put_samples": puts,
+                "actual_serialized_bytes": actual,
+                "peak_rss_bytes": peak_rss_bytes(),
+            }
+        )
     except Exception as exc:
-        out.put({"id": f"consumer-{index}", "role": "consumer", "status": "failed", "claimed": claimed, "acked": acked, "claim_samples": claims[:1000], "roundtrip_samples": roundtrips[:1000], "error": str(exc), "peak_rss_bytes": _rss()})
-    finally: queue.close()
+        output.put(
+            {
+                "id": f"producer-{index}",
+                "role": "producer",
+                "status": "failed",
+                "exit_code": 1,
+                "produced": produced,
+                "error": str(exc),
+                "peak_rss_bytes": peak_rss_bytes(),
+            }
+        )
+        raise
+    finally:
+        queue.close()
+        done.set()
 
-def run_multiprocess_scenario(path: Path, *, producers: int, consumers: int, messages: int, payload_bytes: int, durability: str, timeout: float = 120.0) -> dict[str, Any]:
-    ctx = multiprocessing.get_context("spawn"); name = "benchmark"; results = ctx.Queue(); per = messages // producers
-    ps = [ctx.Process(target=_producer, args=(str(path), name, i, i * per, per + (messages % producers if i == producers - 1 else 0), payload_bytes, durability == "full", results)) for i in range(producers)]
-    cs = [ctx.Process(target=_consumer, args=(str(path), name, i, messages // consumers + (1 if i < messages % consumers else 0), durability == "full", results)) for i in range(consumers)]
-    started = time.monotonic(); [p.start() for p in ps]; [p.start() for p in cs]
-    for p in ps + cs: p.join(timeout=max(0.1, timeout - (time.monotonic() - started)))
-    for p in ps + cs:
-        if p.is_alive(): p.terminate(); p.join()
-    got = []
-    while not results.empty(): got.append(results.get())
-    produced = sum(x.get("produced", 0) for x in got); acked = sum(x.get("acked", 0) for x in got)
-    claim = [v for x in got for v in x.get("claim_samples", [])]; rt = [v for x in got for v in x.get("roundtrip_samples", [])]
-    elapsed = max(1, int((time.monotonic() - started) * 1e9)); ok = produced == messages and acked == messages and all(p.exitcode == 0 for p in ps + cs)
-    def series(values: list[int]) -> dict[str, Any]:
-        return {"population_count": messages, "sample_count": len(values), "sampling_method": "systematic_prefix", "stride": max(1, messages // 1000), "unit": "ns", "samples": values, "summary": MetricSummary.from_samples(values or [0], elapsed, messages=messages).to_dict()}
-    return {"scenario_id": f"mp-p{producers}-c{consumers}-payload{payload_bytes}-{durability}", "operation": "multiprocess_roundtrip", "parameters": {"producers": producers, "consumers": consumers, "messages": messages, "payload_requested_bytes": payload_bytes, "durability": durability}, "processes": got, "metric_series": {"claim_latency": series(claim), "roundtrip_latency": series(rt)}, "throughput": {"messages_produced": produced, "messages_acked": acked, "elapsed_ns": elapsed, "acked_per_second": acked / (elapsed / 1e9)}, "correctness": {"ok": ok, "produced": produced, "acked": acked}, "status": "passed" if ok else "failed"}
+
+def consumer_target(
+    path: str,
+    name: str,
+    index: int,
+    total: int,
+    producers_done: Any,
+    ready: Any,
+    output: Any,
+    full: bool,
+    timeout: float,
+) -> None:
+    claimed = acked = 0
+    claims: list[int] = []
+    roundtrips: list[int] = []
+    queue = SimpleQueue(path, name, fsync=full)
+    deadline = time.monotonic() + timeout
+    try:
+        ready.wait()
+        while time.monotonic() < deadline:
+            before = time.monotonic_ns()
+            try:
+                job = queue.get(timeout=0.05)
+            except Empty:
+                if (
+                    producers_done.is_set()
+                    and queue.stats().get("ready", 0) == 0
+                    and queue.stats().get("processing", 0) == 0
+                ):
+                    break
+                continue
+            claims.append(time.monotonic_ns() - before)
+            claimed += 1
+            queue.ack(job)
+            acked += 1
+            roundtrips.append(time.monotonic_ns() - before)
+        output.put(
+            {
+                "id": f"consumer-{index}",
+                "role": "consumer",
+                "status": "passed",
+                "exit_code": 0,
+                "claimed": claimed,
+                "acked": acked,
+                "claim_samples": claims,
+                "roundtrip_samples": roundtrips,
+                "peak_rss_bytes": peak_rss_bytes(),
+            }
+        )
+    except Exception as exc:
+        output.put(
+            {
+                "id": f"consumer-{index}",
+                "role": "consumer",
+                "status": "failed",
+                "exit_code": 1,
+                "claimed": claimed,
+                "acked": acked,
+                "error": str(exc),
+                "peak_rss_bytes": peak_rss_bytes(),
+            }
+        )
+        raise
+    finally:
+        queue.close()
+
+
+def _series(
+    values: list[int], population: int, elapsed: int, limit: int = 1000
+) -> dict[str, Any]:
+    stride = max(1, (population + limit - 1) // limit)
+    samples = values[::stride]
+    if not samples:
+        raise RuntimeError("required metric series has no samples")
+    return {
+        "population_count": population,
+        "sample_count": len(samples),
+        "limit": limit,
+        "method": "systematic",
+        "stride": stride,
+        "unit": "ns",
+        "samples": samples,
+        "summary": MetricSummary.from_samples(
+            samples, elapsed, messages=population
+        ).to_dict(),
+    }
+
+
+def run_multiprocess_scenario(
+    path: Path,
+    *,
+    producers: int,
+    consumers: int,
+    messages: int,
+    payload_bytes: int,
+    durability: str,
+    timeout: float = 120.0,
+) -> dict[str, Any]:
+    scenario_path = (
+        path / f"p{producers}c{consumers}-m{messages}-b{payload_bytes}-{durability}"
+    )
+    scenario_path.mkdir(parents=True, exist_ok=False)
+    name = "benchmark"
+    ctx = multiprocessing.get_context("spawn")
+    output = ctx.Queue()
+    ready = ctx.Barrier(producers + consumers + 1)
+    done = ctx.Event()
+    per = messages // producers
+    ps = [
+        ctx.Process(
+            target=producer_target,
+            args=(
+                str(scenario_path),
+                name,
+                i,
+                i * per,
+                per + (messages % producers if i == producers - 1 else 0),
+                payload_bytes,
+                durability == "full",
+                ready,
+                done,
+                output,
+            ),
+        )
+        for i in range(producers)
+    ]
+    cs = [
+        ctx.Process(
+            target=consumer_target,
+            args=(
+                str(scenario_path),
+                name,
+                i,
+                messages,
+                done,
+                ready,
+                output,
+                durability == "full",
+                timeout,
+            ),
+        )
+        for i in range(consumers)
+    ]
+    started = time.monotonic()
+    [p.start() for p in ps + cs]
+    ready.wait()
+    for process in ps + cs:
+        process.join(timeout)
+    for process in ps + cs:
+        if process.is_alive():
+            process.terminate()
+            process.join(5)
+    results = []
+    while True:
+        try:
+            results.append(output.get_nowait())
+        except Exception:
+            break
+    elapsed = max(1, int((time.monotonic() - started) * 1e9))
+    produced = sum(r.get("produced", 0) for r in results)
+    claimed = sum(r.get("claimed", 0) for r in results)
+    acked = sum(r.get("acked", 0) for r in results)
+    queue = SimpleQueue(scenario_path, name, fsync=durability == "full")
+    stats = queue.stats()
+    integrity = queue.check_integrity(mode="full").to_dict()
+    queue.close()
+    claims = [v for r in results for v in r.get("claim_samples", [])]
+    roundtrips = [v for r in results for v in r.get("roundtrip_samples", [])]
+    ok = (
+        produced == claimed == acked == messages
+        and stats.get("ready") == 0
+        and stats.get("processing") == 0
+        and stats.get("failed", 0) == 0
+        and integrity.get("ok", False)
+        and all(p.exitcode == 0 for p in ps + cs)
+    )
+    return {
+        "scenario_id": f"mp-p{producers}-c{consumers}-payload{payload_bytes}-{durability}",
+        "operation": "multiprocess_roundtrip",
+        "parameters": {
+            "producers": producers,
+            "consumers": consumers,
+            "messages": messages,
+            "payload_requested_bytes": payload_bytes,
+            "durability": durability,
+        },
+        "processes": sorted(results, key=lambda r: r["id"]),
+        "metric_series": {
+            "claim_latency": _series(claims, claimed, elapsed),
+            "roundtrip_latency": _series(roundtrips, acked, elapsed),
+        },
+        "throughput": {
+            "messages_produced": produced,
+            "messages_claimed": claimed,
+            "messages_acked": acked,
+            "elapsed_ns": elapsed,
+            "acked_per_second": acked / (elapsed / 1e9),
+        },
+        "correctness": {"ok": ok, "stats": stats, "integrity": integrity},
+        "status": "passed" if ok else "failed",
+        "files": {},
+    }
