@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import platform
+import socket
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 from localqueue import localqueue as native
+
+from tests.crash_harness import _read_notification
 
 HARNESS = Path(__file__).with_name("crash_harness.py")
 CRASH_SCENARIOS = (
@@ -40,6 +43,19 @@ def _run_harness(scenario: str, output: Path) -> dict[str, object]:
     report = json.loads(output.read_text(encoding="utf-8"))
     assert result.returncode == 0, result.stderr or report
     return report
+
+
+def test_synchronization_eof_is_a_harness_error() -> None:
+    reader, writer = socket.socketpair()
+    try:
+        writer.close()
+        with pytest.raises(
+            RuntimeError,
+            match="child closed synchronization channel before sending failpoint",
+        ):
+            _read_notification(reader)
+    finally:
+        reader.close()
 
 
 @pytest.mark.parametrize("scenario", CRASH_SCENARIOS)

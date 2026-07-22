@@ -162,6 +162,18 @@ def _invariant(name: str, passed: bool, detail: str) -> dict[str, Any]:
     return {"name": name, "passed": passed, "detail": detail}
 
 
+def _read_notification(connection: socket.socket) -> str:
+    notification = b""
+    while not notification.endswith(b"\n"):
+        chunk = connection.recv(128)
+        if not chunk:
+            raise RuntimeError(
+                "child closed synchronization channel before sending failpoint"
+            )
+        notification += chunk
+    return notification.decode().strip()
+
+
 def _prepare(path: Path, operation: str) -> None:
     from localqueue import SimpleQueue
 
@@ -248,10 +260,7 @@ def run(scenario: str, output: Path) -> int:
                     assert listener is not None
                     connection, _ = listener.accept()
                     connection.settimeout(2.0)
-                    notification = b""
-                    while not notification.endswith(b"\n"):
-                        notification += connection.recv(128)
-                    reached = notification.decode().strip()
+                    reached = _read_notification(connection)
                     report["synchronization_reached"] = (
                         reached == definition["failpoint"]
                     )
@@ -324,7 +333,11 @@ def run(scenario: str, output: Path) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scenario", choices=sorted(SCENARIOS))
+    parser.add_argument(
+        "--scenario",
+        choices=sorted(SCENARIOS),
+        required=True,
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     return run(args.scenario, args.output)
