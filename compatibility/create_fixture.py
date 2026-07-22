@@ -42,7 +42,7 @@ def main() -> None:
     root.mkdir(parents=True, exist_ok=True)
     ids: dict[str, int] = {}
     with SimpleQueue(
-        str(root), name="compat", lease_seconds=0.35, max_retries=1
+        str(root), name="compat", lease_seconds=5.0, max_retries=1
     ) as queue:
         ids["processing"] = queue.put({"kind": "processing"})
         processing = queue.get()
@@ -106,7 +106,7 @@ def main() -> None:
         },
         "expected_counts": {"ready": 3, "processing": 1, "acked": 1, "failed": 1},
         "dead_letter_error": "fixture permanent failure",
-        "processing_lease_deadline": time() + 0.35,
+        "processing_lease_deadline": time() + 5.0,
         "delayed_available_at": time() + 8.0,
         "event": event,
     }
