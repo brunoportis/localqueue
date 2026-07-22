@@ -3,10 +3,19 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypeVar
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
+
+_EventT = TypeVar("_EventT", bound="BaseEvent")
+_DERIVED_RESERVED_FIELDS = frozenset(
+    {"event_id", "correlation_id", "causation_id", "event_created_at"}
+)
+
+
+def _correlation_from_event_id(validated_data: dict[str, Any]) -> UUID:
+    return validated_data["event_id"]
 
 
 class BaseEvent(BaseModel):
@@ -20,7 +29,11 @@ class BaseEvent(BaseModel):
     schema_version: ClassVar[int] = 1
     event_name: ClassVar[str | None] = None
 
-    event_id: UUID = Field(default_factory=uuid4)
+    event_id: UUID = Field(default_factory=uuid4, frozen=True)
+    correlation_id: UUID = Field(
+        default_factory=_correlation_from_event_id, frozen=True
+    )
+    causation_id: UUID | None = Field(default=None, frozen=True)
     event_created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
@@ -31,6 +44,21 @@ class BaseEvent(BaseModel):
             isinstance(cls.event_name, str) and cls.event_name.strip()
         ):
             raise ValueError("'event_name' must be a non-empty string")
+
+    @classmethod
+    def from_parent(cls: type[_EventT], parent: BaseEvent, /, **data: Any) -> _EventT:
+        """Create a derived event with inherited correlation and direct causation."""
+        if not isinstance(parent, BaseEvent):
+            raise TypeError("'parent' must be a BaseEvent instance")
+        conflicts = _DERIVED_RESERVED_FIELDS.intersection(data)
+        if conflicts:
+            names = ", ".join(sorted(conflicts))
+            raise TypeError(f"from_parent does not accept reserved field(s): {names}")
+        return cls(
+            correlation_id=parent.correlation_id,
+            causation_id=parent.event_id,
+            **data,
+        )
 
     @property
     def event_type(self) -> str:

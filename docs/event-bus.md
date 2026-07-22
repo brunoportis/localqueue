@@ -39,10 +39,51 @@ class OrderPlaced(BaseEvent):
 ```
 
 Events are Pydantic models. Every event automatically carries an `event_id`
-(UUID) and `event_created_at` (UTC datetime). `event_type` defaults to the
-class name; setting `event_name` gives it a stable name independent of the
-Python class. `schema_version` defaults to `1` and is recorded in
-`event_schema` as `<event_type>@<version>`.
+(UUID), a `correlation_id`, an optional `causation_id`, and an
+`event_created_at` (UTC datetime). `event_type` defaults to the class name;
+setting `event_name` gives it a stable name independent of the Python class.
+`schema_version` defaults to `1` and is recorded in `event_schema` as
+`<event_type>@<version>`.
+
+## Correlate derived events
+
+Use `from_parent()` as the single supported way to create a derived event:
+
+```python
+class UserCreated(BaseEvent):
+    user_id: str
+
+
+class WelcomeEmailRequested(BaseEvent):
+    user_id: str
+
+
+root = UserCreated(user_id="42")
+
+child = WelcomeEmailRequested.from_parent(
+    root,
+    user_id=root.user_id,
+)
+```
+
+The identifiers form a direct causal chain:
+
+```text
+root:       event_id=A  correlation_id=A  causation_id=None
+child:      event_id=B  correlation_id=A  causation_id=A
+grandchild: event_id=C  correlation_id=A  causation_id=B
+```
+
+`correlation_id` identifies the complete logical workflow; it is not a
+deduplication key. `causation_id` points only to the direct parent. All three
+identifiers are immutable after event construction, while business payload
+fields keep their existing Pydantic behavior. Historical envelopes without
+correlation or causation metadata are reconstructed as root events, with
+`correlation_id == event_id` and `causation_id is None`.
+
+This metadata does not provide automatic distributed-tracing integration.
+`event_name` and `schema_version` remain independent of the Python class name
+and are preserved when derived events are persisted and reconstructed.
 
 ## Declare the static topology
 
