@@ -104,12 +104,41 @@ def test_markdown_renderer_includes_multiprocess_evidence() -> None:
                         {
                             "id": "producer-0",
                             "role": "producer",
-                            "status": "passed",
-                            "exit_code": 0,
+                            "status": "failed",
+                            "exit_code": 1,
                             "peak_rss_bytes": None,
                             "rss_method": None,
-                        }
+                            "error": {
+                                "type": "ProducerError",
+                                "message": "producer failed",
+                            },
+                        },
+                        {
+                            "id": "consumer-0",
+                            "role": "consumer",
+                            "status": "failed",
+                            "exit_code": 1,
+                            "peak_rss_bytes": None,
+                            "rss_method": None,
+                            "error": {
+                                "type": "ConsumerError",
+                                "message": "consumer failed",
+                            },
+                        },
                     ],
+                    "large_database": {
+                        "target_rows": 100,
+                        "actual_rows": 100,
+                        "batch_size": 17,
+                        "preload_elapsed_ns": 123,
+                        "measured_claims": 10,
+                        "measured_acks": 10,
+                        "final_counts": {"ready": 90, "processing": 0, "failed": 0},
+                        "stats_before": {"ready": 0},
+                        "stats_after_preload": {"ready": 100},
+                        "stats_after": {"ready": 90},
+                        "integrity": {"ok": True},
+                    },
                     "sqlite": {"journal_mode": "wal", "synchronous_name": "FULL"},
                     "files": {
                         "after_close": {"database": {"exists": True, "size_bytes": 42}}
@@ -132,6 +161,15 @@ def test_markdown_renderer_includes_multiprocess_evidence() -> None:
         "1.2.3",
         "large_db_rows",
         "producer-0",
+        "consumer-0",
+        "ProducerError",
+        "producer failed",
+        "ConsumerError",
+        "consumer failed",
+        "target_rows",
+        "preload_elapsed_ns",
+        "measured_acks",
+        "final_counts",
         "FULL",
         "after_close",
         "ID validation",
@@ -139,6 +177,35 @@ def test_markdown_renderer_includes_multiprocess_evidence() -> None:
         "Limitations",
     ):
         assert expected in rendered
+
+
+def test_markdown_does_not_expose_temporary_paths() -> None:
+    temporary_path = "/tmp/localqueue-mp-run-secret/scenario/output.json"
+    report = {
+        "schema_version": 1,
+        "subject": {"package_version": "1.0", "commit_sha": "abc"},
+        "environment": {"workdir_filesystem": "<benchmark-workdir>"},
+        "profile": {"name": "multiprocess-ci", "canonical": False},
+        "scenarios": [
+            {
+                "scenario_id": "mp-failed",
+                "parameters": {},
+                "status": "failed",
+                "error": {
+                    "type": "OSError",
+                    "message": "cannot open <path>/output.json",
+                },
+                "correctness": {"ok": False},
+            }
+        ],
+    }
+
+    first = render_markdown(report)
+
+    assert first == render_markdown(report)
+    assert temporary_path not in first
+    assert "cannot open &lt;path&gt;" not in first
+    assert "cannot open <path>/output.json" in first
 
 
 def test_percentile_single_sample_and_empty_input() -> None:

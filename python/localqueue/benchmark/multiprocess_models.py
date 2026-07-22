@@ -112,18 +112,32 @@ class ThroughputResult:
     messages_claimed: int
     messages_acked: int
     elapsed_ns: int
+    produced_elapsed_ns: int | None = None
+    harness_elapsed_ns: int | None = None
 
     def __post_init__(self) -> None:
         _positive(self.elapsed_ns, "elapsed_ns")
+        if self.produced_elapsed_ns is not None:
+            _positive(self.produced_elapsed_ns, "produced_elapsed_ns")
+        if self.harness_elapsed_ns is not None:
+            _positive(self.harness_elapsed_ns, "harness_elapsed_ns")
 
     def to_dict(self) -> dict[str, int | float]:
-        return {
+        produced_elapsed_ns = self.produced_elapsed_ns or self.elapsed_ns
+        result: dict[str, int | float] = {
             "messages_produced": self.messages_produced,
             "messages_claimed": self.messages_claimed,
             "messages_acked": self.messages_acked,
             "elapsed_ns": self.elapsed_ns,
+            "acked_elapsed_ns": self.elapsed_ns,
+            "produced_elapsed_ns": produced_elapsed_ns,
+            "produced_per_second": self.messages_produced
+            / (produced_elapsed_ns / 1_000_000_000),
             "acked_per_second": self.messages_acked / (self.elapsed_ns / 1_000_000_000),
         }
+        if self.harness_elapsed_ns is not None:
+            result["harness_elapsed_ns"] = self.harness_elapsed_ns
+        return result
 
 
 @dataclass(frozen=True, slots=True)

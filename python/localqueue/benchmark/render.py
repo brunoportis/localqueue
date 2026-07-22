@@ -21,7 +21,8 @@ def _escape(value: Any) -> str:
 
 
 def _metric(series: dict[str, Any], percentile: str) -> Any:
-    return series.get("summary", {}).get(percentile, "n/a")
+    summary = series.get("summary")
+    return summary.get(percentile, "n/a") if isinstance(summary, dict) else "n/a"
 
 
 def render_markdown(report: dict[str, Any]) -> str:
@@ -102,13 +103,44 @@ def render_markdown(report: dict[str, Any]) -> str:
             details.extend(
                 [
                     "",
-                    "| Process | Role | Status | Exit code | Peak RSS bytes | RSS method |",
-                    "|---|---|---|---:|---:|---|",
+                    "| Process | Role | Status | Exit code | Peak RSS bytes | RSS method | Error type | Error message |",
+                    "|---|---|---|---:|---:|---|---|---|",
                 ]
             )
             for process in sorted(processes, key=lambda item: str(item.get("id", ""))):
+                worker_error = process.get("error")
+                worker_error_fields: dict[str, Any] = (
+                    worker_error if isinstance(worker_error, dict) else {}
+                )
                 details.append(
-                    f"| {_escape(process.get('id'))} | {_escape(process.get('role'))} | {_escape(process.get('status'))} | {_escape(process.get('exit_code'))} | {_escape(process.get('peak_rss_bytes'))} | {_escape(process.get('rss_method'))} |"
+                    f"| {_escape(process.get('id'))} | {_escape(process.get('role'))} | {_escape(process.get('status'))} | {_escape(process.get('exit_code'))} | {_escape(process.get('peak_rss_bytes'))} | {_escape(process.get('rss_method'))} | {_escape(worker_error_fields.get('type'))} | {_escape(worker_error_fields.get('message'))} |"
+                )
+        large_database = s.get("large_database")
+        if isinstance(large_database, dict):
+            details.extend(
+                [
+                    "",
+                    "#### Large database",
+                    "",
+                    "| Field | Value |",
+                    "|---|---|",
+                ]
+            )
+            for key in (
+                "target_rows",
+                "actual_rows",
+                "batch_size",
+                "preload_elapsed_ns",
+                "measured_claims",
+                "measured_acks",
+                "final_counts",
+                "stats_before",
+                "stats_after_preload",
+                "stats_after",
+                "integrity",
+            ):
+                details.append(
+                    f"| {_escape(key)} | {_escape(large_database.get(key))} |"
                 )
         sqlite = s.get("sqlite", original.get("sqlite", {}))
         if sqlite:

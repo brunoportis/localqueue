@@ -9,7 +9,6 @@ import operator
 import platform
 import queue as queue_module
 import shutil
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -17,7 +16,7 @@ from typing import Any
 
 from localqueue import Empty, JsonSerializer, LocalQueueError, SimpleQueue
 from localqueue.benchmark.environment import environment, subject
-from localqueue.benchmark.errors import BenchmarkExecutionError
+from localqueue.benchmark.errors import BenchmarkExecutionError, sanitize_error_message
 from localqueue.benchmark.metrics import MetricSummary
 from localqueue.benchmark.models import BenchmarkReport, ScenarioResult
 from localqueue.benchmark.multiprocess_models import IDValidation, MultiprocessConfig
@@ -61,6 +60,13 @@ def make_payload(
     return value, len(serializer.dumps(value))
 
 
+def _error_payload(exc: BaseException, *paths: str | Path) -> dict[str, str]:
+    return {
+        "type": type(exc).__name__,
+        "message": sanitize_error_message(str(exc), tuple(paths)),
+    }
+
+
 def producer_target(
     path: str,
     name: str,
@@ -77,6 +83,8 @@ def producer_target(
     produced = 0
     puts: list[tuple[int, int]] = []
     actual = 0
+    first_put_started_ns: int | None = None
+    last_put_completed_ns: int | None = None
     queue = SimpleQueue(path, name, fsync=full)
     try:
         ready.wait()
@@ -84,10 +92,13 @@ def producer_target(
             value, actual = make_payload(identifier, index, requested)
             while True:
                 before = time.monotonic_ns()
+                if first_put_started_ns is None:
+                    first_put_started_ns = before
                 value["created_ns"] = before
                 actual = len(JsonSerializer().dumps(value))
                 try:
                     queue.put(value, job_id=value["id"])
+                    last_put_completed_ns = time.monotonic_ns()
                     break
                 except LocalQueueError as exc:
                     if "database is locked" not in str(exc).lower():
@@ -107,6 +118,8 @@ def producer_target(
                 "roundtrip_samples": [],
                 "put_samples": puts,
                 "actual_serialized_bytes": actual,
+                "first_put_started_ns": first_put_started_ns,
+                "last_put_completed_ns": last_put_completed_ns,
                 "peak_rss_bytes": peak_rss_bytes(),
                 "rss_method": rss_method(),
             }
@@ -119,7 +132,9 @@ def producer_target(
                 "status": "failed",
                 "exit_code": 1,
                 "produced": produced,
-                "error": str(exc),
+                "first_put_started_ns": first_put_started_ns,
+                "last_put_completed_ns": last_put_completed_ns,
+                "error": _error_payload(exc, path, Path(path).parent),
                 "peak_rss_bytes": peak_rss_bytes(),
                 "rss_method": rss_method(),
             }
@@ -147,6 +162,7 @@ def consumer_target(
     id_count = id_sum = id_xor = id_digest = out_of_range = 0
     claims: list[tuple[int, int]] = []
     roundtrips: list[tuple[int, int]] = []
+    last_ack_completed_ns: int | None = None
     queue = SimpleQueue(path, name, fsync=full)
     deadline = time.monotonic() + timeout
     try:
@@ -187,6 +203,7 @@ def consumer_target(
                 claims.append((message_id, claim_done - before))
             claimed += 1
             queue.ack(job)
+            last_ack_completed_ns = time.monotonic_ns()
             acked += 1
             created_ns = (
                 job.data.get("created_ns") if isinstance(job.data, dict) else None
@@ -194,7 +211,7 @@ def consumer_target(
             if not isinstance(created_ns, int):
                 raise RuntimeError("payload created_ns is missing or invalid")
             if message_id % sample_stride == 0:
-                roundtrips.append((message_id, time.monotonic_ns() - created_ns))
+                roundtrips.append((message_id, last_ack_completed_ns - created_ns))
         output.put(
             {
                 "id": f"consumer-{index}",
@@ -213,6 +230,7 @@ def consumer_target(
                     "digest": f"{id_digest:064x}",
                     "out_of_range": out_of_range,
                 },
+                "last_ack_completed_ns": last_ack_completed_ns,
                 "peak_rss_bytes": peak_rss_bytes(),
                 "rss_method": rss_method(),
             }
@@ -234,7 +252,8 @@ def consumer_target(
                     "digest": f"{id_digest:064x}",
                     "out_of_range": out_of_range,
                 },
-                "error": str(exc),
+                "last_ack_completed_ns": last_ack_completed_ns,
+                "error": _error_payload(exc, path, Path(path).parent),
                 "peak_rss_bytes": peak_rss_bytes(),
                 "rss_method": rss_method(),
             }
@@ -264,6 +283,75 @@ def _series(
             [latency for _, latency in samples], elapsed, messages=population
         ).to_dict(),
     }
+
+
+def _throughput_intervals(results: list[dict[str, Any]]) -> dict[str, int | None]:
+    first_puts = [
+        value
+        for result in results
+        if isinstance((value := result.get("first_put_started_ns")), int)
+    ]
+    last_puts = [
+        value
+        for result in results
+        if isinstance((value := result.get("last_put_completed_ns")), int)
+    ]
+    last_acks = [
+        value
+        for result in results
+        if isinstance((value := result.get("last_ack_completed_ns")), int)
+    ]
+    if not first_puts or not last_puts or not last_acks:
+        raise RuntimeError("worker workload timestamps are missing")
+    first_put = min(first_puts)
+    last_put = max(last_puts)
+    last_ack = max(last_acks)
+    if last_put < first_put or last_ack < first_put:
+        raise RuntimeError("worker workload timestamps are inconsistent")
+    return {
+        "first_put_started_ns": first_put,
+        "last_put_completed_ns": last_put,
+        "last_ack_completed_ns": last_ack,
+        "produced_elapsed_ns": max(1, last_put - first_put),
+        "acked_elapsed_ns": max(1, last_ack - first_put),
+    }
+
+
+def _unavailable_series(population: int, limit: int) -> dict[str, Any]:
+    return {
+        "population_count": population,
+        "sample_count": 0,
+        "limit": limit,
+        "method": "systematic",
+        "ordering_key": "global_message_id",
+        "stride": max(1, (max(1, population) + limit - 1) // limit),
+        "unit": "ns",
+        "samples": [],
+        "summary": None,
+    }
+
+
+def _sanitize_worker_results(
+    results: list[dict[str, Any]], sensitive_paths: tuple[str | Path, ...]
+) -> list[dict[str, Any]]:
+    sanitized_results: list[dict[str, Any]] = []
+    for result in results:
+        sanitized = dict(result)
+        error = sanitized.get("error")
+        if isinstance(error, dict):
+            sanitized["error"] = {
+                "type": str(error.get("type", "WorkerError")),
+                "message": sanitize_error_message(
+                    str(error.get("message", "worker failed")), sensitive_paths
+                ),
+            }
+        elif error is not None:
+            sanitized["error"] = {
+                "type": "WorkerError",
+                "message": sanitize_error_message(str(error), sensitive_paths),
+            }
+        sanitized_results.append(sanitized)
+    return sanitized_results
 
 
 def validate_ids(ids: list[int], messages: int, *, exact: bool) -> IDValidation:
@@ -374,6 +462,64 @@ def _cleanup_children(
         shutil.rmtree(run_path, ignore_errors=True)
 
 
+class _ScenarioLifecycle:
+    def __init__(
+        self, run_path: Path, keep_workdir: bool, deadline: float | None = None
+    ) -> None:
+        self.run_path = run_path
+        self.keep_workdir = keep_workdir
+        self.deadline = deadline
+        self.processes: list[Any] = []
+        self.output: Any | None = None
+        self.local_queues: list[SimpleQueue] = []
+        self._cleaned = False
+
+    def close_local_queue(self, queue: SimpleQueue) -> None:
+        try:
+            queue.close()
+        finally:
+            if queue in self.local_queues:
+                self.local_queues.remove(queue)
+
+    def cleanup(self) -> None:
+        if self._cleaned:
+            return
+        self._cleaned = True
+        for queue in reversed(self.local_queues):
+            try:
+                queue.close()
+            except BaseException:
+                pass
+        self.local_queues.clear()
+        for process in self.processes:
+            try:
+                remaining = (
+                    max(0.0, self.deadline - time.monotonic())
+                    if self.deadline is not None
+                    else 0.0
+                )
+                process.join(timeout=remaining)
+                if process.is_alive():
+                    process.terminate()
+                    process.join(timeout=1.0)
+                if process.is_alive() and hasattr(process, "kill"):
+                    process.kill()
+                    process.join()
+            except BaseException:
+                pass
+        if self.output is not None:
+            try:
+                self.output.close()
+            except BaseException:
+                pass
+            try:
+                self.output.join_thread()
+            except BaseException:
+                pass
+        if not self.keep_workdir:
+            shutil.rmtree(self.run_path, ignore_errors=True)
+
+
 def run_large_database_scenario(
     path: Path,
     *,
@@ -386,10 +532,11 @@ def run_large_database_scenario(
     path.mkdir(parents=True, exist_ok=True)
     run_path = Path(tempfile.mkdtemp(prefix="localqueue-large-db-", dir=path))
     database = run_path / "localqueue.db"
-    queue = SimpleQueue(str(run_path), "large-database", fsync=durability == "full")
-    snapshots: dict[str, Any] = {"before_workload": _file_snapshot(database)}
-    before_stats = queue.stats()
+    queue: SimpleQueue | None = None
     try:
+        queue = SimpleQueue(str(run_path), "large-database", fsync=durability == "full")
+        snapshots: dict[str, Any] = {"before_workload": _file_snapshot(database)}
+        before_stats = queue.stats()
         started = time.monotonic_ns()
         actual_payload = 0
         for start in range(0, rows, batch_size):
@@ -411,57 +558,68 @@ def run_large_database_scenario(
         stats_after = queue.stats()
         integrity = queue.check_integrity(mode="full").to_dict()
         sqlite = _sqlite_settings(queue)
-    finally:
         queue.close()
-        if not keep_workdir and sys.exc_info()[0] is not None:
+        queue = None
+        snapshots["after_close"] = _file_snapshot(database)
+        ok = (
+            stats_after["ready"] == rows - measured
+            and stats_after["processing"] == 0
+            and integrity["ok"]
+        )
+        return {
+            "scenario_id": f"mp-large-db-{rows}-{durability}",
+            "operation": "multiprocess_large_database",
+            "parameters": {
+                "durability": durability,
+                "payload_requested_bytes": payload_bytes,
+                "payload_serialized_bytes": actual_payload,
+                "serializer": "localqueue.JsonSerializer",
+                "padding_method": "deterministic_sha256_repetition",
+            },
+            "large_database": {
+                "target_rows": rows,
+                "actual_rows": stats_after_preload["ready"],
+                "batch_size": batch_size,
+                "preload_elapsed_ns": preload_elapsed,
+                "measured_claims": measured,
+                "measured_acks": measured,
+                "final_counts": {
+                    "ready": stats_after["ready"],
+                    "processing": stats_after["processing"],
+                    "failed": stats_after.get("failed", 0),
+                },
+                "stats_before": before_stats,
+                "stats_after_preload": stats_after_preload,
+                "stats_after": stats_after,
+                "integrity": integrity,
+            },
+            "throughput": {
+                "messages_claimed": measured,
+                "messages_acked": measured,
+                "elapsed_ns": measure_elapsed,
+                "acked_per_second": measured / (measure_elapsed / 1e9),
+            },
+            "sqlite": sqlite,
+            "files": snapshots,
+            "correctness": {
+                "ok": ok,
+                "stats_before": before_stats,
+                "stats_after_preload": stats_after_preload,
+                "stats_after": stats_after,
+                "integrity": integrity,
+            },
+            "status": "passed" if ok else "failed",
+        }
+    finally:
+        if queue is not None:
+            queue.close()
+        if not keep_workdir:
             shutil.rmtree(run_path, ignore_errors=True)
-    snapshots["after_close"] = _file_snapshot(database)
-    ok = (
-        stats_after["ready"] == rows - measured
-        and stats_after["processing"] == 0
-        and integrity["ok"]
-    )
-    result = {
-        "scenario_id": f"mp-large-db-{rows}-{durability}",
-        "operation": "multiprocess_large_database",
-        "parameters": {
-            "durability": durability,
-            "payload_requested_bytes": payload_bytes,
-            "payload_serialized_bytes": actual_payload,
-            "serializer": "localqueue.JsonSerializer",
-            "padding_method": "deterministic_sha256_repetition",
-        },
-        "large_database": {
-            "target_rows": rows,
-            "actual_rows": stats_after_preload["ready"],
-            "batch_size": batch_size,
-            "preload_elapsed_ns": preload_elapsed,
-            "measured_claims": measured,
-        },
-        "throughput": {
-            "messages_claimed": measured,
-            "messages_acked": measured,
-            "elapsed_ns": measure_elapsed,
-            "acked_per_second": measured / (measure_elapsed / 1e9),
-        },
-        "sqlite": sqlite,
-        "files": snapshots,
-        "correctness": {
-            "ok": ok,
-            "stats_before": before_stats,
-            "stats_after_preload": stats_after_preload,
-            "stats_after": stats_after,
-            "integrity": integrity,
-        },
-        "status": "passed" if ok else "failed",
-    }
-    if not keep_workdir:
-        shutil.rmtree(run_path, ignore_errors=True)
-    return result
 
 
-def run_multiprocess_scenario(
-    path: Path,
+def _execute_multiprocess_scenario(
+    run_path: Path,
+    lifecycle: _ScenarioLifecycle,
     *,
     producers: int,
     consumers: int,
@@ -470,11 +628,8 @@ def run_multiprocess_scenario(
     durability: str,
     timeout: float = 120.0,
     exact_id_validation: bool = True,
-    keep_workdir: bool = False,
     sample_limit: int = 1000,
 ) -> dict[str, Any]:
-    path.mkdir(parents=True, exist_ok=True)
-    run_path = Path(tempfile.mkdtemp(prefix="localqueue-mp-run-", dir=path))
     scenario_path = (
         run_path / f"p{producers}c{consumers}-m{messages}-b{payload_bytes}-{durability}"
     )
@@ -483,10 +638,12 @@ def run_multiprocess_scenario(
     database = scenario_path / "localqueue.db"
     file_phases: dict[str, Any] = {"before_workload": _file_snapshot(database)}
     initializer = SimpleQueue(str(scenario_path), name, fsync=durability == "full")
+    lifecycle.local_queues.append(initializer)
     sqlite = _sqlite_settings(initializer)
-    initializer.close()
+    lifecycle.close_local_queue(initializer)
     ctx = multiprocessing.get_context("spawn")
     output = ctx.Queue()
+    lifecycle.output = output
     ready = ctx.Barrier(producers + consumers + 1)
     done = ctx.Event()
     per = messages // producers
@@ -529,6 +686,7 @@ def run_multiprocess_scenario(
         )
         for i in range(consumers)
     ]
+    lifecycle.processes = ps + cs
     process_by_id = {
         **{f"producer-{index}": process for index, process in enumerate(ps)},
         **{f"consumer-{index}": process for index, process in enumerate(cs)},
@@ -538,15 +696,12 @@ def run_multiprocess_scenario(
         **{f"consumer-{index}": "consumer" for index in range(consumers)},
     }
     producer_ids = {f"producer-{index}" for index in range(producers)}
-    started = time.monotonic()
-    deadline = started + timeout
-    try:
-        for process in ps + cs:
-            process.start()
-        ready.wait(timeout=max(0.001, deadline - time.monotonic()))
-    except BaseException:
-        _cleanup_children(ps + cs, output, run_path, keep_workdir)
-        raise
+    harness_started_ns = time.monotonic_ns()
+    deadline = time.monotonic() + timeout
+    lifecycle.deadline = deadline
+    for process in ps + cs:
+        process.start()
+    ready.wait(timeout=max(0.001, deadline - time.monotonic()))
     result_by_id: dict[str, dict[str, Any]] = {}
     protocol_errors: list[str] = []
 
@@ -605,10 +760,10 @@ def run_multiprocess_scenario(
             protocol_errors.append(f"exit code mismatch for {logical_id}")
         elif result.get("status") == "passed" and process.exitcode != 0:
             protocol_errors.append(f"non-zero successful worker: {logical_id}")
-    results = list(result_by_id.values())
-    output.close()
-    output.join_thread()
-    elapsed = max(1, int((time.monotonic() - started) * 1e9))
+    results = _sanitize_worker_results(
+        list(result_by_id.values()), (run_path, scenario_path, database)
+    )
+    harness_elapsed_ns = max(1, time.monotonic_ns() - harness_started_ns)
     produced = sum(r.get("produced", 0) for r in results)
     claimed = sum(r.get("claimed", 0) for r in results)
     acked = sum(r.get("acked", 0) for r in results)
@@ -620,18 +775,26 @@ def run_multiprocess_scenario(
     actual_serialized_bytes = (
         next(iter(actual_sizes)) if len(actual_sizes) == 1 else None
     )
+    workload: dict[str, int | None]
+    try:
+        workload = _throughput_intervals(results)
+    except RuntimeError as error:
+        protocol_errors.append(str(error))
+        workload = {
+            "first_put_started_ns": None,
+            "last_put_completed_ns": None,
+            "last_ack_completed_ns": None,
+            "produced_elapsed_ns": None,
+            "acked_elapsed_ns": None,
+        }
     queue = SimpleQueue(str(scenario_path), name, fsync=durability == "full")
+    lifecycle.local_queues.append(queue)
     try:
         stats = queue.stats()
         integrity = queue.check_integrity(mode="full").to_dict()
         file_phases["after_drain"] = _file_snapshot(database)
-    except BaseException:
-        queue.close()
-        if not keep_workdir:
-            shutil.rmtree(run_path, ignore_errors=True)
-        raise
     finally:
-        queue.close()
+        lifecycle.close_local_queue(queue)
     file_phases["after_close"] = _file_snapshot(database)
     claims = [v for r in results for v in r.get("claim_samples", [])]
     roundtrips = [v for r in results for v in r.get("roundtrip_samples", [])]
@@ -645,6 +808,14 @@ def run_multiprocess_scenario(
             [r["id_aggregate"] for r in results if r.get("role") == "consumer"],
             messages,
         )
+    produced_elapsed_ns = workload["produced_elapsed_ns"]
+    acked_elapsed_ns = workload["acked_elapsed_ns"]
+    metrics_available = (
+        isinstance(produced_elapsed_ns, int)
+        and isinstance(acked_elapsed_ns, int)
+        and bool(claims)
+        and bool(roundtrips)
+    )
     ok = (
         produced == claimed == acked == messages
         and stats.get("ready") == 0
@@ -655,14 +826,15 @@ def run_multiprocess_scenario(
         and not protocol_errors
         and not any(p.is_alive() for p in ps + cs)
         and id_validation.ok
+        and metrics_available
     )
-    try:
-        claim_series = _series(claims, claimed, elapsed, sample_limit)
-        roundtrip_series = _series(roundtrips, acked, elapsed, sample_limit)
-    except BaseException:
-        if not keep_workdir:
-            shutil.rmtree(run_path, ignore_errors=True)
-        raise
+    if metrics_available:
+        assert isinstance(acked_elapsed_ns, int)
+        claim_series = _series(claims, claimed, acked_elapsed_ns, sample_limit)
+        roundtrip_series = _series(roundtrips, acked, acked_elapsed_ns, sample_limit)
+    else:
+        claim_series = _unavailable_series(claimed, sample_limit)
+        roundtrip_series = _unavailable_series(acked, sample_limit)
     result = {
         "scenario_id": f"mp-p{producers}-c{consumers}-payload{payload_bytes}-{durability}",
         "operation": "multiprocess_roundtrip",
@@ -685,9 +857,19 @@ def run_multiprocess_scenario(
             "messages_produced": produced,
             "messages_claimed": claimed,
             "messages_acked": acked,
-            "elapsed_ns": elapsed,
-            "produced_per_second": produced / (elapsed / 1e9),
-            "acked_per_second": acked / (elapsed / 1e9),
+            **workload,
+            "elapsed_ns": acked_elapsed_ns,
+            "harness_elapsed_ns": harness_elapsed_ns,
+            "produced_per_second": (
+                produced / (produced_elapsed_ns / 1e9)
+                if isinstance(produced_elapsed_ns, int)
+                else None
+            ),
+            "acked_per_second": (
+                acked / (acked_elapsed_ns / 1e9)
+                if isinstance(acked_elapsed_ns, int)
+                else None
+            ),
         },
         "correctness": {
             "ok": ok,
@@ -700,9 +882,40 @@ def run_multiprocess_scenario(
         "sqlite": sqlite,
         "files": file_phases,
     }
-    if not keep_workdir:
-        shutil.rmtree(run_path, ignore_errors=True)
     return result
+
+
+def run_multiprocess_scenario(
+    path: Path,
+    *,
+    producers: int,
+    consumers: int,
+    messages: int,
+    payload_bytes: int,
+    durability: str,
+    timeout: float = 120.0,
+    exact_id_validation: bool = True,
+    keep_workdir: bool = False,
+    sample_limit: int = 1000,
+) -> dict[str, Any]:
+    path.mkdir(parents=True, exist_ok=True)
+    run_path = Path(tempfile.mkdtemp(prefix="localqueue-mp-run-", dir=path))
+    lifecycle = _ScenarioLifecycle(run_path, keep_workdir)
+    try:
+        return _execute_multiprocess_scenario(
+            run_path,
+            lifecycle,
+            producers=producers,
+            consumers=consumers,
+            messages=messages,
+            payload_bytes=payload_bytes,
+            durability=durability,
+            timeout=timeout,
+            exact_id_validation=exact_id_validation,
+            sample_limit=sample_limit,
+        )
+    finally:
+        lifecycle.cleanup()
 
 
 def run_multiprocess_profile(
@@ -713,9 +926,11 @@ def run_multiprocess_profile(
     """Run a named multiprocess profile and atomically preserve partial reports."""
     root = workdir or Path.cwd() / "localqueue-multiprocess"
     root.mkdir(parents=True, exist_ok=True)
+    report_environment = environment(root)
+    report_environment["workdir_filesystem"] = "<benchmark-workdir>"
     report = BenchmarkReport(
         subject=subject(),
-        environment=environment(root),
+        environment=report_environment,
         profile=profile_metadata(config),
         run={"status": "running"},
     )
@@ -723,18 +938,66 @@ def run_multiprocess_profile(
     try:
         for producers, consumers, payload_bytes in multiprocess_matrix(config.profile):
             for durability in durabilities:
-                raw = run_multiprocess_scenario(
-                    root,
-                    producers=producers,
-                    consumers=consumers,
-                    messages=config.messages,
-                    payload_bytes=payload_bytes,
-                    durability=durability,
-                    timeout=config.timeout_seconds,
-                    exact_id_validation=config.profile == "multiprocess-ci",
-                    keep_workdir=config.keep_workdir,
-                    sample_limit=config.sample_limit,
+                scenario_id = (
+                    f"mp-p{producers}-c{consumers}-payload{payload_bytes}-{durability}"
                 )
+                parameters = {
+                    "producers": producers,
+                    "consumers": consumers,
+                    "messages": config.messages,
+                    "payload_requested_bytes": payload_bytes,
+                    "durability": durability,
+                }
+                try:
+                    raw = run_multiprocess_scenario(
+                        root,
+                        producers=producers,
+                        consumers=consumers,
+                        messages=config.messages,
+                        payload_bytes=payload_bytes,
+                        durability=durability,
+                        timeout=config.timeout_seconds,
+                        exact_id_validation=config.profile == "multiprocess-ci",
+                        keep_workdir=config.keep_workdir,
+                        sample_limit=config.sample_limit,
+                    )
+                except Exception as error:
+                    sanitized = _error_payload(
+                        error,
+                        root,
+                        *(
+                            path
+                            for path in (output, output.parent if output else None)
+                            if path
+                        ),
+                    )
+                    report.scenarios.append(
+                        ScenarioResult(
+                            scenario_id=scenario_id,
+                            operation="multiprocess_roundtrip",
+                            parameters=parameters,
+                            work_units={"messages": config.messages},
+                            sqlite={},
+                            warmup={},
+                            measured_samples_ns=[],
+                            summary=None,
+                            correctness={"ok": False},
+                            status="failed",
+                            error=sanitized,
+                            multiprocess={
+                                "scenario_id": scenario_id,
+                                "operation": "multiprocess_roundtrip",
+                                "parameters": parameters,
+                                "correctness": {"ok": False},
+                                "status": "failed",
+                                "error": sanitized,
+                            },
+                        )
+                    )
+                    report.run["status"] = "failed"
+                    if output is not None:
+                        _atomic_write(output, report)
+                    raise BenchmarkExecutionError(scenario_id, error) from error
                 report.scenarios.append(
                     ScenarioResult(
                         scenario_id=raw["scenario_id"],
@@ -760,12 +1023,57 @@ def run_multiprocess_profile(
                         raw["scenario_id"], RuntimeError("scenario correctness failed")
                     )
         if config.profile == "multiprocess-release":
-            raw = run_large_database_scenario(
-                root,
-                rows=config.large_db_rows,
-                durability=config.durability or "full",
-                keep_workdir=config.keep_workdir,
-            )
+            large_durability = config.durability or "full"
+            large_scenario_id = f"mp-large-db-{config.large_db_rows}-{large_durability}"
+            large_parameters = {
+                "durability": large_durability,
+                "payload_requested_bytes": 100,
+                "target_rows": config.large_db_rows,
+            }
+            try:
+                raw = run_large_database_scenario(
+                    root,
+                    rows=config.large_db_rows,
+                    durability=large_durability,
+                    keep_workdir=config.keep_workdir,
+                )
+            except Exception as error:
+                sanitized = _error_payload(
+                    error,
+                    root,
+                    *(
+                        path
+                        for path in (output, output.parent if output else None)
+                        if path
+                    ),
+                )
+                report.scenarios.append(
+                    ScenarioResult(
+                        scenario_id=large_scenario_id,
+                        operation="multiprocess_large_database",
+                        parameters=large_parameters,
+                        work_units={"messages": config.large_db_rows},
+                        sqlite={},
+                        warmup={},
+                        measured_samples_ns=[],
+                        summary=None,
+                        correctness={"ok": False},
+                        status="failed",
+                        error=sanitized,
+                        multiprocess={
+                            "scenario_id": large_scenario_id,
+                            "operation": "multiprocess_large_database",
+                            "parameters": large_parameters,
+                            "correctness": {"ok": False},
+                            "status": "failed",
+                            "error": sanitized,
+                        },
+                    )
+                )
+                report.run["status"] = "failed"
+                if output is not None:
+                    _atomic_write(output, report)
+                raise BenchmarkExecutionError(large_scenario_id, error) from error
             report.scenarios.append(
                 ScenarioResult(
                     scenario_id=raw["scenario_id"],
@@ -789,6 +1097,11 @@ def run_multiprocess_profile(
                     RuntimeError("large database correctness failed"),
                 )
         report.run["status"] = "passed"
+    except BenchmarkExecutionError:
+        report.run["status"] = "failed"
+        if output is not None:
+            _atomic_write(output, report)
+        raise
     except Exception as error:
         report.run["status"] = "failed"
         if output is not None:
