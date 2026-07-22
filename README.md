@@ -31,6 +31,7 @@ service.
 [Backpressure](#bounded-backlog-and-backpressure) ·
 [Diagnostics](#runtime-diagnostics) · [API](#api-overview) ·
 [Storage compatibility](docs/storage-compatibility.md) ·
+[Operational envelope](docs/operational-envelope.md) ·
 [Changelog](CHANGELOG.md) ·
 [Development](#development)
 

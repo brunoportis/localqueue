@@ -1,5 +1,8 @@
 # Integrity checks and online backups
 
+The [operational envelope](operational-envelope.md) contains the supported
+backup, restore, and corruption-response runbooks.
+
 `SimpleQueue` exposes explicit maintenance APIs for checking a live SQLite
 database and creating a consistent point-in-time backup without direct access
 to the queue's connection:

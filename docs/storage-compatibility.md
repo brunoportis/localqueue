@@ -1,5 +1,8 @@
 # Storage compatibility
 
+The [operational envelope](operational-envelope.md) summarizes the operational
+scope and limitations of this compatibility policy.
+
 Version 1.0.0 starts the current storage lineage. Databases made by 0.5.0 do
 not have an in-place upgrade path to 1.x; preserve the existing 0.5.0 migration
 guidance in the changelog when moving from that release.
