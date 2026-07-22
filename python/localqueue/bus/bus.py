@@ -45,6 +45,13 @@ class _HandlerRegistration:
     timeout: float | None
 
 
+def _is_async_callable(handler: Callable[[Any], Any]) -> bool:
+    """Return whether ``handler`` can be invoked as an async callable."""
+    return inspect.iscoroutinefunction(handler) or inspect.iscoroutinefunction(
+        getattr(handler, "__call__", None)
+    )
+
+
 class EventBus:
     """Atomically fan events out to durable subscriptions.
 
@@ -208,7 +215,7 @@ class EventBus:
         def decorator(fn: Callable[[Any], Any]) -> Callable[[Any], Any]:
             if not callable(fn):
                 raise TypeError("'handler' must be callable")
-            if timeout is not None and not inspect.iscoroutinefunction(fn):
+            if timeout is not None and not _is_async_callable(fn):
                 raise TypeError("'timeout' is only supported for async handlers")
             combo = (subscription, key)
             if combo in self._handlers:

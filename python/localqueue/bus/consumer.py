@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from pydantic import ValidationError
 
-from localqueue.bus.bus import WILDCARD
+from localqueue.bus.bus import WILDCARD, _is_async_callable
 from localqueue.exceptions import Empty, LeaseExpired
 from localqueue.job import Job
 
@@ -19,6 +19,54 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 _POLL_INTERVAL = 0.1
+
+
+async def _deadline_timer(timeout: float) -> None:
+    """Complete after an individual handler's configured deadline."""
+    await asyncio.sleep(timeout)
+
+
+async def _run_async_handler(handler: Any, event: Any, timeout: float | None) -> bool:
+    """Run an async handler and return whether its internal deadline elapsed.
+
+    A completed handler wins a simultaneous timer completion. Once the timer
+    wins, the deadline remains authoritative even when cancellation is
+    suppressed or cleanup raises.
+    """
+    handler_task = asyncio.create_task(handler(event))
+    if timeout is None:
+        await handler_task
+        return False
+
+    timer_task = asyncio.create_task(_deadline_timer(timeout))
+    try:
+        done, _ = await asyncio.wait(
+            (handler_task, timer_task), return_when=asyncio.FIRST_COMPLETED
+        )
+        if handler_task in done:
+            timer_task.cancel()
+            await asyncio.gather(timer_task, return_exceptions=True)
+            await handler_task
+            return False
+
+        # The timer won. Preserve that state even if cooperative cancellation
+        # lets the handler return normally or raise during cleanup.
+        handler_task.cancel()
+        try:
+            await handler_task
+        except asyncio.CancelledError:
+            pass
+        except BaseException as error:  # noqa: BLE001 - cleanup is observed
+            log.warning(
+                "Timed-out handler cleanup failed with %s", type(error).__name__
+            )
+        await asyncio.gather(timer_task, return_exceptions=True)
+        return True
+    except asyncio.CancelledError:
+        handler_task.cancel()
+        timer_task.cancel()
+        await asyncio.gather(handler_task, timer_task, return_exceptions=True)
+        raise
 
 
 async def run_consumer(
@@ -199,31 +247,39 @@ async def _process_delivery(
     # lost, discard the result because another worker may have claimed it.
     state = {"lease_lost": False}
     interval = max(queue.lease_seconds / 3, 0.05)
-    heartbeat = asyncio.create_task(_heartbeat(queue, job, interval, state))
+    heartbeat: asyncio.Task[None] | None = asyncio.create_task(
+        _heartbeat(queue, job, interval, state)
+    )
     try:
         handler = registration.handler
-        if inspect.iscoroutinefunction(handler):
-            result = handler(event)
-            if registration.timeout is not None:
-                result = await asyncio.wait_for(result, timeout=registration.timeout)
-            elif inspect.isawaitable(result):
-                result = await result
+        result: Any = None
+        if _is_async_callable(handler):
+            timed_out = await _run_async_handler(handler, event, registration.timeout)
+            if timed_out:
+                # Keep renewing the lease through cooperative handler cleanup,
+                # then stop the heartbeat before making the final decision.
+                active_heartbeat = heartbeat
+                if active_heartbeat is not None:
+                    active_heartbeat.cancel()
+                    await asyncio.gather(active_heartbeat, return_exceptions=True)
+                heartbeat = None
+                if state["lease_lost"]:
+                    log.warning(
+                        "Job %s lost its lease while its handler timed out; "
+                        "discarding the result",
+                        job.id,
+                    )
+                    return
+                timeout_error = f"handler timeout after {registration.timeout} seconds"
+                log.warning("Job %s %s", job.id, timeout_error)
+                await _transition(queue, queue.nack, job, last_error=timeout_error)
+                return
         else:
             # Run synchronous handlers outside the event-loop thread.
             result = await asyncio.to_thread(handler, event)
-        if inspect.isawaitable(result):
+        if result is not None and inspect.isawaitable(result):
             # Safety net for a synchronous handler that returned an awaitable.
             await result
-    except TimeoutError:
-        if state["lease_lost"]:
-            log.warning(
-                "Job %s lost its lease while its handler timed out; discarding the result",
-                job.id,
-            )
-            return
-        timeout_error = f"handler timeout after {registration.timeout} seconds"
-        log.warning("Job %s %s", job.id, timeout_error)
-        await _transition(queue, queue.nack, job, last_error=timeout_error)
     except registration.permanent_errors as exc:
         await _transition(
             queue, queue.fail, job, last_error=f"permanent failure: {exc}"
@@ -239,6 +295,7 @@ async def _process_delivery(
             return
         await _transition(queue, queue.ack, job)
     finally:
-        heartbeat.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await heartbeat
+        if heartbeat is not None:
+            heartbeat.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat

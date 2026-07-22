@@ -246,11 +246,23 @@ The timer is local, in-memory handler configuration. It is neither persisted
 nor shared with other processes, and it does not change subscription
 concurrency, the delivery envelope, topology, or any other handler.
 
-When an async handler exceeds its deadline, EventBus cancels it at an await
-boundary and NACKs the delivery with a `last_error` beginning `handler timeout
-after ... seconds`; normal retry and dead-letter policy then applies. Its
-heartbeat remains active until the delivery cleanup completes, and the
-heartbeat task is always cancelled and awaited afterwards. A registered
+For every timed handler, EventBus creates a handler task and a timer task, then
+waits for the first to finish. A completed handler wins a simultaneous finish.
+If the timer wins, the deadline is recorded explicitly, the handler task is
+cancelled, and EventBus awaits any cooperative cleanup before proceeding. A
+handler that suppresses `CancelledError` and returns is still a timeout.
+Likewise, a cleanup exception is observed and logged without replacing the
+timeout result or creating another transition.
+
+An internal timeout NACKs the delivery with a `last_error` beginning `handler
+timeout after ... seconds`; normal retry and dead-letter policy then applies.
+This is distinct from a handler-raised `TimeoutError`: that is an ordinary
+handler exception, so it follows `permanent_errors` when configured or the
+normal transient NACK path otherwise.
+
+The heartbeat remains active through cooperative cleanup. After cleanup,
+EventBus cancels and awaits the heartbeat, checks for lease loss, and only then
+NACKs the internal timeout when the lease remains valid. A registered
 `permanent_errors` exception raised before the deadline is still a permanent
 failure.
 
