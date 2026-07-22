@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 SCENARIO_NAMES = (
@@ -71,4 +72,4 @@ class ScenarioResult:
         return self
 
 
-ScenarioFn = Callable[[str], ScenarioResult]
+ScenarioFn = Callable[[str, Path], ScenarioResult]

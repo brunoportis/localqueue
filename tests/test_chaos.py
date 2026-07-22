@@ -8,9 +8,12 @@ from pathlib import Path
 
 import pytest
 
+from stress import run_chaos
 from stress.chaos.model import SCENARIO_NAMES, ScenarioResult
 from stress.chaos.process import ProcessFailure, run_process, wait_for_notification
 from stress.chaos.report import make_report, normalize_error
+from stress.chaos.scenarios.corruption import evaluate_open
+from stress.chaos.scenarios.readonly import evaluate as evaluate_readonly
 
 RUNNER = Path(__file__).parents[1] / "stress" / "run_chaos.py"
 
@@ -35,6 +38,19 @@ def test_failure_report_is_not_passed():
     assert report["summary"]["failed"] == 1
 
 
+def test_skip_has_explicit_reason_and_does_not_pass_campaign():
+    result = ScenarioResult(
+        "readonly",
+        status="skipped",
+        skip_reason="filesystem permissions cannot be enforced",
+    )
+    report = make_report("ci", [result])
+    assert report["passed"] is False
+    assert report["scenarios"][0]["skip"] == {
+        "reason": "filesystem permissions cannot be enforced"
+    }
+
+
 def test_scenario_without_invariants_cannot_pass():
     result = ScenarioResult("unsafe", status="passed").finish()
     assert result.status == "failed"
@@ -57,6 +73,32 @@ def test_retry_safe_requires_real_attempt_and_success():
     )
     result.invariant("checked", True, "check ran")
     result.retry_safe = True
+    assert result.finish().status == "failed"
+
+
+def test_readonly_fails_when_write_is_unexpectedly_accepted():
+    result = ScenarioResult(
+        "readonly",
+        status="passed",
+        required_invariants=frozenset(
+            {"existing_write_rejected", "new_database_rejected"}
+        ),
+    )
+    evaluate_readonly(
+        result,
+        {"ok": True, "confirmed": True},
+        {"ok": False, "confirmed": False, "error": {}},
+    )
+    assert result.finish().status == "failed"
+
+
+def test_corruption_fails_when_simplequeue_opens_without_error():
+    result = ScenarioResult(
+        "corruption",
+        status="passed",
+        required_invariants=frozenset({"malformed_explicit_error"}),
+    )
+    evaluate_open(result, "malformed", None)
     assert result.finish().status == "failed"
 
 
@@ -92,6 +134,30 @@ def test_unknown_scenario_writes_report(tmp_path: Path):
     report = json.loads(output.read_text())
     assert report["passed"] is False
     assert report["scenarios"][0]["name"] == "harness"
+
+
+def test_internal_harness_error_still_writes_failed_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    def fail_scenario(profile: str, artifacts_dir: Path) -> ScenarioResult:
+        raise RuntimeError("internal fixture failure")
+
+    monkeypatch.setitem(run_chaos.SCENARIOS, "corruption", fail_scenario)
+    output = tmp_path / "failed.json"
+    code = run_chaos.main(
+        [
+            "--profile",
+            "ci",
+            "--scenario",
+            "corruption",
+            "--output",
+            str(output),
+        ]
+    )
+    report = json.loads(output.read_text())
+    assert code == 1
+    assert report["passed"] is False
+    assert report["scenarios"][0]["error"]["public_type"] == "RuntimeError"
 
 
 def test_scenario_selection_runs_only_one(tmp_path: Path):

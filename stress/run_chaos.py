@@ -9,9 +9,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from chaos.model import SCENARIO_NAMES, SMOKE_SCENARIOS, ScenarioResult  # noqa: E402
-from chaos.report import make_report, normalize_error, write_report  # noqa: E402
-from chaos.scenarios.operational import SCENARIOS  # noqa: E402
+from stress.chaos.model import (  # noqa: E402
+    SCENARIO_NAMES,
+    SMOKE_SCENARIOS,
+    ScenarioResult,
+)
+from stress.chaos.report import make_report, normalize_error, write_report  # noqa: E402
+from stress.chaos.scenarios import SCENARIOS  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -21,7 +25,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--profile", required=True, choices=("ci", "smoke"))
     parser.add_argument("--scenario")
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--artifacts-dir", type=Path)
     args = parser.parse_args(argv)
+    artifacts_dir = args.artifacts_dir or args.output.parent / "scenarios"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
     names = (
         [args.scenario]
         if args.scenario
@@ -49,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         for name in names:
             try:
-                results.append(SCENARIOS[name](args.profile))
+                results.append(SCENARIOS[name](args.profile, artifacts_dir))
             except Exception as error:
                 failure = ScenarioResult(
                     name, expected_outcome="harness must report internal failures"

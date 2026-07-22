@@ -81,6 +81,19 @@ impl NativeQueue {
         crate::failpoints::configure(name, address).map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
+    /// Apply SQLite's connection-local page limit for the operational chaos harness.
+    #[cfg(feature = "__crash_test")]
+    #[doc(hidden)]
+    pub fn _test_set_max_page_count(&self, pages: i64) -> PyResult<i64> {
+        let mut guard = self.storage.connection();
+        let conn = guard.as_mut().ok_or(QueueError::Closed)?;
+        conn.pragma_update(None, "max_page_count", pages)
+            .map_err(QueueError::from)?;
+        conn.query_row("PRAGMA max_page_count", [], |row| row.get(0))
+            .map_err(QueueError::from)
+            .map_err(Into::into)
+    }
+
     pub fn put(&self, py: Python<'_>, payload: Vec<u8>, job_id: Option<&str>) -> PyResult<i64> {
         let job_id = job_id.map(str::to_owned);
         py.detach(move || {
@@ -565,13 +578,19 @@ impl NativeQueue {
             let conn = guard.as_mut().unwrap();
 
             let status_filter = status.unwrap_or(STATUS_ACKED);
-            let changed = conn
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(QueueError::from)?;
+            let changed = tx
                 .execute(
                     "DELETE FROM messages
                      WHERE queue = ?1 AND status = ?2 AND updated_at < ?3",
                     params![self.queue, status_filter, cutoff],
                 )
                 .map_err(QueueError::from)?;
+            #[cfg(feature = "__crash_test")]
+            crate::failpoints::hit(crate::failpoints::Failpoint::PurgeBeforeCommit);
+            tx.commit().map_err(QueueError::from)?;
             Ok(changed as i64)
         })
     }

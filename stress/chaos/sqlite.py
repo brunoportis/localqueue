@@ -4,43 +4,39 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-COUNTS_ZERO = {"ready": 0, "processing": 0, "acked": 0, "failed": 0}
+
+def database_path(queue_dir: Path) -> Path:
+    return queue_dir / "localqueue.db"
 
 
-def connect(path: Path, *, timeout: float = 5.0) -> sqlite3.Connection:
-    return sqlite3.connect(path, timeout=timeout)
+def inspect_pragmas(path: Path) -> dict[str, Any]:
+    with sqlite3.connect(path) as connection:
+        return {
+            "journal_mode": str(
+                connection.execute("PRAGMA journal_mode").fetchone()[0]
+            ).lower(),
+            "synchronous": int(connection.execute("PRAGMA synchronous").fetchone()[0]),
+            "busy_timeout_ms": int(
+                connection.execute("PRAGMA busy_timeout").fetchone()[0]
+            ),
+        }
 
 
-def create_queue_db(path: Path, *, synchronous: str = "NORMAL") -> sqlite3.Connection:
-    connection = connect(path)
-    connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute(f"PRAGMA synchronous={synchronous}")
-    connection.execute(
-        "CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY, status INTEGER NOT NULL, payload BLOB NOT NULL)"
-    )
-    connection.commit()
-    return connection
+def integrity_check(path: Path) -> str:
+    with sqlite3.connect(path) as connection:
+        return str(connection.execute("PRAGMA integrity_check").fetchone()[0])
 
 
-def counts(connection: sqlite3.Connection) -> dict[str, int]:
-    names = ("ready", "processing", "acked", "failed")
-    values = dict(
-        connection.execute("SELECT status, COUNT(*) FROM messages GROUP BY status")
-    )
-    return {name: int(values.get(index, 0)) for index, name in enumerate(names)}
+def checkpoint(path: Path) -> tuple[int, int, int]:
+    with sqlite3.connect(path) as connection:
+        row = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    return int(row[0]), int(row[1]), int(row[2])
 
 
-def pragmas(
-    connection: sqlite3.Connection, busy_timeout_ms: int = 5000
-) -> dict[str, Any]:
+def sqlite_error_fields(error: BaseException) -> dict[str, str]:
+    code = getattr(error, "sqlite_errorname", None)
     return {
-        "journal_mode": str(
-            connection.execute("PRAGMA journal_mode").fetchone()[0]
-        ).lower(),
-        "synchronous": int(connection.execute("PRAGMA synchronous").fetchone()[0]),
-        "busy_timeout_ms": busy_timeout_ms,
+        "public_type": type(error).__name__,
+        "sqlite_code": str(code or ""),
+        "message": " ".join(str(error).split()),
     }
-
-
-def integrity(connection: sqlite3.Connection) -> str:
-    return str(connection.execute("PRAGMA integrity_check").fetchone()[0]).lower()

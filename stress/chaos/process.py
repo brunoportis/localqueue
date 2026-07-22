@@ -47,6 +47,14 @@ class SynchronizedProcess:
         _write_logs(self.artifacts_dir, stdout, stderr)
         return self.process.returncode, stdout, stderr
 
+    def release_and_collect(self) -> tuple[int | None, str, str]:
+        self.connection.sendall(b"x")
+        self.connection.close()
+        self.listener.close()
+        stdout, stderr = _collect(self.process, 2.0)
+        _write_logs(self.artifacts_dir, stdout, stderr)
+        return self.process.returncode, stdout, stderr
+
 
 def _receive_line(connection: socket.socket, timeout: float) -> str:
     connection.settimeout(timeout)
@@ -132,16 +140,25 @@ def wait_for_notification(
 def run_process(
     args: Sequence[str], *, timeout: float, input_text: str | None = None
 ) -> subprocess.CompletedProcess[str]:
+    process = subprocess.Popen(
+        args,
+        stdin=subprocess.PIPE if input_text is not None else None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=os.name == "posix",
+    )
     try:
-        return subprocess.run(
-            args,
-            input=input_text,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
+        stdout, stderr = process.communicate(input=input_text, timeout=timeout)
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=process.returncode,
+            stdout=stdout,
+            stderr=stderr,
         )
     except subprocess.TimeoutExpired:
+        terminate_process(process)
+        _collect(process, 2.0)
         raise TimeoutError(f"subprocess exceeded {timeout:.1f}s timeout") from None
 
 
@@ -150,7 +167,10 @@ def terminate_process(
 ) -> int | None:
     if process.poll() is None:
         if os.name == "posix":
-            process.send_signal(signal.SIGKILL)
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         else:
             process.kill()
     try:

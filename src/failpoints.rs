@@ -12,6 +12,7 @@ pub enum Failpoint {
     AckBeforeCommit,
     NackBeforeCommit,
     FailBeforeCommit,
+    PurgeBeforeCommit,
 }
 
 impl Failpoint {
@@ -23,6 +24,7 @@ impl Failpoint {
             "ack-before-commit" => Self::AckBeforeCommit,
             "nack-before-commit" => Self::NackBeforeCommit,
             "fail-before-commit" => Self::FailBeforeCommit,
+            "purge-before-commit" => Self::PurgeBeforeCommit,
             _ => return None,
         })
     }
@@ -35,6 +37,7 @@ impl Failpoint {
             Self::AckBeforeCommit => "ack-before-commit",
             Self::NackBeforeCommit => "nack-before-commit",
             Self::FailBeforeCommit => "fail-before-commit",
+            Self::PurgeBeforeCommit => "purge-before-commit",
         }
     }
 }
