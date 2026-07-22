@@ -168,10 +168,16 @@ from .topology import TOPOLOGY
 
 bus = EventBus("./data", name="app", topology=TOPOLOGY)
 email = bus.subscription("email", concurrency=8)
+billing = bus.subscription("billing", concurrency=1)
 
 
 @email.handler(UserCreated)
 async def send_welcome_email(event: UserCreated) -> None:
+    ...
+
+
+@billing.handler(OrderPlaced)
+async def charge(event: OrderPlaced) -> None:
     ...
 
 
@@ -239,7 +245,9 @@ billing = bus.subscription("billing", concurrency=1)
 `concurrency` is a positive integer and defaults to `1`. It is process-local,
 in-memory configuration: it is not stored in the topology or SQLite. Reusing a
 subscription binder keeps its configured value; assigning a conflicting value
-in the same process raises `ValueError`.
+in the same process raises `ValueError`. Configure it before the first
+`run()` or `run_subscription()` for that subscription; later explicit changes
+raise `RuntimeError` rather than resizing active work.
 
 At most that many deliveries are claimed and handled by this process at once.
 When all slots are occupied, the consumer does not claim another delivery
@@ -249,11 +257,14 @@ Other processes still compete normally for the same durable subscription
 queue, so this setting is not a global limit.
 
 With the default `concurrency=1`, one process claims and processes deliveries
-sequentially. With a larger value, claim order remains FIFO where possible,
-but handler completion order is intentionally unspecified. Choose a value from
-the concurrency the downstream dependency can safely absorb (for example,
-email-provider or database connection limits), then measure and adjust; it is
-not automatic CPU sizing and it is not a handler timeout.
+sequentially: a delivery completes its transition before the next claim. With
+a larger value, claims follow the queue's available order, but handler and ACK
+completion order are intentionally unspecified; retries can change it further.
+Choose a value from the concurrency the downstream dependency and SQLite can
+safely absorb (for example, email-provider and database connection limits),
+considering external I/O and lease duration, then measure and adjust. Raising
+the limit does not guarantee more throughput; it is not automatic CPU sizing
+and it is not a handler timeout.
 
 This bound limits active local handlers, not durable backlog or producer rate.
 Use `SimpleQueue(max_pending_jobs=...)` for producer-side backlog limits and
@@ -264,7 +275,9 @@ Cancelling `run()` or `run_subscription()` stops further claims, cancels active
 async delivery tasks, closes the subscription queue, and propagates
 `CancelledError`. A synchronous handler already running in `asyncio.to_thread()`
 cannot be forcibly stopped; its result is not transitioned after cancellation,
-so normal lease expiry/retry recovery applies.
+its heartbeat stops, and normal lease expiry/retry recovery applies. Such
+handlers must be idempotent; hard isolation or handler timeouts are outside
+this API.
 
 ## Four distinct concepts
 

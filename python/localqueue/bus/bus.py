@@ -21,8 +21,6 @@ from localqueue.bus.topology import (
 )
 from localqueue.core import JsonSerializer, Serializer, SimpleQueue
 
-_DEFAULT_CONCURRENCY = object()
-
 
 class NoSubscribers(Exception):
     """Raised by ``dispatch`` when the topology has no matching route."""
@@ -96,6 +94,7 @@ class EventBus:
 
         self._handlers: dict[tuple[str, str], _HandlerRegistration] = {}
         self._subscription_concurrency: dict[str, int] = {}
+        self._started_subscriptions: set[str] = set()
 
     @staticmethod
     def _validate_name(value: str, field: str) -> None:
@@ -128,14 +127,18 @@ class EventBus:
         )
 
     def subscription(
-        self, name: str, *, concurrency: int | object = _DEFAULT_CONCURRENCY
+        self, name: str, *, concurrency: int | None = None
     ) -> Subscription:
         """Return a local handler binder for a declared subscription."""
         if not self.topology.has_subscription(name):
             raise ValueError(
                 f"subscription {name!r} is not declared in the bus topology"
             )
-        if concurrency is not _DEFAULT_CONCURRENCY:
+        if concurrency is not None:
+            if name in self._started_subscriptions:
+                raise RuntimeError(
+                    f"subscription {name!r} concurrency must be configured before run"
+                )
             if not isinstance(concurrency, int) or isinstance(concurrency, bool):
                 raise TypeError("'concurrency' must be a positive integer")
             if concurrency <= 0:
@@ -154,6 +157,10 @@ class EventBus:
     def _concurrency_for(self, subscription: str) -> int:
         """Return this process's configured bound for ``subscription``."""
         return self._subscription_concurrency.get(subscription, 1)
+
+    def _begin_consuming(self, subscription: str) -> None:
+        """Freeze subscription concurrency before its consumer starts."""
+        self._started_subscriptions.add(subscription)
 
     def _register_handler(
         self,

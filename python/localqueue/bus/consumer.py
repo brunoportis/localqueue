@@ -33,40 +33,39 @@ async def run_consumer(
     When cancelled, active delivery tasks are cancelled before the queue is
     closed, and ``CancelledError`` propagates to the caller.
     """
+    bus._begin_consuming(subscription)
     queue = bus._open_subscription_queue(subscription)
     concurrency = bus._concurrency_for(subscription)
     active: set[asyncio.Task[None]] = set()
 
-    async def reap(*, wait: bool) -> None:
-        """Observe completed deliveries, optionally waiting for one."""
+    def reap(done: set[asyncio.Task[None]]) -> None:
+        """Remove completed deliveries and propagate unexpected failures."""
+        active.difference_update(done)
+        for task in done:
+            task.result()
+
+    async def wait_for_delivery(timeout: Optional[float] = None) -> None:
+        """Wait for one delivery completion and consume its result."""
         if not active:
             return
         done, _ = await asyncio.wait(
             active,
-            return_when=(asyncio.FIRST_COMPLETED if wait else asyncio.ALL_COMPLETED),
+            timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
         )
-        active.difference_update(done)
-        for task in done:
-            task.result()
+        reap(done)
 
     try:
         idle_since: Optional[float] = None
         while True:
             if len(active) >= concurrency:
-                await reap(wait=True)
+                await wait_for_delivery()
                 continue
             try:
                 job = await asyncio.to_thread(queue.get, False)
             except Empty:
                 if active:
-                    done, _ = await asyncio.wait(
-                        active,
-                        timeout=_POLL_INTERVAL,
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    active.difference_update(done)
-                    for task in done:
-                        task.result()
+                    await wait_for_delivery(timeout=_POLL_INTERVAL)
                     continue
                 if idle_timeout is not None:
                     now = asyncio.get_running_loop().time()

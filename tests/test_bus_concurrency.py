@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import pytest
 from localqueue.bus import BaseEvent, BusTopology, EventBus
@@ -34,7 +35,7 @@ class TestSubscriptionConcurrencyConfiguration:
         with pytest.raises(ValueError, match="concurrency"):
             bus.subscription("email", concurrency=value)
 
-    @pytest.mark.parametrize("value", [True, 1.5, "2", None])
+    @pytest.mark.parametrize("value", [True, 1.5, "2", object()])
     def test_rejects_non_integer_concurrency(self, bus, value):
         with pytest.raises(TypeError, match="concurrency"):
             bus.subscription("email", concurrency=value)
@@ -45,14 +46,142 @@ class TestSubscriptionConcurrencyConfiguration:
         assert configured.concurrency == 8
         assert bus.subscription("email").concurrency == 8
 
+    def test_defaults_to_one_without_overwriting_configuration(self, bus):
+        assert bus.subscription("email").concurrency == 1
+        bus.subscription("email", concurrency=8)
+
+        assert bus.subscription("email").concurrency == 8
+
+    def test_repeating_explicit_value_is_idempotent(self, bus):
+        bus.subscription("email", concurrency=2)
+
+        assert bus.subscription("email", concurrency=2).concurrency == 2
+
     def test_rejects_conflicting_concurrency_for_same_subscription(self, bus):
         bus.subscription("email", concurrency=2)
 
         with pytest.raises(ValueError, match="already configured"):
             bus.subscription("email", concurrency=3)
 
+    def test_compatibility_registration_preserves_existing_configuration(self, bus):
+        bus.subscription("email", concurrency=8)
+        bus.on(WorkSubmitted, lambda event: None, subscription="email")
+
+        assert bus.subscription("email").concurrency == 8
+
+    def test_rejects_configuration_after_consumer_has_started(self, bus):
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        @bus.subscription("email").handler(WorkSubmitted)
+        async def handle(event):
+            started.set()
+            await release.wait()
+
+        bus.dispatch(WorkSubmitted(sequence=1))
+
+        async def consume():
+            task = asyncio.create_task(bus.run_subscription("email"))
+            await asyncio.wait_for(started.wait(), timeout=1.0)
+            with pytest.raises(RuntimeError, match="before run"):
+                bus.subscription("email", concurrency=2)
+            release.set()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        run(consume())
+
 
 class TestBoundedSubscriptionConcurrency:
+    def test_idle_timeout_waits_for_active_deliveries(self, bus):
+        subscription = bus.subscription("email", concurrency=2)
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        @subscription.handler(WorkSubmitted)
+        async def handle(event):
+            started.set()
+            await release.wait()
+
+        bus.dispatch(WorkSubmitted(sequence=1))
+
+        async def consume():
+            task = asyncio.create_task(bus.run_subscription("email", idle_timeout=0.05))
+            await asyncio.wait_for(started.wait(), timeout=1.0)
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(task), timeout=0.15)
+            release.set()
+            await asyncio.wait_for(task, timeout=1.0)
+
+        run(consume())
+
+    def test_sync_handlers_never_exceed_the_declared_bound(self, bus):
+        subscription = bus.subscription("email", concurrency=2)
+        entered = threading.Event()
+        release = threading.Event()
+        lock = threading.Lock()
+        active = 0
+        peak = 0
+
+        @subscription.handler(WorkSubmitted)
+        def handle(event):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+                if active == 2:
+                    entered.set()
+            release.wait(timeout=2.0)
+            with lock:
+                active -= 1
+
+        for sequence in range(4):
+            bus.dispatch(WorkSubmitted(sequence=sequence))
+
+        async def consume():
+            task = asyncio.create_task(bus.run_subscription("email", idle_timeout=0.1))
+            assert await asyncio.to_thread(entered.wait, 1.0)
+            release.set()
+            await asyncio.wait_for(task, timeout=2.0)
+
+        run(consume())
+
+        assert peak == 2
+
+    def test_full_slots_do_not_prefetch_more_deliveries(self, bus):
+        subscription = bus.subscription("email", concurrency=3)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        active = 0
+
+        @subscription.handler(WorkSubmitted)
+        async def handle(event):
+            nonlocal active
+            active += 1
+            if active == 3:
+                entered.set()
+            await release.wait()
+            active -= 1
+
+        for sequence in range(6):
+            bus.dispatch(WorkSubmitted(sequence=sequence))
+
+        async def consume():
+            task = asyncio.create_task(bus.run_subscription("email", idle_timeout=0.1))
+            await asyncio.wait_for(entered.wait(), timeout=1.0)
+            queue = bus._open_subscription_queue("email")
+            try:
+                stats = queue.stats()
+                assert stats["processing"] == 3
+                assert stats["ready"] == 3
+            finally:
+                queue.close()
+            release.set()
+            await asyncio.wait_for(task, timeout=2.0)
+
+        run(consume())
+
     def test_each_concurrent_delivery_keeps_its_own_heartbeat(self, tmp_path):
         instance = EventBus(
             str(tmp_path / "bus"),
@@ -215,3 +344,93 @@ class TestBoundedSubscriptionConcurrency:
             assert queue.stats()["ready"] == 1
         finally:
             queue.close()
+
+
+class TestIndependentSubscriptions:
+    def test_run_applies_each_subscription_bound_independently(self, tmp_path):
+        instance = EventBus(
+            str(tmp_path / "bus"),
+            name="test",
+            topology=BusTopology(
+                {"email": [WorkSubmitted], "billing": [WorkSubmitted]}
+            ),
+        )
+        email = instance.subscription("email", concurrency=3)
+        billing = instance.subscription("billing", concurrency=1)
+        email_active = 0
+        email_peak = 0
+        billing_active = 0
+        billing_peak = 0
+        email_started = asyncio.Event()
+        billing_started = asyncio.Event()
+        release = asyncio.Event()
+
+        @email.handler(WorkSubmitted)
+        async def send_email(event):
+            nonlocal email_active, email_peak
+            email_active += 1
+            email_peak = max(email_peak, email_active)
+            if email_active == 3:
+                email_started.set()
+            await release.wait()
+            email_active -= 1
+
+        @billing.handler(WorkSubmitted)
+        async def charge(event):
+            nonlocal billing_active, billing_peak
+            billing_active += 1
+            billing_peak = max(billing_peak, billing_active)
+            billing_started.set()
+            await release.wait()
+            billing_active -= 1
+
+        for sequence in range(3):
+            instance.dispatch(WorkSubmitted(sequence=sequence))
+
+        async def consume():
+            task = asyncio.create_task(instance.run(idle_timeout=0.1))
+            await asyncio.wait_for(email_started.wait(), timeout=1.0)
+            await asyncio.wait_for(billing_started.wait(), timeout=1.0)
+            assert email_peak == 3
+            assert billing_peak == 1
+            release.set()
+            await asyncio.wait_for(task, timeout=2.0)
+
+        try:
+            run(consume())
+        finally:
+            instance.close()
+
+        assert email_peak == 3
+        assert billing_peak == 1
+
+
+class TestConcurrentCausality:
+    def test_preserves_causality_metadata_for_concurrent_deliveries(self, bus):
+        subscription = bus.subscription("email", concurrency=2)
+        received = []
+        completed = asyncio.Event()
+
+        @subscription.handler(WorkSubmitted)
+        async def handle(event):
+            received.append(event)
+            if len(received) == 2:
+                completed.set()
+
+        root = WorkSubmitted(sequence=1)
+        child = WorkSubmitted.from_parent(root, sequence=2)
+        bus.dispatch(root)
+        bus.dispatch(child)
+
+        async def consume():
+            task = asyncio.create_task(bus.run_subscription("email", idle_timeout=0.1))
+            await asyncio.wait_for(completed.wait(), timeout=1.0)
+            await asyncio.wait_for(task, timeout=1.0)
+
+        run(consume())
+
+        received_by_id = {event.event_id: event for event in received}
+        assert received_by_id[root.event_id].correlation_id == root.correlation_id
+        assert received_by_id[root.event_id].causation_id is None
+        assert received_by_id[child.event_id].correlation_id == root.correlation_id
+        assert received_by_id[child.event_id].causation_id == root.event_id
