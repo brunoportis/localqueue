@@ -32,6 +32,7 @@ coverage.
 | `ack-before-commit` | processing=1 | ACK update before COMMIT | processing=1 |
 | `nack-before-commit` | processing=1 | NACK update before COMMIT | processing=1 |
 | `fail-before-commit` | processing=1 | fail update before COMMIT | processing=1 |
+| `purge-before-commit` | acked=1 | purge DELETE before COMMIT | acked=1 |
 
 The control scenarios run the corresponding committed transition and validate
 that it survives close and reopen. An uncommitted ACK/NACK/fail therefore does
@@ -74,3 +75,12 @@ Reports use schema version 1. A representative result is:
 SIGKILL is abrupt process termination, not physical power-loss evidence. It
 does not cover disk firmware, host caches, a power cut, or filesystem/media
 corruption. Those hardware and operational questions belong to issue #19/#31.
+
+The same feature also exposes `_test_set_max_page_count` for issue #19's
+deterministic disk-full scenario. SQLite's `max_page_count` is connection-local,
+so an external `sqlite3` connection cannot constrain the separate connection
+owned by `SimpleQueue`. This hook only imposes that SQLite condition; enqueue is
+still performed through public `SimpleQueue.put()`. These test-only methods are
+not compiled into normal builds or wheels. `_test_busy_timeout` is likewise a
+read-only `__crash_test` hook used to report the connection-local timeout from
+the actual Rust connection rather than from a separate Python connection.

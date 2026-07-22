@@ -18,3 +18,4 @@ build/
 site/
 target/
 *.so
+/artifacts/

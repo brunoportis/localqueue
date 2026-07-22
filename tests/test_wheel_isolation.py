@@ -6,6 +6,8 @@ from localqueue import localqueue as native
 
 def assert_no_failpoint_hooks(native_module=native, package=localqueue) -> None:
     assert not hasattr(native_module.NativeQueue, "_test_configure_failpoint")
+    assert not hasattr(native_module.NativeQueue, "_test_set_max_page_count")
+    assert not hasattr(native_module.NativeQueue, "_test_busy_timeout")
     assert not any(name.startswith("_test_") for name in dir(native_module.NativeQueue))
     assert not any("failpoint" in name.lower() for name in dir(native_module))
     assert not any("failpoint" in name.lower() for name in dir(package))

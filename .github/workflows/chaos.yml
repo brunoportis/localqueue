@@ -1,0 +1,79 @@
+name: Operational SQLite chaos
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/chaos.yml'
+      - 'docs/internal/operational-chaos.md'
+      - 'src/failpoints.rs'
+      - 'src/queue.rs'
+      - 'stress/chaos/**'
+      - 'stress/run_chaos.py'
+      - 'tests/test_chaos.py'
+      - 'tests/test_wheel_isolation.py'
+  workflow_dispatch:
+  schedule:
+    - cron: '31 4 * * 0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chaos-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  chaos:
+    name: Deterministic operational campaign
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+
+      - name: Install build and test tooling
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          python -m pip install --upgrade "maturin>=1.14,<2" "pytest>=8,<10"
+
+      - name: Build normal extension and verify wheel isolation
+        run: |
+          source .venv/bin/activate
+          maturin develop --locked
+          PYTHONPATH=python python - <<'PY'
+          from localqueue import SimpleQueue
+          import tempfile
+          with tempfile.TemporaryDirectory() as path:
+              queue = SimpleQueue(path)
+              assert not hasattr(queue._native, "_test_configure_failpoint")
+              assert not hasattr(queue._native, "_test_set_max_page_count")
+              assert not hasattr(queue._native, "_test_busy_timeout")
+              queue.close()
+          PY
+
+      - name: Build dedicated crash-test extension
+        run: |
+          source .venv/bin/activate
+          maturin develop --locked --features __crash_test
+
+      - name: Run complete campaign
+        run: |
+          source .venv/bin/activate
+          python stress/run_chaos.py \
+            --profile ci \
+            --output artifacts/chaos-report.json \
+            --artifacts-dir artifacts/scenarios
+
+      - name: Upload report and diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: chaos-report-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: warn
