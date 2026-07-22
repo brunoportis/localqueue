@@ -398,8 +398,7 @@ mod tests {
         assert_ne!(ids[0], ids[1]);
     }
 
-    #[test]
-    fn capacity_check_and_batch_insert_are_atomic() {
+    fn check_capacity_check_and_batch_insert_are_atomic() {
         let (_dir, storage) = open_storage();
         let policy = CapacityPolicy {
             queue_name: "q",
@@ -439,8 +438,7 @@ mod tests {
         assert_eq!(count, 1);
     }
 
-    #[test]
-    fn capacity_counts_only_new_distinct_job_ids() {
+    fn check_capacity_counts_only_new_distinct_job_ids() {
         let (_dir, storage) = open_storage();
         let policy = CapacityPolicy {
             queue_name: "q",
@@ -479,8 +477,7 @@ mod tests {
         assert_eq!(ids[1], ids[2]);
     }
 
-    #[test]
-    fn capacity_is_scoped_to_one_logical_queue() {
+    fn check_capacity_is_scoped_to_one_logical_queue() {
         let (_dir, storage) = open_storage();
         let entries = [
             EnqueueEntry {
@@ -531,8 +528,7 @@ mod tests {
             .unwrap();
     }
 
-    #[test]
-    fn opening_below_existing_pending_does_not_delete_rows() {
+    fn check_opening_below_existing_pending_does_not_delete_rows() {
         let (_dir, storage) = open_storage();
         let entries = [
             EnqueueEntry {
@@ -574,8 +570,7 @@ mod tests {
         assert_eq!(count, 2);
     }
 
-    #[test]
-    fn two_connections_never_oversubscribe_capacity() {
+    fn check_two_connections_never_oversubscribe_capacity() {
         let dir = tempfile_guard::TempDir::new();
         let path = dir.path().join("shared.db");
         let first = Storage::new(path.to_str().unwrap(), false).unwrap();
@@ -620,8 +615,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn sqlite_busy_is_not_reported_as_full_and_timeout_is_restored() {
+    fn check_sqlite_busy_is_not_reported_as_full_and_timeout_is_restored() {
         let (_dir, storage) = open_storage();
         let path = storage.path().to_owned();
         let blocker = Connection::open(path).unwrap();
@@ -656,8 +650,7 @@ mod tests {
         assert_eq!(timeout, BUSY_TIMEOUT_MS as i64);
     }
 
-    #[test]
-    fn retry_failed_checks_identity_before_capacity_and_updates_atomically() {
+    fn check_retry_failed_checks_identity_before_capacity_and_updates_atomically() {
         let (_dir, storage) = open_storage();
         let entries = [
             EnqueueEntry {
@@ -711,8 +704,7 @@ mod tests {
         assert_eq!(status, 0);
     }
 
-    #[test]
-    fn closed_storage_rejects_capacity_operations() {
+    fn check_closed_storage_rejects_capacity_operations() {
         let (_dir, storage) = open_storage();
         storage.close().unwrap();
         let entry = [EnqueueEntry {
@@ -737,6 +729,18 @@ mod tests {
             storage.retry_failed("q", 1, Some(1)),
             Err(QueueError::Closed)
         ));
+    }
+
+    #[test]
+    fn backpressure_transaction_contract() {
+        check_capacity_check_and_batch_insert_are_atomic();
+        check_capacity_counts_only_new_distinct_job_ids();
+        check_capacity_is_scoped_to_one_logical_queue();
+        check_opening_below_existing_pending_does_not_delete_rows();
+        check_two_connections_never_oversubscribe_capacity();
+        check_sqlite_busy_is_not_reported_as_full_and_timeout_is_restored();
+        check_retry_failed_checks_identity_before_capacity_and_updates_atomically();
+        check_closed_storage_rejects_capacity_operations();
     }
 
     // Guard mínimo de diretório temporário para os testes, sem dependência nova.
