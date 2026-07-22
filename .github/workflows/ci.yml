@@ -196,6 +196,13 @@ jobs:
             --cov-report=xml \
             --cov-fail-under=80
 
+      - name: Validate canonical benchmark smoke profile
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.14'
+        shell: bash
+        run: |
+          source .venv/bin/activate
+          python -m localqueue.benchmark --profile smoke --output "$RUNNER_TEMP/benchmark-smoke.json"
+
       - name: Upload coverage to Codecov
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.14'
         uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
