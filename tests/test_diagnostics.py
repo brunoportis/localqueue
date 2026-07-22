@@ -5,7 +5,7 @@ import sqlite3
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, fields
 from importlib import metadata
 from pathlib import Path
 
@@ -61,6 +61,20 @@ def test_empty_queue_returns_versioned_immutable_json_report(tmp_path: Path) -> 
     with pytest.raises(FrozenInstanceError):
         report.ready = 1  # type: ignore[misc]
 
+    queue.close()
+
+
+def test_to_dict_matches_the_public_dataclass_schema(tmp_path: Path) -> None:
+    queue = SimpleQueue(str(tmp_path))
+    report = queue.diagnostics()
+    serialized = report.to_dict()
+
+    public_fields = {field.name for field in fields(QueueDiagnostics)}
+
+    assert set(serialized) == public_fields
+    for field in fields(QueueDiagnostics):
+        assert serialized[field.name] == getattr(report, field.name)
+    json.dumps(serialized)
     queue.close()
 
 
@@ -249,6 +263,50 @@ def test_wal_is_reported_when_active(tmp_path: Path) -> None:
     assert report.wal_size_bytes > 0
     assert report.shm_size_bytes is not None
     assert report.shm_size_bytes > 0
+    queue.close()
+
+
+def test_relative_database_path_remains_stable_after_cwd_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_cwd = tmp_path / "original cwd"
+    changed_cwd = tmp_path / "changed cwd"
+    original_cwd.mkdir()
+    changed_cwd.mkdir()
+    monkeypatch.chdir(original_cwd)
+    queue = SimpleQueue("./relative data-\u00e5")
+    queue.put({"path": "stable"})
+    database = original_cwd / "relative data-\u00e5" / "localqueue.db"
+    expected_database_size = database.stat().st_size
+    expected_wal_size = Path(f"{database}-wal").stat().st_size
+    expected_shm_size = Path(f"{database}-shm").stat().st_size
+
+    try:
+        monkeypatch.chdir(changed_cwd)
+        report = queue.diagnostics()
+
+        assert queue.path == Path("relative data-\u00e5")
+        assert report.database_size_bytes == expected_database_size
+        assert report.wal_size_bytes == expected_wal_size
+        assert report.shm_size_bytes == expected_shm_size
+        assert not (changed_cwd / "relative data-\u00e5").exists()
+    finally:
+        queue.close()
+
+
+def test_absolute_database_path_with_spaces_and_unicode_is_reported(
+    tmp_path: Path,
+) -> None:
+    queue_directory = tmp_path / "absolute data-\u00e5"
+    queue = SimpleQueue(str(queue_directory))
+    queue.put({"path": "absolute"})
+
+    report = queue.diagnostics()
+    database = queue_directory / "localqueue.db"
+
+    assert report.database_size_bytes == database.stat().st_size
+    assert report.wal_size_bytes == Path(f"{database}-wal").stat().st_size
+    assert report.shm_size_bytes == Path(f"{database}-shm").stat().st_size
     queue.close()
 
 

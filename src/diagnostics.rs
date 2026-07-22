@@ -59,10 +59,31 @@ pub struct DiagnosticsSnapshot {
 }
 
 pub fn collect(storage: &Storage, queue: &str) -> Result<DiagnosticsSnapshot> {
-    let observed_at_ms = now_ms();
+    collect_after_transaction(storage, queue, now_ms, || {})
+}
+
+fn collect_after_transaction<F, H>(
+    storage: &Storage,
+    queue: &str,
+    clock: F,
+    snapshot_started: H,
+) -> Result<DiagnosticsSnapshot>
+where
+    F: FnOnce() -> i64,
+    H: FnOnce(),
+{
     let mut guard = storage.connection();
     let conn = guard.as_mut().ok_or(QueueError::Closed)?;
     let tx = conn.transaction()?;
+
+    // Establish SQLite's read snapshot before taking the wall-clock boundary.
+    // The timestamp is then immediately used by the aggregate below, so rows
+    // committed after it cannot enter this report with a newer state.
+    let _: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM messages)", [], |row| {
+        row.get(0)
+    })?;
+    snapshot_started();
+    let observed_at_ms = clock();
 
     let (
         ready,
@@ -209,6 +230,45 @@ mod tests {
         }
         writer.join().unwrap();
         assert_eq!(best_effort_size(&sidecar), None);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn observed_at_is_captured_after_waiting_for_the_connection_mutex() {
+        use std::sync::{mpsc, Arc};
+        use std::time::Duration;
+
+        let directory = std::env::temp_dir().join(format!(
+            "localqueue-observed-at-boundary-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let database = directory.join("localqueue.db");
+        let storage = Arc::new(Storage::new(database.to_str().unwrap(), false).unwrap());
+        let held_connection = storage.connection();
+        let (snapshot_started_tx, snapshot_started_rx) = mpsc::channel();
+        let (clock_value_tx, clock_value_rx) = mpsc::channel();
+        let worker_storage = Arc::clone(&storage);
+        let worker = std::thread::spawn(move || {
+            collect_after_transaction(
+                &worker_storage,
+                "queue",
+                || clock_value_rx.recv().unwrap(),
+                || snapshot_started_tx.send(()).unwrap(),
+            )
+            .unwrap()
+        });
+
+        drop(held_connection);
+        snapshot_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("transaction must start after waiting for the connection mutex");
+        clock_value_tx.send(123).unwrap();
+        let snapshot = worker.join().unwrap();
+
+        assert_eq!(snapshot.observed_at_ms, 123);
+        storage.close().unwrap();
         std::fs::remove_dir_all(directory).unwrap();
     }
 }

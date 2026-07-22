@@ -81,7 +81,9 @@ not invent a processing duration.
 
 Counts, ages, lease classifications, page values, and connection-local PRAGMAs
 come from the Rust-owned `SimpleQueue` connection. Counts and temporal
-aggregates are bounded SQL aggregates executed in one read transaction; no
+aggregates are bounded SQL aggregates executed in one read transaction. A
+bounded `EXISTS` establishes SQLite's read snapshot, then native code captures
+the single `observed_at` immediately before the aggregate that uses it; no
 payload is materialized or deserialized. A separate Python `sqlite3` connection
 is not used as the source for `synchronous` or `busy_timeout_ms`.
 
@@ -91,6 +93,11 @@ logical queue in the directory; only logical counts and ages are filtered by
 snapshot. WAL and SHM can appear, disappear, or change size concurrently, so
 their sizes are not promised to represent the exact SQL snapshot instant. No
 absolute path is included in the report.
+
+For filesystem database names, the native connection records the absolute file
+location when the queue opens. Later changes to the process current working
+directory therefore do not redirect diagnostics metadata or sidecar lookup,
+while `SimpleQueue.path` retains the path supplied by the caller.
 
 NORMAL and FULL describe SQLite synchronization policy. FULL requests more
 synchronization than NORMAL, but the report makes no claim about physical

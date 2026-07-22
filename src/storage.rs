@@ -22,8 +22,9 @@ pub struct Storage {
 
 impl Storage {
     pub fn new(path: &str, fsync: bool) -> Result<Self> {
+        let path = stable_database_path(path)?;
         let conn = Connection::open_with_flags(
-            path,
+            &path,
             OpenFlags::SQLITE_OPEN_READ_WRITE
                 | OpenFlags::SQLITE_OPEN_CREATE
                 | OpenFlags::SQLITE_OPEN_URI,
@@ -38,7 +39,7 @@ impl Storage {
 
         Ok(Self {
             conn: Mutex::new(Some(conn)),
-            path: PathBuf::from(path),
+            path,
         })
     }
 
@@ -127,6 +128,15 @@ impl Storage {
         tx.commit().map_err(QueueError::from)?;
         Ok(ids)
     }
+}
+
+fn stable_database_path(path: &str) -> Result<PathBuf> {
+    // SQLite URI filenames have their own path semantics. The public Python
+    // facade always passes filesystem paths, which are made absolute here.
+    if path.starts_with("file:") {
+        return Ok(PathBuf::from(path));
+    }
+    Ok(std::path::absolute(path)?)
 }
 
 fn enable_wal(conn: &Connection) -> Result<()> {
