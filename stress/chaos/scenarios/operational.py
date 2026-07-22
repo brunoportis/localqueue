@@ -94,6 +94,7 @@ def readonly(_: str) -> ScenarioResult:
                 "INSERT INTO messages(status, payload) VALUES (0, ?)", (b"known",)
             )
             connection.commit()
+            result.counts_before = counts(connection)
         original = path.stat().st_mode
         directory_mode = Path(directory.name).stat().st_mode
         os.chmod(path, original & ~0o222)
@@ -136,7 +137,6 @@ def readonly(_: str) -> ScenarioResult:
             os.chmod(path, original)
             os.chmod(Path(directory.name), directory_mode)
         _safe_integrity(result, path)
-        result.counts_before = result.counts_after_recovery
         result.status = "passed"
     except Exception as error:
         result.error = {"public_type": type(error).__name__, "message": str(error)}
@@ -151,7 +151,6 @@ def lock_timeout(_: str) -> ScenarioResult:
         expected_outcome="a real writer lock exceeds busy_timeout and retry after release succeeds",
     )
     directory, path = _fixture()
-    holder = None
     try:
         with create_queue_db(path) as connection:
             result.pragmas = pragmas(connection, 100)
@@ -176,6 +175,7 @@ def lock_timeout(_: str) -> ScenarioResult:
                 )
             contender.close()
             connection.rollback()
+            result.counts_after_failure = counts(connection)
             with connect(path, timeout=1) as retry:
                 retry.execute("BEGIN IMMEDIATE")
                 retry.execute(
@@ -191,8 +191,6 @@ def lock_timeout(_: str) -> ScenarioResult:
     except Exception as error:
         result.error = {"public_type": type(error).__name__, "message": str(error)}
     finally:
-        if holder:
-            terminate_process(holder)
         directory.cleanup()
     return result.finish()
 
@@ -343,6 +341,16 @@ def _termination(name: str, operation: str) -> ScenarioResult:
             result.counts_after_recovery == result.counts_before,
             "uncommitted mutation absent after fresh reopen",
         )
+        with connect(path) as retry:
+            retry.execute("BEGIN IMMEDIATE")
+            if operation == "maintenance transaction":
+                retry.execute("DELETE FROM messages WHERE status=2")
+            else:
+                retry.execute("INSERT INTO messages(status,payload) VALUES (0,'retry')")
+            retry.commit()
+        result.retry_attempted = True
+        result.retry_safe = True
+        result.retry_succeeded = True
         result.status = "passed"
     except Exception as error:
         result.error = {"public_type": type(error).__name__, "message": str(error)}
