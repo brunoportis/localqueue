@@ -122,7 +122,7 @@ def dependency_wheelhouse(
     cache: Path, offline: bool
 ) -> tuple[Path, list[dict[str, str]]]:
     lock = load_toml(DEPENDENCY_LOCK)
-    wheelhouse = cache / "eventbus-dependencies"
+    wheelhouse = cache / "eventbus-dependencies" / sha256(DEPENDENCY_LOCK)
     used: list[dict[str, str]] = []
     for artifact in lock["artifact"]:
         path, source = download_artifact(
@@ -157,6 +157,9 @@ def install(
         command[4:4] = ["--find-links", str(wheelhouse)]
     subprocess.run(command, check=True, capture_output=True, text=True)
     if event_bus:
+        dependencies = sorted(wheelhouse.glob("*.whl")) if wheelhouse else []
+        if len(dependencies) != 5:
+            raise MatrixError("dependency wheelhouse is incomplete")
         subprocess.run(
             [
                 str(python),
@@ -164,9 +167,8 @@ def install(
                 "pip",
                 "install",
                 "--no-index",
-                "--find-links",
-                str(wheelhouse),
-                "pydantic==2.12.5",
+                "--no-deps",
+                *map(str, dependencies),
             ],
             check=True,
             capture_output=True,
@@ -294,7 +296,13 @@ def current_provenance(current: Path, supplied_sha: str | None) -> dict[str, Any
     commit = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=current, text=True
     ).strip()
-    dirty = subprocess.run(["git", "diff", "--quiet"], cwd=current).returncode != 0
+    dirty = bool(
+        subprocess.check_output(
+            ["git", "status", "--porcelain", "--untracked-files=normal"],
+            cwd=current,
+            text=True,
+        )
+    )
     return {
         "source_kind": "checkout wheel",
         "source_path": sanitize(current.resolve()),

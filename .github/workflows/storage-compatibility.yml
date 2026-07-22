@@ -31,10 +31,19 @@ jobs:
             --current . \
             --cache-dir ~/.cache/localqueue-compat \
             --output compatibility-report.json
+      - name: Prove verified cache works offline
+        run: |
+          uv run --no-sync python compatibility/run_matrix.py \
+            --current . \
+            --cache-dir ~/.cache/localqueue-compat \
+            --offline \
+            --output compatibility-report-offline.json
       - name: Upload compatibility report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: storage-compatibility-${{ github.run_id }}
-          path: compatibility-report.json
+          path: |
+            compatibility-report.json
+            compatibility-report-offline.json
           if-no-files-found: warn

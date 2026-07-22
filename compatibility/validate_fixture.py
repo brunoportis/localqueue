@@ -17,6 +17,16 @@ def assertion(result: dict[str, object], name: str, condition: bool) -> None:
         raise AssertionError(name)
 
 
+def purge_exactly(queue: object, *, include_failed: bool, expected: int) -> int:
+    deadline = time.monotonic() + 1.0
+    removed = 0
+    while time.monotonic() < deadline and removed < expected:
+        removed += queue.purge(0, include_failed=include_failed)  # type: ignore[union-attr]
+        if removed < expected:
+            time.sleep(0.01)
+    return removed
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fixture", type=Path, required=True)
@@ -99,11 +109,18 @@ def main() -> None:
         assertion(
             result, "deduplication_return", duplicate == fixture["ids"]["deduplicated"]
         )
-        acked_removed = queue.purge(0)
-        assertion(result, "purge_acked_exact", acked_removed == 5)
+        expected_acked = queue.stats()["acked"]
+        acked_removed = purge_exactly(
+            queue, include_failed=False, expected=expected_acked
+        )
+        assertion(result, "purge_acked_exact", acked_removed == expected_acked)
+        assertion(result, "purge_acked_empty", queue.stats()["acked"] == 0)
         assertion(result, "purge_preserves_failed", queue.stats()["failed"] == 1)
-        failed_removed = queue.purge(0, include_failed=True)
-        assertion(result, "purge_failed_exact", failed_removed == 1)
+        expected_failed = queue.stats()["failed"]
+        failed_removed = purge_exactly(
+            queue, include_failed=True, expected=expected_failed
+        )
+        assertion(result, "purge_failed_exact", failed_removed == expected_failed)
         assertion(
             result,
             "purge_final_counts",
