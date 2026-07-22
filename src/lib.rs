@@ -12,7 +12,8 @@ use pyo3::prelude::*;
 
 use backup::BackupSnapshot;
 use diagnostics::DiagnosticsSnapshot;
-use error::{Empty, Full, LeaseExpired, LocalQueueError, _FullImpossible};
+use error::_FullImpossible;
+use error::{Empty, Full, LeaseExpired, LocalQueueError};
 use integrity::IntegrityCheckSnapshot;
 use queue::{FailedMessage, Lease, NativeQueue, Stats};
 
