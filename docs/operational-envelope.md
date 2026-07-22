@@ -46,7 +46,7 @@ Do not use NFS, SMB/CIFS, distributed volumes, cloud-sync folders, multiple host
 
 ## Platforms, Python, and wheels
 
-The package declares CPython >=3.10 through 3.14 in [`pyproject.toml`](../pyproject.toml). CI exercises Linux 3.10/3.14, macOS 3.14, and Windows 3.14 in [CI](../.github/workflows/ci.yml). The wheel workflow builds Linux x86_64 and aarch64, macOS x86_64 and arm64, and Windows x86_64 wheels; it smoke-tests all but Linux ARM64 on CPython 3.13. Linux ARM64 is artifact-validated under QEMU, not smoke-tested. A platform without a matching wheel can require a local Rust build. Linux is the deepest evidence; Windows/macOS have CI tests; physical ARM64 evidence is absent.
+`requires-python` is `>=3.10` with no upper bound. Current classifiers and wheels cover CPython 3.10–3.14; CI exercises only the combinations explicitly listed in [CI](../.github/workflows/ci.yml). Future Python versions are not supported merely because they satisfy `>=3.10`. The wheel workflow builds Linux x86_64 and aarch64, macOS x86_64 and arm64, and Windows x86_64 wheels; it smoke-tests all but Linux ARM64 on CPython 3.13. Linux ARM64 is artifact-validated under QEMU, not smoke-tested. A platform without a matching wheel can require a local Rust build. Linux is the deepest evidence; Windows/macOS have CI tests; physical ARM64 evidence is absent.
 
 ## Delivery, leases, and deduplication
 
@@ -54,13 +54,15 @@ The package declares CPython >=3.10 through 3.14 in [`pyproject.toml`](../pyproj
 
 `nack(delay=...)` returns a transient failure to ready/delayed work; exhaustion of `max_retries` and an expired final lease move it to failed (dead-letter). `fail` moves it there directly; `retry_failed(id)` makes it ready again. Reclaim returns an expired lease to ready unless its maximum attempts are exhausted. The later valid transition wins; a losing stale ACK/NACK cannot overwrite it. Process death after a claim therefore leads to reclaim and possible redelivery (see `TestContract.test_crash_between_get_and_ack`).
 
+The native counter increments on claim. `SimpleQueue` configures `max_attempts = max_retries + 1`; the public `Job.attempts` is zero-based, so the first delivery has `attempts == 0`. `max_retries=3` permits up to four total claims. NACK or lease expiration after the limit moves the record to failed. `retry_failed()` starts processing again under the current contract; it does not promise to erase history that the API does not erase. See [`SimpleQueue.__init__`](../python/localqueue/core.py), [`claim_next`](../src/queue.rs), and [`test_contract.py`](../tests/test_contract.py).
+
 `job_id` deduplicates within a logical queue. A duplicate returns the original internal id and does not replace its payload; it remains deduplicated while its record exists, including ACKed and failed states, until applicable `purge()`. It does not mean one processing execution. Evidence: [`test_contract.py`](../tests/test_contract.py) and [`test_batch.py`](../tests/test_batch.py).
 
 ## Durability: NORMAL and FULL
 
 **Guarantee:** `fsync=False` selects SQLite `synchronous=NORMAL`; `fsync=True` selects `FULL` (see [`core.py`](../python/localqueue/core.py) and [`test_diagnostics.py`](../tests/test_diagnostics.py)). NORMAL is the default and trades stronger synchronization for cost. FULL requests SQLite's stronger synchronization mode and has a measured cost in the reports below.
 
-**Measured:** deterministic Linux process-kill and transactional failpoint tests verify atomic outcomes and integrity for NORMAL/FULL-related settings; see [`test_crash_recovery.py`](../tests/test_crash_recovery.py) and [`operational-chaos.md`](internal/operational-chaos.md). Process crash is not power loss. Neither mode proves safety through physical power loss, kernel panic, corrupt filesystem, lying controller cache, defective SD card, undervoltage, or failed storage. #31's physical campaign is not complete.
+**Measured:** the deterministic SIGKILL/failpoint crash harness currently uses NORMAL. Separate chaos lifecycle/reopen/integrity scenarios exercise NORMAL and FULL, and the benchmark reports include both modes; see [`test_crash_recovery.py`](../tests/test_crash_recovery.py), [`test_chaos.py`](../tests/test_chaos.py), and [`operational-chaos.md`](internal/operational-chaos.md). Process crash is not power loss. Neither mode proves safety through physical power loss, kernel panic, corrupt filesystem, lying controller cache, defective SD card, undervoltage, or failed storage. #31's physical campaign is not complete.
 
 ## Capacity, concurrency, and backpressure
 
@@ -70,13 +72,13 @@ The package declares CPython >=3.10 through 3.14 in [`pyproject.toml`](../pyproj
 
 ## EventBus operations
 
-**Guarantee:** EventBus uses a static topology of events and subscriptions, persists one delivery envelope per subscription, and dispatch records `correlation_id` and `causation_id`. Old envelopes remain backward compatible; `event_id` deduplicates per subscription. A subscription has one claim loop and a bounded delivery set (`max_concurrency`), not unlimited prefetch. See [`docs/event-bus.md`](event-bus.md), [`bus.py`](../python/localqueue/bus/bus.py), and [`test_bus_concurrency.py`](../tests/test_bus_concurrency.py).
+**Guarantee:** EventBus uses a static topology of events and subscriptions, persists one delivery envelope per subscription, and dispatch records `correlation_id` and `causation_id`. Old envelopes remain backward compatible; `event_id` deduplicates per subscription. A subscription has one claim loop and a bounded delivery set (`concurrency=N`, configured as `bus.subscription("name", concurrency=N)`), not unlimited prefetch. See [`docs/event-bus.md`](event-bus.md), [`bus.py`](../python/localqueue/bus/bus.py), and [`test_bus_concurrency.py`](../tests/test_bus_concurrency.py).
 
-Delivery has heartbeat/lease extension, reclaim, retry, permanent-error dead-lettering, and cooperative cleanup. External cancellation takes precedence over ordinary delivery cleanup; lease loss prevents ACK; async timeout cancels the task and awaits cleanup before releasing its slot. Sibling runners are cancelled during shutdown. Sync handlers run in a thread; Python cannot safely kill that thread, so synchronous handlers do not support timeout. Use subprocess isolation if hard termination is a requirement. Evidence: [`test_bus_timeout.py`](../tests/test_bus_timeout.py) and [`test_bus_concurrency.py`](../tests/test_bus_concurrency.py).
+Delivery has heartbeat/lease extension, reclaim, retry, permanent-error dead-lettering, and cooperative cleanup. The tested precedence is external cancellation > lease loss > internal async timeout > permanent error > transient error > success. Lease loss prevents ACK; timeout is exclusive to async handlers; cleanup is cooperative and a slot is released only after cleanup and the state transition. Sibling runners are cancelled during shutdown. Sync handlers run in a thread; Python cannot safely kill that thread, so synchronous handlers do not support timeout. Use subprocess isolation if hard termination is a requirement. Evidence: [`test_bus_timeout.py`](../tests/test_bus_timeout.py) and [`test_bus_concurrency.py`](../tests/test_bus_concurrency.py).
 
 ## Performance and practical concurrency
 
-**Measured, not guaranteed:** reports for package 1.1.2 / commit `46c51c92` are [standard JSON](evidence/operational-envelope/46c51c92/benchmark-standard.json), [standard Markdown](evidence/operational-envelope/46c51c92/benchmark-standard.md), [multiprocess JSON](evidence/operational-envelope/46c51c92/benchmark-multiprocess.json), and [multiprocess Markdown](evidence/operational-envelope/46c51c92/benchmark-multiprocess.md). They record Linux 7.0.13, x86_64, CPython 3.13.13, SQLite 3.50.4, tmpfs, payload, producer/consumer count, durability, samples, throughput and percentiles.
+**Measured, not guaranteed:** reports for a wheel built from commit `46c51c9218cd2ee8cc84d575f8ff635d2dd2b8da` are [standard JSON.gz](evidence/operational-envelope/46c51c92/benchmark-standard.json.gz), [standard Markdown](evidence/operational-envelope/46c51c92/benchmark-standard.md), [multiprocess JSON.gz](evidence/operational-envelope/46c51c92/benchmark-multiprocess.json.gz), and [multiprocess Markdown](evidence/operational-envelope/46c51c92/benchmark-multiprocess.md). The checkout metadata still declared `1.1.2`, but this commit contains work after the public v1.1.2 release; this is not the published v1.1.2 wheel. Reports record Linux 7.0.13, x86_64, CPython 3.13.13, Python stdlib sqlite3 3.50.4, native localqueue SQLite 3.46.0, tmpfs, payload, producer/consumer count, durability, samples, throughput and percentiles. The native SQLite version is operationally relevant to queue scenarios. #32 will produce candidate reports with coherent final version metadata.
 
 | Scenario | P/C | payload | mode | sample | throughput | p50 / p95 / p99 | limitation |
 | --- | --- | --- | --- | ---: | ---: | --- | --- |
@@ -148,18 +150,18 @@ Release notes must link here and their public wording must be reviewed against t
 | --- | --- | --- | --- |
 | multiprocess safety | Guarantee | [`test_concurrency.py`](../tests/test_concurrency.py) | local host/filesystem only |
 | at-least-once | Guarantee | [`test_contract.py`](../tests/test_contract.py) | duplicates require idempotency |
-| receipt fencing | Guarantee | `test_worker_a_expires_b_reserves_a_ack_rejected` | not distributed fencing |
-| lease reclaim | Guarantee | `test_expired_job_does_not_exceed_max_attempts` | timed local leases |
+| receipt fencing | Guarantee | [`test_worker_a_expires_b_reserves_a_ack_rejected`](../tests/test_contract.py) | not distributed fencing |
+| lease reclaim | Guarantee | [`test_expired_job_does_not_exceed_max_attempts`](../tests/test_contract.py) | timed local leases |
 | deduplication | Guarantee | [`test_batch.py`](../tests/test_batch.py) | not exactly-once |
 | bounded backlog | Guarantee | [`test_backpressure.py`](../tests/test_backpressure.py) | logical count, not bytes |
 | diagnostics | Guarantee | [`test_diagnostics.py`](../tests/test_diagnostics.py) | no telemetry exporter |
 | integrity / backup | Guarantee | [`test_integrity.py`](../tests/test_integrity.py), [`test_backup.py`](../tests/test_backup.py) | does not repair corruption |
 | process crash behavior | Measured | [`test_crash_recovery.py`](../tests/test_crash_recovery.py) | not power loss |
 | SQLite operational chaos | Measured | [`stress/chaos`](../stress/chaos) | controlled Linux faults |
-| multiprocess benchmark | Measured | [report](evidence/operational-envelope/46c51c92/benchmark-multiprocess.md) | tmpfs CI profile |
+| multiprocess benchmark | Measured | [report](evidence/operational-envelope/46c51c92/benchmark-multiprocess.md) and [compressed JSON](evidence/operational-envelope/46c51c92/benchmark-multiprocess.json.gz) | tmpfs CI profile |
 | EventBus concurrency | Guarantee | [`test_bus_concurrency.py`](../tests/test_bus_concurrency.py) | static local topology |
 | async timeout | Guarantee | [`test_bus_timeout.py`](../tests/test_bus_timeout.py) | sync timeout unsupported |
 | storage compatibility | Measured | [`compatibility`](../compatibility) | Linux x86_64 CPython 3.14 |
-| ARM64 | Untested | wheel workflow | no physical smoke |
-| physical power loss | Untested | #31 | not performed |
+| ARM64 | Untested | [wheel workflow](../.github/workflows/wheels.yml) | no physical smoke |
+| physical power loss | Untested | [#31](https://github.com/brunoportis/localqueue/issues/31) | not performed |
 | network filesystems | Unsupported | no localqueue evidence | do not deploy |
