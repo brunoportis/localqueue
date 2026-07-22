@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,10 @@ from compatibility.run_matrix import (
     sanitize,
     sha256,
     write_json_atomic,
+)
+
+pytestmark = pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="the matrix runner is pinned to CPython 3.14"
 )
 
 

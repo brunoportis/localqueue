@@ -16,8 +16,6 @@ from pathlib import Path
 from typing import Any
 from urllib.request import urlopen
 
-import tomllib
-
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "compatibility" / "baselines.toml"
 POLICY = ROOT / "compatibility" / "policy.toml"
@@ -45,6 +43,8 @@ def write_json_atomic(path: Path, data: dict[str, Any]) -> None:
 
 
 def load_manifest(path: Path = MANIFEST) -> dict[str, Any]:
+    import tomllib
+
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     matrix = data.get("matrix")
     baselines = data.get("baseline")
@@ -298,7 +298,7 @@ def main() -> int:
             "import_paths": current_proof,
         }
         before = schema_fingerprint(current_venv, work)
-        policy = tomllib.loads(POLICY.read_text(encoding="utf-8"))
+        policy = load_toml(POLICY)
         if policy["schema_fingerprint"] != before:
             raise MatrixError("schema fingerprint differs from compatibility policy")
         report["schema_fingerprint_before"] = before
@@ -374,6 +374,12 @@ def main() -> int:
         if work and not args.keep_work_dir and args.work_dir is None:
             shutil.rmtree(work, ignore_errors=True)
     return 0 if report["status"] == "passed" else 1
+
+
+def load_toml(path: Path) -> dict[str, Any]:
+    import tomllib
+
+    return tomllib.loads(path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
