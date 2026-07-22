@@ -27,7 +27,8 @@ service.
 [Installation](#installation) · [Quick start](#quick-start) ·
 [Worker](#worker) · [Event bus](#event-bus) ·
 [Guarantees](#delivery-guarantees) ·
-[API](#api-overview) · [Changelog](CHANGELOG.md) ·
+[Diagnostics](#runtime-diagnostics) · [API](#api-overview) ·
+[Changelog](CHANGELOG.md) ·
 [Development](#development)
 
 ## Installation
@@ -258,10 +259,38 @@ queue = SimpleQueue(
 | `extend_lease(job, seconds)` | Renew the current delivery lease by a positive duration. |
 | `reclaim_expired_leases()` | Reclaim expired leases explicitly; `get()` also does this automatically. |
 | `stats()` | Return `ready`, `processing`, `acked`, and `failed` counts. |
+| `diagnostics()` | Return a typed, immutable, read-only operational snapshot. |
 | `list_failed(limit=100, offset=0)` | Inspect dead-letter jobs. |
 | `retry_failed(message_id)` | Move a dead-letter job back to `ready`. |
 | `purge(older_than, include_failed=False)` | Delete old terminal records. |
 | `vacuum()` | Compact the shared SQLite database. Run during a maintenance window. |
+
+## Runtime diagnostics
+
+Capture a typed, immutable operational snapshot without opening SQLite
+directly:
+
+```python
+import json
+
+from localqueue import SimpleQueue
+
+
+queue = SimpleQueue("./data")
+report = queue.diagnostics()
+
+print(report)
+print(json.dumps(report.to_dict(), indent=2))
+queue.close()
+```
+
+Diagnostics reports logical counts and ages for the selected queue together
+with effective SQLite settings and best-effort shared database/WAL/SHM sizes.
+It is read-only and does not reclaim leases, checkpoint WAL, or run an
+integrity check. See the
+[runtime diagnostics reference](https://github.com/brunoportis/localqueue/blob/main/docs/diagnostics.md)
+for field types, snapshot semantics, clock limitations, and the boundary with
+integrity/backup maintenance.
 
 ## Architecture
 
