@@ -15,6 +15,7 @@ from localqueue.benchmark.errors import BenchmarkExecutionError
 from localqueue.benchmark.metrics import MetricSummary, percentile
 from localqueue.benchmark.models import BenchmarkReport, ScenarioResult
 from localqueue.benchmark.profiles import get_profile
+from localqueue.benchmark.render import render_markdown
 from localqueue.benchmark.runner import run_profile
 from localqueue.exceptions import LocalQueueError
 
@@ -24,6 +25,120 @@ def test_percentile_uses_nearest_rank() -> None:
     assert percentile(samples, 0.50) == 30
     assert percentile(samples, 0.95) == 90
     assert percentile(samples, 0.99) == 90
+
+
+def test_markdown_renderer_supports_single_process_and_escapes_content() -> None:
+    report = {
+        "schema_version": 1,
+        "subject": {"package_version": "1|2", "commit_sha": "abc`def"},
+        "environment": {"os": "line1\nline2"},
+        "profile": {"name": "standard", "canonical": True},
+        "scenarios": [
+            {
+                "scenario_id": "put|one",
+                "parameters": {
+                    "durability": "normal",
+                    "payload_requested_bytes": 100,
+                    "payload_serialized_bytes": 101,
+                    "serializer": "json",
+                    "padding_method": "x",
+                },
+                "work_units": {"messages": 2},
+                "summary": {
+                    "p50_ns": 1,
+                    "p95_ns": 2,
+                    "p99_ns": 3,
+                    "messages_per_second": 4,
+                },
+                "correctness": {"ok": True},
+                "status": "passed",
+            }
+        ],
+    }
+    first = render_markdown(report)
+    assert first == render_markdown(report)
+    assert "1\\|2" in first
+    assert "abc\\`def" in first
+    assert "line1<br>line2" in first
+    assert "put\\|one" in first
+
+
+def test_markdown_renderer_includes_multiprocess_evidence() -> None:
+    report = {
+        "schema_version": 1,
+        "subject": {"package_version": "1.2.3", "commit_sha": "abc"},
+        "environment": {"os": "Linux"},
+        "profile": {
+            "name": "multiprocess-release",
+            "canonical": False,
+            "overrides": {"large_db_rows": 100},
+        },
+        "scenarios": [
+            {
+                "scenario_id": "wrapper",
+                "status": "failed",
+                "sqlite": {},
+                "correctness": {},
+                "multiprocess": {
+                    "scenario_id": "mp-large",
+                    "parameters": {
+                        "durability": "full",
+                        "producers": 1,
+                        "consumers": 1,
+                        "payload_requested_bytes": 100,
+                        "payload_serialized_bytes": 100,
+                        "serializer": "localqueue.JsonSerializer",
+                        "padding_method": "sha256",
+                        "messages": 2,
+                    },
+                    "throughput": {"produced_per_second": 3.0, "acked_per_second": 2.0},
+                    "metric_series": {
+                        "claim_latency": {
+                            "summary": {"p50_ns": 1, "p95_ns": 2, "p99_ns": 3}
+                        },
+                        "roundtrip_latency": {
+                            "summary": {"p50_ns": 4, "p95_ns": 5, "p99_ns": 6}
+                        },
+                    },
+                    "processes": [
+                        {
+                            "id": "producer-0",
+                            "role": "producer",
+                            "status": "passed",
+                            "exit_code": 0,
+                            "peak_rss_bytes": None,
+                            "rss_method": None,
+                        }
+                    ],
+                    "sqlite": {"journal_mode": "wal", "synchronous_name": "FULL"},
+                    "files": {
+                        "after_close": {"database": {"exists": True, "size_bytes": 42}}
+                    },
+                    "correctness": {
+                        "ok": False,
+                        "id_validation": {"ok": False},
+                        "stats": {"ready": 1},
+                        "integrity": {"ok": True},
+                    },
+                    "error": {"type": "RuntimeError", "message": "failed"},
+                    "status": "failed",
+                },
+            }
+        ],
+        "run": {"status": "failed"},
+    }
+    rendered = render_markdown(report)
+    for expected in (
+        "1.2.3",
+        "large_db_rows",
+        "producer-0",
+        "FULL",
+        "after_close",
+        "ID validation",
+        "Failure",
+        "Limitations",
+    ):
+        assert expected in rendered
 
 
 def test_percentile_single_sample_and_empty_input() -> None:

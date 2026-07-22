@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import functools
 import hashlib
-import json
 import multiprocessing
 import operator
 import platform
@@ -16,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from localqueue import Empty, SimpleQueue
+from localqueue import Empty, JsonSerializer, LocalQueueError, SimpleQueue
 from localqueue.benchmark.environment import environment, subject
 from localqueue.benchmark.errors import BenchmarkExecutionError
 from localqueue.benchmark.metrics import MetricSummary
@@ -38,6 +37,12 @@ def peak_rss_bytes() -> int | None:
     return int(value * 1024 if platform.system() == "Linux" else value)
 
 
+def rss_method() -> str | None:
+    if _resource is None or platform.system() not in {"Linux", "Darwin"}:
+        return None
+    return "resource.getrusage(RUSAGE_SELF).ru_maxrss"
+
+
 def make_payload(
     identifier: int, producer_index: int, requested: int
 ) -> tuple[dict[str, Any], int]:
@@ -47,12 +52,13 @@ def make_payload(
         "created_ns": time.monotonic_ns(),
         "padding": "",
     }
-    envelope = len(json.dumps(value, separators=(",", ":"), sort_keys=True).encode())
+    serializer = JsonSerializer()
+    envelope = len(serializer.dumps(value))
     value["padding"] = (
         hashlib.sha256(f"{identifier}:{producer_index}".encode()).hexdigest()
         * (requested // 64 + 2)
     )[: max(0, requested - envelope)]
-    return value, len(json.dumps(value, separators=(",", ":"), sort_keys=True).encode())
+    return value, len(serializer.dumps(value))
 
 
 def producer_target(
@@ -76,9 +82,17 @@ def producer_target(
         ready.wait()
         for identifier in range(start, start + count):
             value, actual = make_payload(identifier, index, requested)
-            before = time.monotonic_ns()
-            value["created_ns"] = before
-            queue.put(value, job_id=value["id"])
+            while True:
+                before = time.monotonic_ns()
+                value["created_ns"] = before
+                actual = len(JsonSerializer().dumps(value))
+                try:
+                    queue.put(value, job_id=value["id"])
+                    break
+                except LocalQueueError as exc:
+                    if "database is locked" not in str(exc).lower():
+                        raise
+                    time.sleep(0.002)
             if identifier % sample_stride == 0:
                 puts.append((identifier, time.monotonic_ns() - before))
             produced += 1
@@ -94,6 +108,7 @@ def producer_target(
                 "put_samples": puts,
                 "actual_serialized_bytes": actual,
                 "peak_rss_bytes": peak_rss_bytes(),
+                "rss_method": rss_method(),
             }
         )
     except Exception as exc:
@@ -106,9 +121,10 @@ def producer_target(
                 "produced": produced,
                 "error": str(exc),
                 "peak_rss_bytes": peak_rss_bytes(),
+                "rss_method": rss_method(),
             }
         )
-        raise
+        raise SystemExit(1) from None
     finally:
         queue.close()
 
@@ -124,9 +140,11 @@ def consumer_target(
     full: bool,
     timeout: float,
     sample_stride: int,
+    exact_ids: bool,
 ) -> None:
     claimed = acked = 0
     consumed_ids: list[int] = []
+    id_count = id_sum = id_xor = id_digest = out_of_range = 0
     claims: list[tuple[int, int]] = []
     roundtrips: list[tuple[int, int]] = []
     queue = SimpleQueue(path, name, fsync=full)
@@ -145,9 +163,26 @@ def consumer_target(
                 ):
                     break
                 continue
+            except LocalQueueError as exc:
+                if "database is locked" not in str(exc).lower():
+                    raise
+                time.sleep(0.002)
+                continue
             claim_done = time.monotonic_ns()
             message_id = int(job.data["id"]) if isinstance(job.data, dict) else -1
-            consumed_ids.append(message_id)
+            if exact_ids:
+                consumed_ids.append(message_id)
+            id_count += 1
+            id_sum += message_id
+            id_xor ^= message_id
+            id_digest = (
+                id_digest
+                + int.from_bytes(
+                    hashlib.sha256(str(message_id).encode()).digest(), "big"
+                )
+            ) % (1 << 256)
+            if message_id < 0 or message_id >= total:
+                out_of_range += 1
             if message_id % sample_stride == 0:
                 claims.append((message_id, claim_done - before))
             claimed += 1
@@ -171,7 +206,15 @@ def consumer_target(
                 "claim_samples": claims,
                 "roundtrip_samples": roundtrips,
                 "consumed_ids": consumed_ids,
+                "id_aggregate": {
+                    "count": id_count,
+                    "sum": id_sum,
+                    "xor": id_xor,
+                    "digest": f"{id_digest:064x}",
+                    "out_of_range": out_of_range,
+                },
                 "peak_rss_bytes": peak_rss_bytes(),
+                "rss_method": rss_method(),
             }
         )
     except Exception as exc:
@@ -184,11 +227,19 @@ def consumer_target(
                 "claimed": claimed,
                 "acked": acked,
                 "consumed_ids": consumed_ids,
+                "id_aggregate": {
+                    "count": id_count,
+                    "sum": id_sum,
+                    "xor": id_xor,
+                    "digest": f"{id_digest:064x}",
+                    "out_of_range": out_of_range,
+                },
                 "error": str(exc),
                 "peak_rss_bytes": peak_rss_bytes(),
+                "rss_method": rss_method(),
             }
         )
-        raise
+        raise SystemExit(1) from None
     finally:
         queue.close()
 
@@ -216,12 +267,14 @@ def _series(
 
 
 def validate_ids(ids: list[int], messages: int, *, exact: bool) -> IDValidation:
-    expected_ids = list(range(messages))
+    expected_ids = list(range(messages)) if exact else []
     expected_common = {
         "count": messages,
-        "sum": sum(expected_ids),
-        "xor": functools.reduce(operator.xor, expected_ids, 0),
-        "sha256": hashlib.sha256(",".join(map(str, expected_ids)).encode()).hexdigest(),
+        "sum": messages * (messages - 1) // 2,
+        "xor": functools.reduce(operator.xor, range(messages), 0),
+        "sha256": hashlib.sha256(
+            ",".join(map(str, range(messages))).encode()
+        ).hexdigest(),
     }
     ordered = sorted(ids)
     observed_common = {
@@ -240,6 +293,39 @@ def validate_ids(ids: list[int], messages: int, *, exact: bool) -> IDValidation:
         method = "count_sum_xor_sha256"
     return IDValidation(
         method=method, expected=expected, observed=observed, ok=expected == observed
+    )
+
+
+def validate_id_aggregates(
+    aggregates: list[dict[str, Any]], messages: int
+) -> IDValidation:
+    modulus = 1 << 256
+    expected_digest = (
+        sum(
+            int.from_bytes(hashlib.sha256(str(identifier).encode()).digest(), "big")
+            for identifier in range(messages)
+        )
+        % modulus
+    )
+    observed = {
+        "count": sum(item["count"] for item in aggregates),
+        "sum": sum(item["sum"] for item in aggregates),
+        "xor": functools.reduce(operator.xor, (item["xor"] for item in aggregates), 0),
+        "digest": f"{sum(int(item['digest'], 16) for item in aggregates) % modulus:064x}",
+        "out_of_range": sum(item["out_of_range"] for item in aggregates),
+    }
+    expected = {
+        "count": messages,
+        "sum": messages * (messages - 1) // 2,
+        "xor": functools.reduce(operator.xor, range(messages), 0),
+        "digest": f"{expected_digest:064x}",
+        "out_of_range": 0,
+    }
+    return IDValidation(
+        method="count_sum_xor_sha256_sum",
+        expected=expected,
+        observed=observed,
+        ok=expected == observed,
     )
 
 
@@ -270,6 +356,22 @@ def _sqlite_settings(queue: SimpleQueue) -> dict[str, Any]:
         "page_size": diagnostics.page_size,
         "sqlite_version": diagnostics.sqlite_version,
     }
+
+
+def _cleanup_children(
+    processes: list[Any], output: Any, run_path: Path, keep_workdir: bool
+) -> None:
+    for process in processes:
+        if process.is_alive():
+            process.terminate()
+            process.join(1)
+        if process.is_alive() and hasattr(process, "kill"):
+            process.kill()
+            process.join()
+    output.close()
+    output.join_thread()
+    if not keep_workdir:
+        shutil.rmtree(run_path, ignore_errors=True)
 
 
 def run_large_database_scenario(
@@ -326,6 +428,8 @@ def run_large_database_scenario(
             "durability": durability,
             "payload_requested_bytes": payload_bytes,
             "payload_serialized_bytes": actual_payload,
+            "serializer": "localqueue.JsonSerializer",
+            "padding_method": "deterministic_sha256_repetition",
         },
         "large_database": {
             "target_rows": rows,
@@ -367,6 +471,7 @@ def run_multiprocess_scenario(
     timeout: float = 120.0,
     exact_id_validation: bool = True,
     keep_workdir: bool = False,
+    sample_limit: int = 1000,
 ) -> dict[str, Any]:
     path.mkdir(parents=True, exist_ok=True)
     run_path = Path(tempfile.mkdtemp(prefix="localqueue-mp-run-", dir=path))
@@ -385,7 +490,7 @@ def run_multiprocess_scenario(
     ready = ctx.Barrier(producers + consumers + 1)
     done = ctx.Event()
     per = messages // producers
-    sample_stride = max(1, (messages + 999) // 1000)
+    sample_stride = max(1, (messages + sample_limit - 1) // sample_limit)
     ps = [
         ctx.Process(
             target=producer_target,
@@ -419,6 +524,7 @@ def run_multiprocess_scenario(
                 durability == "full",
                 timeout,
                 sample_stride,
+                exact_id_validation,
             ),
         )
         for i in range(consumers)
@@ -434,9 +540,13 @@ def run_multiprocess_scenario(
     producer_ids = {f"producer-{index}" for index in range(producers)}
     started = time.monotonic()
     deadline = started + timeout
-    for process in ps + cs:
-        process.start()
-    ready.wait(timeout=max(0.001, deadline - time.monotonic()))
+    try:
+        for process in ps + cs:
+            process.start()
+        ready.wait(timeout=max(0.001, deadline - time.monotonic()))
+    except BaseException:
+        _cleanup_children(ps + cs, output, run_path, keep_workdir)
+        raise
     result_by_id: dict[str, dict[str, Any]] = {}
     protocol_errors: list[str] = []
 
@@ -447,6 +557,9 @@ def run_multiprocess_scenario(
         try:
             result = output.get(timeout=min(0.1, remaining))
         except queue_module.Empty:
+            return
+        if not isinstance(result, dict):
+            protocol_errors.append("malformed worker result")
             return
         logical_id = result.get("id")
         if logical_id not in process_by_id:
@@ -499,18 +612,39 @@ def run_multiprocess_scenario(
     produced = sum(r.get("produced", 0) for r in results)
     claimed = sum(r.get("claimed", 0) for r in results)
     acked = sum(r.get("acked", 0) for r in results)
+    actual_sizes = {
+        r["actual_serialized_bytes"]
+        for r in results
+        if r.get("role") == "producer" and r.get("actual_serialized_bytes")
+    }
+    actual_serialized_bytes = (
+        next(iter(actual_sizes)) if len(actual_sizes) == 1 else None
+    )
     queue = SimpleQueue(str(scenario_path), name, fsync=durability == "full")
-    stats = queue.stats()
-    integrity = queue.check_integrity(mode="full").to_dict()
-    file_phases["after_drain"] = _file_snapshot(database)
-    queue.close()
+    try:
+        stats = queue.stats()
+        integrity = queue.check_integrity(mode="full").to_dict()
+        file_phases["after_drain"] = _file_snapshot(database)
+    except BaseException:
+        queue.close()
+        if not keep_workdir:
+            shutil.rmtree(run_path, ignore_errors=True)
+        raise
+    finally:
+        queue.close()
     file_phases["after_close"] = _file_snapshot(database)
     claims = [v for r in results for v in r.get("claim_samples", [])]
     roundtrips = [v for r in results for v in r.get("roundtrip_samples", [])]
-    consumed_ids = [
-        identifier for r in results for identifier in r.get("consumed_ids", [])
-    ]
-    id_validation = validate_ids(consumed_ids, messages, exact=exact_id_validation)
+    if exact_id_validation:
+        consumed_ids = [
+            identifier for r in results for identifier in r.get("consumed_ids", [])
+        ]
+        id_validation = validate_ids(consumed_ids, messages, exact=True)
+    else:
+        id_validation = validate_id_aggregates(
+            [r["id_aggregate"] for r in results if r.get("role") == "consumer"],
+            messages,
+        )
     ok = (
         produced == claimed == acked == messages
         and stats.get("ready") == 0
@@ -522,6 +656,13 @@ def run_multiprocess_scenario(
         and not any(p.is_alive() for p in ps + cs)
         and id_validation.ok
     )
+    try:
+        claim_series = _series(claims, claimed, elapsed, sample_limit)
+        roundtrip_series = _series(roundtrips, acked, elapsed, sample_limit)
+    except BaseException:
+        if not keep_workdir:
+            shutil.rmtree(run_path, ignore_errors=True)
+        raise
     result = {
         "scenario_id": f"mp-p{producers}-c{consumers}-payload{payload_bytes}-{durability}",
         "operation": "multiprocess_roundtrip",
@@ -530,18 +671,22 @@ def run_multiprocess_scenario(
             "consumers": consumers,
             "messages": messages,
             "payload_requested_bytes": payload_bytes,
+            "payload_serialized_bytes": actual_serialized_bytes,
+            "serializer": "localqueue.JsonSerializer",
+            "padding_method": "deterministic_sha256_repetition",
             "durability": durability,
         },
         "processes": sorted(results, key=lambda r: r["id"]),
         "metric_series": {
-            "claim_latency": _series(claims, claimed, elapsed),
-            "roundtrip_latency": _series(roundtrips, acked, elapsed),
+            "claim_latency": claim_series,
+            "roundtrip_latency": roundtrip_series,
         },
         "throughput": {
             "messages_produced": produced,
             "messages_claimed": claimed,
             "messages_acked": acked,
             "elapsed_ns": elapsed,
+            "produced_per_second": produced / (elapsed / 1e9),
             "acked_per_second": acked / (elapsed / 1e9),
         },
         "correctness": {
@@ -571,13 +716,7 @@ def run_multiprocess_profile(
     report = BenchmarkReport(
         subject=subject(),
         environment=environment(root),
-        profile={
-            "name": config.profile,
-            "canonical": config.profile == "multiprocess-release"
-            and config.large_db_rows == 1_000_000,
-            "large_db_rows": config.large_db_rows,
-            "matrix": multiprocess_matrix(config.profile),
-        },
+        profile=profile_metadata(config),
         run={"status": "running"},
     )
     durabilities = (config.durability,) if config.durability else ("normal", "full")
@@ -594,6 +733,7 @@ def run_multiprocess_profile(
                     timeout=config.timeout_seconds,
                     exact_id_validation=config.profile == "multiprocess-ci",
                     keep_workdir=config.keep_workdir,
+                    sample_limit=config.sample_limit,
                 )
                 report.scenarios.append(
                     ScenarioResult(
@@ -657,3 +797,35 @@ def run_multiprocess_profile(
     if output is not None:
         _atomic_write(output, report)
     return report
+
+
+def profile_metadata(config: MultiprocessConfig) -> dict[str, Any]:
+    overrides = {
+        **({"durability": config.durability} if config.durability else {}),
+        **(
+            {"large_db_rows": config.large_db_rows}
+            if config.large_db_rows != 1_000_000
+            else {}
+        ),
+        **(
+            {"sample_limit": config.sample_limit} if config.sample_limit != 1000 else {}
+        ),
+        **(
+            {"timeout_seconds": config.timeout_seconds}
+            if config.timeout_seconds != 120.0
+            else {}
+        ),
+        **(
+            {"messages": config.messages}
+            if config.profile == "multiprocess-release" and config.messages != 5000
+            else {}
+        ),
+    }
+    return {
+        "name": config.profile,
+        "canonical": config.profile == "multiprocess-release" and not overrides,
+        "large_db_rows": config.large_db_rows,
+        "sample_limit": config.sample_limit,
+        "overrides": overrides,
+        "matrix": multiprocess_matrix(config.profile),
+    }

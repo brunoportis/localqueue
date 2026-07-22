@@ -4,7 +4,9 @@ import localqueue.benchmark.multiprocess as multiprocess
 import pytest
 from localqueue.benchmark.errors import BenchmarkExecutionError
 from localqueue.benchmark.multiprocess import (
+    _cleanup_children,
     make_payload,
+    profile_metadata,
     run_large_database_scenario,
     run_multiprocess_scenario,
     validate_ids,
@@ -148,3 +150,100 @@ def test_public_models_validate_and_serialize_deterministically() -> None:
     }
     with pytest.raises(ValueError, match="null size"):
         FileSnapshot(False, 0)
+
+
+@pytest.mark.parametrize("limit, expected", ((1, 1), (3, 3), (10, 5)))
+def test_sample_limit_is_honored(tmp_path: Path, limit: int, expected: int) -> None:
+    result = run_multiprocess_scenario(
+        tmp_path,
+        producers=1,
+        consumers=1,
+        messages=5,
+        payload_bytes=100,
+        durability="normal",
+        sample_limit=limit,
+        timeout=30,
+    )
+    series = result["metric_series"]["claim_latency"]
+    assert series["limit"] == limit
+    assert series["sample_count"] == expected
+
+
+def test_release_compact_validation_does_not_return_id_lists(tmp_path: Path) -> None:
+    result = run_multiprocess_scenario(
+        tmp_path,
+        producers=1,
+        consumers=1,
+        messages=5,
+        payload_bytes=100,
+        durability="normal",
+        exact_id_validation=False,
+        timeout=30,
+    )
+    consumer = next(item for item in result["processes"] if item["role"] == "consumer")
+    assert consumer["consumed_ids"] == []
+    assert (
+        result["correctness"]["id_validation"]["method"] == "count_sum_xor_sha256_sum"
+    )
+
+
+@pytest.mark.parametrize(
+    "config, canonical, overrides",
+    (
+        (MultiprocessConfig("multiprocess-release", 5000), True, {}),
+        (
+            MultiprocessConfig("multiprocess-release", 5000, large_db_rows=100),
+            False,
+            {"large_db_rows": 100},
+        ),
+        (
+            MultiprocessConfig("multiprocess-release", 5000, durability="normal"),
+            False,
+            {"durability": "normal"},
+        ),
+        (
+            MultiprocessConfig("multiprocess-release", 5000, durability="full"),
+            False,
+            {"durability": "full"},
+        ),
+    ),
+)
+def test_release_canonical_metadata(
+    config: MultiprocessConfig, canonical: bool, overrides: dict[str, object]
+) -> None:
+    metadata = profile_metadata(config)
+    assert metadata["canonical"] is canonical
+    assert metadata["overrides"] == overrides
+
+
+def test_cleanup_after_failure_before_worker_collection(tmp_path: Path) -> None:
+    run_path = tmp_path / "run"
+    run_path.mkdir()
+
+    class Process:
+        alive = True
+
+        def is_alive(self) -> bool:
+            return self.alive
+
+        def terminate(self) -> None:
+            self.alive = False
+
+        def join(self, timeout: float | None = None) -> None:
+            del timeout
+
+    class Output:
+        closed = joined = False
+
+        def close(self) -> None:
+            self.closed = True
+
+        def join_thread(self) -> None:
+            self.joined = True
+
+    process = Process()
+    output = Output()
+    _cleanup_children([process], output, run_path, False)
+    assert process.is_alive() is False
+    assert output.closed is True and output.joined is True
+    assert not run_path.exists()
