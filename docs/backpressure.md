@@ -45,8 +45,10 @@ that have not yet been reclaimed. ACKed and failed jobs do not count.
 
 Opening an existing queue above a newly configured limit is allowed. No job is
 deleted or failed automatically. Diagnostics reports zero available slots,
-new rows remain blocked, and deduplicated puts remain allowed. New batches can
-enter only after enough jobs reach terminal states for the complete batch.
+new rows remain blocked, and operations that create zero rows remain allowed.
+That includes existing `job_id` values in ready, processing, ACKed, or failed,
+including duplicate-only batches. New batches can enter only after enough jobs
+reach terminal states for the complete batch.
 
 This is a logical backlog limit. It does not limit the SQLite database file,
 WAL, disk usage, payload bytes, or retained ACKed/failed rows. The physical
@@ -61,16 +63,19 @@ database can continue to grow while terminal records are retained.
 queue.put(payload, block=False)
 ```
 
-The default `block=True, timeout=None` waits indefinitely. A finite timeout
-limits the total wait for capacity and uses a monotonic deadline:
+The default `block=True, timeout=None` waits indefinitely when releasing
+current pending jobs could make the input fit. A batch whose genuinely new-row
+count exceeds `max_pending_jobs` can never fit and raises `Full` immediately,
+without polling. A finite timeout limits the total wait for retryable capacity
+and uses a monotonic deadline:
 
 ```python
 queue.put(payload, timeout=5.0)
 ```
 
 A zero timeout makes one immediate attempt. Negative timeouts raise
-`ValueError`. Payloads are serialized once before polling, including every
-item passed to `put_many()`.
+`ValueError` before the serializer is called. Valid payloads are serialized
+once before polling, including every item passed to `put_many()`.
 
 Waiting uses bounded exponential polling because capacity may be released by
 another process. The first interval is 10 ms and the maximum is 250 ms. This
@@ -78,11 +83,16 @@ avoids a hot loop while bounding the normal delay after another process frees
 a slot. A process-local close event interrupts waits in the same object; it is
 not presented as a cross-process notification mechanism.
 
-For a finite deadline, each native attempt temporarily caps that connection's
-SQLite busy timeout to the smaller of 250 ms and the remaining deadline, then
-restores the configured 5-second timeout. SQLite `BUSY`, `LOCKED`, I/O, and
-disk-full errors remain `LocalQueueError` failures and are never converted to
-`Full`. `Full` means only that the configured logical capacity is exhausted.
+For a finite deadline, each native attempt uses a short-lived connection whose
+SQLite busy timeout is capped to the smaller of 250 ms and the remaining
+deadline. The connection uses the same database and WAL mode, the queue's
+NORMAL/FULL synchronous policy, and foreign keys. The reusable connection is
+never reconfigured, and the attempt connection is discarded after the native
+result. Consequently there is no fallible timeout-restoration step after a
+successful commit that could report failure for a persisted message. SQLite
+`BUSY`, `LOCKED`, I/O, and disk-full errors remain `LocalQueueError` failures
+and are never converted to `Full`. `Full` means only that the configured
+logical capacity is exhausted.
 
 If another thread calls `queue.close()` during a capacity wait, the wait ends
 promptly with `LocalQueueError("queue is closed")` and does not enqueue later.
@@ -95,8 +105,10 @@ Capacity enforcement and insertion share one SQLite writer transaction:
 2. The native engine counts ready and processing rows for this logical queue,
    using the existing queue/status index.
 3. It calculates the rows the input would actually create.
-4. It rejects an over-capacity input or inserts the complete input.
-5. It commits once.
+4. It classifies a non-zero deficit as retryable or impossible when the new-row
+   count itself exceeds the configured limit.
+5. It rejects an over-capacity input or inserts the complete input.
+6. It commits once.
 
 There is no count in Python, no reservation table, and no gap between the
 capacity check and insert. Participating producer processes therefore cannot
@@ -105,7 +117,8 @@ oversubscribe the configured limit.
 For capacity calculation, every item without `job_id` is new. A `job_id` that
 already exists in the same logical queue needs no slot. Repeated new `job_id`
 values in one batch need one slot per distinct value. The check runs under the
-same writer lock used by insertion.
+same writer lock used by insertion. A zero-new-row operation bypasses the
+capacity rejection even when the queue is already above its configured limit.
 
 `put_many()` is all or nothing: an over-capacity batch raises `Full` without
 writing a prefix or advancing the SQLite ID sequence. It is not split to fit.

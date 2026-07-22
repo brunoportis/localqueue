@@ -28,6 +28,7 @@ pub struct CapacityPolicy<'a> {
 pub struct Storage {
     conn: Mutex<Option<Connection>>,
     path: PathBuf,
+    fsync: bool,
 }
 
 impl Storage {
@@ -50,6 +51,7 @@ impl Storage {
         Ok(Self {
             conn: Mutex::new(Some(conn)),
             path,
+            fsync,
         })
     }
 
@@ -86,26 +88,35 @@ impl Storage {
         }
 
         let mut guard = self.connection();
-        let conn = guard.as_mut().ok_or(QueueError::Closed)?;
+        let primary = guard.as_mut().ok_or(QueueError::Closed)?;
 
-        let previous_busy_timeout = match busy_timeout_ms {
+        match busy_timeout_ms {
             Some(timeout) => {
-                let previous = conn.query_row("PRAGMA busy_timeout", [], |row| row.get(0))?;
-                conn.pragma_update(None, "busy_timeout", timeout)?;
-                Some(previous)
+                let mut attempt = self.open_attempt_connection(timeout)?;
+                enqueue_batch_on_connection(&mut attempt, entries, max_attempts, capacity)
             }
-            None => None,
-        };
-
-        let result = enqueue_batch_on_connection(conn, entries, max_attempts, capacity);
-        let restore = previous_busy_timeout
-            .map(|timeout: i64| conn.pragma_update(None, "busy_timeout", timeout))
-            .transpose();
-        match (result, restore) {
-            (Err(error), _) => Err(error),
-            (Ok(_), Err(error)) => Err(error.into()),
-            (Ok(ids), _) => Ok(ids),
+            None => enqueue_batch_on_connection(primary, entries, max_attempts, capacity),
         }
+    }
+
+    /// Open a short-lived connection for a deadline-bounded enqueue attempt.
+    ///
+    /// The reusable connection is never reconfigured. Dropping this dedicated
+    /// connection after `enqueue_batch_on_connection` succeeds cannot turn its
+    /// already-confirmed commit into a cleanup error.
+    fn open_attempt_connection(&self, busy_timeout_ms: u64) -> Result<Connection> {
+        let conn = Connection::open_with_flags(
+            &self.path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_URI,
+        )?;
+        conn.pragma_update(None, "busy_timeout", busy_timeout_ms)?;
+        conn.pragma_update(
+            None,
+            "synchronous",
+            if self.fsync { "FULL" } else { "NORMAL" },
+        )?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        Ok(conn)
     }
 
     /// Move one failed row back to ready while enforcing the same logical
@@ -204,8 +215,13 @@ fn enqueue_batch_on_connection(
                 new_rows += 1;
             }
         }
-        if pending.saturating_add(new_rows) > policy.max_pending_jobs {
-            return Err(QueueError::Full);
+        if new_rows > 0 {
+            if new_rows > policy.max_pending_jobs {
+                return Err(QueueError::FullImpossible);
+            }
+            if pending.saturating_add(new_rows) > policy.max_pending_jobs {
+                return Err(QueueError::Full);
+            }
         }
     }
 
@@ -477,6 +493,121 @@ mod tests {
         assert_eq!(ids[1], ids[2]);
     }
 
+    fn check_zero_new_rows_are_allowed_above_limit_in_every_state() {
+        let (_dir, storage) = open_storage();
+        let job_ids = ["ready", "processing", "acked", "failed"];
+        let entries: Vec<_> = job_ids
+            .iter()
+            .map(|job_id| EnqueueEntry {
+                queue_name: "q",
+                payload: b"original",
+                job_id: Some(job_id),
+            })
+            .collect();
+        let original_ids = storage.enqueue_batch(&entries, 3, None, None).unwrap();
+        {
+            let guard = storage.connection();
+            let conn = guard.as_ref().unwrap();
+            for (id, status) in original_ids.iter().zip([0i64, 1, 2, 3]) {
+                conn.execute(
+                    "UPDATE messages SET status = ?1 WHERE id = ?2",
+                    params![status, id],
+                )
+                .unwrap();
+            }
+        }
+        let duplicates: Vec<_> = job_ids
+            .iter()
+            .flat_map(|job_id| {
+                [b"duplicate-one".as_slice(), b"duplicate-two".as_slice()].map(move |payload| {
+                    EnqueueEntry {
+                        queue_name: "q",
+                        payload,
+                        job_id: Some(job_id),
+                    }
+                })
+            })
+            .collect();
+        let policy = CapacityPolicy {
+            queue_name: "q",
+            max_pending_jobs: 1,
+        };
+
+        let returned = storage
+            .enqueue_batch(&duplicates, 3, Some(policy), None)
+            .unwrap();
+
+        let expected: Vec<_> = original_ids.iter().flat_map(|id| [*id, *id]).collect();
+        assert_eq!(returned, expected);
+        let new_entry = [EnqueueEntry {
+            queue_name: "q",
+            payload: b"new",
+            job_id: Some("new"),
+        }];
+        assert!(matches!(
+            storage.enqueue_batch(&new_entry, 3, Some(policy), None),
+            Err(QueueError::Full)
+        ));
+    }
+
+    fn check_impossible_batch_is_typed_and_never_writes() {
+        let (_dir, storage) = open_storage();
+        let policy = CapacityPolicy {
+            queue_name: "q",
+            max_pending_jobs: 2,
+        };
+        let entries = [
+            EnqueueEntry {
+                queue_name: "q",
+                payload: b"one",
+                job_id: None,
+            },
+            EnqueueEntry {
+                queue_name: "q",
+                payload: b"two",
+                job_id: None,
+            },
+            EnqueueEntry {
+                queue_name: "q",
+                payload: b"three",
+                job_id: None,
+            },
+        ];
+
+        assert!(matches!(
+            storage.enqueue_batch(&entries, 3, Some(policy), None),
+            Err(QueueError::FullImpossible)
+        ));
+        let distinct_ids = [
+            EnqueueEntry {
+                queue_name: "q",
+                payload: b"one",
+                job_id: Some("one"),
+            },
+            EnqueueEntry {
+                queue_name: "q",
+                payload: b"two",
+                job_id: Some("two"),
+            },
+            EnqueueEntry {
+                queue_name: "q",
+                payload: b"three",
+                job_id: Some("three"),
+            },
+        ];
+        assert!(matches!(
+            storage.enqueue_batch(&distinct_ids, 3, Some(policy), None),
+            Err(QueueError::FullImpossible)
+        ));
+        let guard = storage.connection();
+        let count: i64 = guard
+            .as_ref()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
     fn check_capacity_is_scoped_to_one_logical_queue() {
         let (_dir, storage) = open_storage();
         let entries = [
@@ -650,6 +781,95 @@ mod tests {
         assert_eq!(timeout, BUSY_TIMEOUT_MS as i64);
     }
 
+    fn check_bounded_attempt_connection_preserves_confirmation_boundary() {
+        let (_dir, storage) = open_storage();
+        {
+            let attempt = storage.open_attempt_connection(17).unwrap();
+            let busy_timeout: i64 = attempt
+                .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+                .unwrap();
+            let journal_mode: String = attempt
+                .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                .unwrap();
+            let synchronous: i64 = attempt
+                .query_row("PRAGMA synchronous", [], |row| row.get(0))
+                .unwrap();
+            let foreign_keys: i64 = attempt
+                .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(busy_timeout, 17);
+            assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+            assert_eq!(synchronous, 1); // NORMAL
+            assert_eq!(foreign_keys, 1);
+        }
+        let entry = [EnqueueEntry {
+            queue_name: "q",
+            payload: b"committed",
+            job_id: None,
+        }];
+        let ids = storage
+            .enqueue_batch(
+                &entry,
+                3,
+                Some(CapacityPolicy {
+                    queue_name: "q",
+                    max_pending_jobs: 1,
+                }),
+                Some(17),
+            )
+            .unwrap();
+
+        let guard = storage.connection();
+        let primary = guard.as_ref().unwrap();
+        let primary_timeout: i64 = primary
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+        let persisted: i64 = primary
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE id = ?1",
+                [ids[0]],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(primary_timeout, BUSY_TIMEOUT_MS as i64);
+        assert_eq!(persisted, 1);
+        drop(guard);
+
+        let rejected = [EnqueueEntry {
+            queue_name: "q",
+            payload: b"rejected",
+            job_id: None,
+        }];
+        assert!(matches!(
+            storage.enqueue_batch(
+                &rejected,
+                3,
+                Some(CapacityPolicy {
+                    queue_name: "q",
+                    max_pending_jobs: 1,
+                }),
+                Some(17),
+            ),
+            Err(QueueError::Full)
+        ));
+        let guard = storage.connection();
+        let primary_timeout: i64 = guard
+            .as_ref()
+            .unwrap()
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(primary_timeout, BUSY_TIMEOUT_MS as i64);
+
+        let full_dir = tempfile_guard::TempDir::new();
+        let full_path = full_dir.path().join("full.db");
+        let full_storage = Storage::new(full_path.to_str().unwrap(), true).unwrap();
+        let full_attempt = full_storage.open_attempt_connection(17).unwrap();
+        let synchronous: i64 = full_attempt
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(synchronous, 2); // FULL
+    }
+
     fn check_retry_failed_checks_identity_before_capacity_and_updates_atomically() {
         let (_dir, storage) = open_storage();
         let entries = [
@@ -735,10 +955,13 @@ mod tests {
     fn backpressure_transaction_contract() {
         check_capacity_check_and_batch_insert_are_atomic();
         check_capacity_counts_only_new_distinct_job_ids();
+        check_zero_new_rows_are_allowed_above_limit_in_every_state();
+        check_impossible_batch_is_typed_and_never_writes();
         check_capacity_is_scoped_to_one_logical_queue();
         check_opening_below_existing_pending_does_not_delete_rows();
         check_two_connections_never_oversubscribe_capacity();
         check_sqlite_busy_is_not_reported_as_full_and_timeout_is_restored();
+        check_bounded_attempt_connection_preserves_confirmation_boundary();
         check_retry_failed_checks_identity_before_capacity_and_updates_atomically();
         check_closed_storage_rejects_capacity_operations();
     }

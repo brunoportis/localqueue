@@ -75,6 +75,7 @@ class QueueStateMachine(RuleBasedStateMachine):
         self.current_delivery: dict[int, Any] = {}
         self.order = 0
         self.trace: list[str] = []
+        self.above_limit_seeded = False
 
     def teardown(self) -> None:
         self.queue.close()
@@ -163,7 +164,7 @@ class QueueStateMachine(RuleBasedStateMachine):
             elif job_id not in self.by_job_id and job_id not in seen_new_job_ids:
                 seen_new_job_ids.add(job_id)
                 new_rows += 1
-        if self._pending() + new_rows > self.max_pending_jobs:
+        if new_rows > 0 and self._pending() + new_rows > self.max_pending_jobs:
             before = self.queue.stats()
             with pytest.raises(Full):
                 self.queue.put_many(public_items, block=False)
@@ -180,6 +181,40 @@ class QueueStateMachine(RuleBasedStateMachine):
                 assert self.jobs[message_id].job_id == job_id
             else:
                 self._new_reference(data, job_id, message_id)
+        self._assert_stats()
+
+    @precondition(lambda self: not self.above_limit_seeded)
+    @rule()
+    def reopen_above_limit_and_preserve_duplicate_operations(self) -> None:
+        self._record("reopen_above_limit_and_preserve_duplicate_operations()")
+        self.queue.close()
+        unlimited = SimpleQueue(
+            str(self.path),
+            lease_seconds=self.lease_seconds,
+            max_retries=self.max_retries,
+        )
+        required = self.max_pending_jobs - self._pending() + 1
+        for index in range(required):
+            job_id = f"above-limit-{self.order}-{index}"
+            data = {"value": index}
+            message_id = unlimited.put(data, job_id=job_id)
+            self._new_reference(data, job_id, message_id)
+        unlimited.close()
+        self.queue = SimpleQueue(
+            str(self.path),
+            lease_seconds=self.lease_seconds,
+            max_retries=self.max_retries,
+            max_pending_jobs=self.max_pending_jobs,
+        )
+        self.above_limit_seeded = True
+        assert self._pending() > self.max_pending_jobs
+        duplicate_job_id = next(job_id for job_id in self.by_job_id)
+        duplicate_id = self.queue.put(
+            {"value": 999}, job_id=duplicate_job_id, block=False
+        )
+        assert duplicate_id == self.by_job_id[duplicate_job_id]
+        with pytest.raises(Full):
+            self.queue.put({"value": 999}, block=False)
         self._assert_stats()
 
     @rule(value=st.integers(min_value=0, max_value=5))

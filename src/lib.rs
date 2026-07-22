@@ -12,7 +12,7 @@ use pyo3::prelude::*;
 
 use backup::BackupSnapshot;
 use diagnostics::DiagnosticsSnapshot;
-use error::{Empty, Full, LeaseExpired, LocalQueueError};
+use error::{Empty, Full, LeaseExpired, LocalQueueError, _FullImpossible};
 use integrity::IntegrityCheckSnapshot;
 use queue::{FailedMessage, Lease, NativeQueue, Stats};
 
@@ -29,6 +29,7 @@ fn localqueue(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("LocalQueueError", _py.get_type::<LocalQueueError>())?;
     m.add("Empty", _py.get_type::<Empty>())?;
     m.add("Full", _py.get_type::<Full>())?;
+    m.add("_FullImpossible", _py.get_type::<_FullImpossible>())?;
     m.add("LeaseExpired", _py.get_type::<LeaseExpired>())?;
     Ok(())
 }

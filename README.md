@@ -270,7 +270,9 @@ unreclaimed leases count; ACKed and failed jobs do not. The native capacity
 check, deduplication calculation, and complete insert share one
 `BEGIN IMMEDIATE` transaction, so participating processes using the same
 configured limit cannot oversubscribe it. `put_many()` is all or nothing, and
-duplicates that do not create rows consume no new slots.
+duplicates that do not create rows consume no new slots, even above the limit.
+A batch whose deduplicated new-row count exceeds the limit raises `Full`
+immediately because it can never fit.
 
 This limits logical backlog, not SQLite/WAL bytes, disk space, or retained
 terminal records. The setting belongs to each `SimpleQueue` object and is not

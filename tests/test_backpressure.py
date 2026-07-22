@@ -104,6 +104,23 @@ def _blocking_producer(
         queue.close()
 
 
+def _impossible_batch_producer(path: str, ready: Any, results: Any) -> None:
+    queue = SimpleQueue(path, max_pending_jobs=2)
+    try:
+        ready.set()
+        started = time.monotonic()
+        try:
+            queue.put_many([{"index": 0}, {"index": 1}, {"index": 2}])
+        except Full as error:
+            results.put(("full", str(error), time.monotonic() - started))
+        except BaseException as error:
+            results.put(("error", repr(error), time.monotonic() - started))
+        else:
+            results.put(("ok", "", time.monotonic() - started))
+    finally:
+        queue.close()
+
+
 def _hold_writer_lock(path: str, ready: Any, release: Any) -> None:
     database = Path(path) / "localqueue.db"
     connection = sqlite3.connect(database, timeout=0)
@@ -266,6 +283,32 @@ def test_negative_timeout_is_invalid(tmp_path: Path, method: str) -> None:
     with pytest.raises(ValueError, match="timeout.*non-negative"):
         getattr(queue, method)(argument, timeout=-0.001)
 
+    queue.close()
+
+
+@pytest.mark.parametrize("method", ["put", "put_many"])
+def test_invalid_timeout_is_checked_before_serialization(
+    tmp_path: Path, method: str
+) -> None:
+    class RecordingSerializer:
+        def __init__(self) -> None:
+            self.dumps_calls = 0
+
+        def dumps(self, obj: object) -> bytes:
+            self.dumps_calls += 1
+            return json.dumps(obj).encode()
+
+        def loads(self, data: bytes) -> object:
+            return json.loads(data)
+
+    serializer = RecordingSerializer()
+    queue = SimpleQueue(str(tmp_path), serializer=serializer)
+    argument = {"value": 1} if method == "put" else [{"value": 1}]
+
+    with pytest.raises(ValueError, match="timeout.*non-negative"):
+        getattr(queue, method)(argument, timeout=-0.001)
+
+    assert serializer.dumps_calls == 0
     queue.close()
 
 
@@ -587,6 +630,141 @@ def test_existing_queue_can_open_above_new_limit(tmp_path: Path) -> None:
     limited.put({"allowed": True}, block=False)
     assert _pending(limited) == 2
     limited.close()
+
+
+def test_duplicates_remain_available_when_queue_is_above_limit(tmp_path: Path) -> None:
+    unlimited = SimpleQueue(str(tmp_path))
+    existing_ids = [
+        unlimited.put({"index": index}, job_id=f"existing-{index}")
+        for index in range(3)
+    ]
+    unlimited.close()
+    limited = SimpleQueue(str(tmp_path), max_pending_jobs=2)
+
+    assert (
+        limited.put({"ignored": True}, job_id="existing-0", block=False)
+        == existing_ids[0]
+    )
+    assert limited.put_many(
+        [
+            EnqueueItem({"ignored": 1}, job_id="existing-1"),
+            EnqueueItem({"ignored": 2}, job_id="existing-2"),
+            EnqueueItem({"ignored": 3}, job_id="existing-1"),
+        ],
+        block=False,
+    ) == [existing_ids[1], existing_ids[2], existing_ids[1]]
+    assert limited.diagnostics().pending_jobs == 3
+    with pytest.raises(Full, match="^queue is full$"):
+        limited.put({"new": True}, job_id="new", block=False)
+    assert limited.diagnostics().pending_jobs == 3
+    limited.close()
+
+
+def test_duplicates_in_all_states_never_consume_capacity(tmp_path: Path) -> None:
+    queue = SimpleQueue(str(tmp_path), max_pending_jobs=4, lease_seconds=30)
+    ids: dict[str, int] = {}
+    ids["processing"] = queue.put({"state": "processing"}, job_id="processing")
+    processing = queue.get_nowait()
+    ids["acked"] = queue.put({"state": "acked"}, job_id="acked")
+    acked = queue.get_nowait()
+    queue.ack(acked)
+    ids["failed"] = queue.put({"state": "failed"}, job_id="failed")
+    failed = queue.get_nowait()
+    queue.fail(failed)
+    ids["ready"] = queue.put({"state": "ready"}, job_id="ready")
+
+    assert processing.id == ids["processing"]
+    queue.close()
+    queue = SimpleQueue(str(tmp_path), max_pending_jobs=1, lease_seconds=30)
+
+    before = queue.diagnostics().pending_jobs
+    returned = queue.put_many(
+        [EnqueueItem({"duplicate": state}, job_id=state) for state in ids],
+        block=False,
+    )
+
+    assert returned == [ids[state] for state in ids]
+    assert queue.diagnostics().pending_jobs == before == 2
+    queue.close()
+
+
+def test_impossible_batches_fail_immediately_without_writes(tmp_path: Path) -> None:
+    queue = SimpleQueue(str(tmp_path), max_pending_jobs=2)
+    database = tmp_path / "localqueue.db"
+
+    with sqlite3.connect(database) as connection:
+        sequence_before = connection.execute(
+            "SELECT seq FROM sqlite_sequence WHERE name = 'messages'"
+        ).fetchone()
+    started = time.monotonic()
+    with pytest.raises(Full, match="^queue is full$") as impossible:
+        queue.put_many([{"index": 0}, {"index": 1}, {"index": 2}])
+    assert time.monotonic() - started < 0.5
+    assert type(impossible.value) is Full
+    finite_started = time.monotonic()
+    with pytest.raises(Full, match="^queue is full$"):
+        queue.put_many(
+            [
+                EnqueueItem({"index": 0}, job_id="new-0"),
+                EnqueueItem({"index": 1}, job_id="new-1"),
+                EnqueueItem({"index": 2}, job_id="new-2"),
+            ],
+            timeout=5.0,
+        )
+    assert time.monotonic() - finite_started < 0.5
+    with sqlite3.connect(database) as connection:
+        sequence_after = connection.execute(
+            "SELECT seq FROM sqlite_sequence WHERE name = 'messages'"
+        ).fetchone()
+
+    assert queue.stats() == {"ready": 0, "processing": 0, "acked": 0, "failed": 0}
+    assert sequence_after == sequence_before
+    queue.close()
+
+
+def test_oversized_raw_batch_can_fit_after_deduplication(tmp_path: Path) -> None:
+    queue = SimpleQueue(str(tmp_path), max_pending_jobs=2)
+    existing_id = queue.put({"original": True}, job_id="existing")
+
+    ids = queue.put_many(
+        [
+            EnqueueItem({"duplicate": 1}, job_id="existing"),
+            EnqueueItem({"duplicate": 2}, job_id="existing"),
+            EnqueueItem({"new": True}, job_id="new"),
+        ]
+    )
+    duplicate_ids = queue.put_many(
+        [EnqueueItem({"duplicate": index}, job_id="existing") for index in range(4)]
+    )
+
+    assert ids[0] == ids[1] == existing_id
+    assert ids[2] != existing_id
+    assert duplicate_ids == [existing_id] * 4
+    assert queue.diagnostics().pending_jobs == 2
+    queue.close()
+
+
+def test_impossible_batch_does_not_leave_child_process_blocked(tmp_path: Path) -> None:
+    context = multiprocessing.get_context("spawn")
+    path = str(tmp_path / "impossible-process")
+    ready = context.Event()
+    results = context.Queue()
+    process = context.Process(
+        target=_impossible_batch_producer, args=(path, ready, results)
+    )
+    try:
+        process.start()
+        assert ready.wait(timeout=5)
+        process.join(timeout=2)
+        result = results.get(timeout=2)
+    finally:
+        if process.is_alive():
+            process.terminate()
+        process.join(timeout=2)
+
+    assert process.exitcode == 0
+    assert result[0:2] == ("full", "queue is full")
+    assert result[2] < 0.9
 
 
 @pytest.mark.parametrize("limit", [None, 3])

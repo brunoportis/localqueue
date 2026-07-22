@@ -139,6 +139,8 @@ class SimpleQueue:
         :return: internal queue item ID.
         :raises Full: when capacity is unavailable without further waiting.
         """
+        if timeout is not None and timeout < 0:
+            raise ValueError("'timeout' must be non-negative")
         payload = self.serializer.dumps(data)
         return self._wait_for_capacity(
             lambda native, busy_timeout_ms: native.put(
@@ -198,7 +200,10 @@ class SimpleQueue:
             raise ValueError("'timeout' must be non-negative")
 
         if not block:
-            return self._run_enqueue_attempt(operation, None)
+            try:
+                return self._run_enqueue_attempt(operation, None)
+            except _native._FullImpossible:
+                raise Full("queue is full") from None
 
         deadline = None if timeout is None else _time.monotonic() + timeout
         sleep_seconds = _BACKPRESSURE_MIN_SLEEP_SECONDS
@@ -215,6 +220,8 @@ class SimpleQueue:
             )
             try:
                 return self._run_enqueue_attempt(operation, busy_timeout_ms)
+            except _native._FullImpossible:
+                raise Full("queue is full") from None
             except Full:
                 if deadline is not None:
                     remaining = deadline - _time.monotonic()
