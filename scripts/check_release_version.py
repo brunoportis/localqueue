@@ -26,6 +26,19 @@ def _lockfile_version() -> str:
     raise RuntimeError("localqueue package is missing from Cargo.lock")
 
 
+def _uv_lockfile_version() -> str:
+    with (ROOT / "uv.lock").open("rb") as file:
+        document = tomllib.load(file)
+    versions = [
+        package["version"]
+        for package in document["package"]
+        if package.get("name") == "localqueue"
+    ]
+    if len(versions) != 1:
+        raise RuntimeError("uv.lock must contain exactly one localqueue package")
+    return versions[0]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--tag", required=True, help="release tag in vX.Y.Z form")
@@ -39,6 +52,7 @@ def main() -> None:
         "pyproject.toml": _version_from(ROOT / "pyproject.toml", "project.version"),
         "Cargo.toml": _version_from(ROOT / "Cargo.toml", "package.version"),
         "Cargo.lock": _lockfile_version(),
+        "uv.lock": _uv_lockfile_version(),
     }
     mismatches = [
         f"{name} has {version!r}"

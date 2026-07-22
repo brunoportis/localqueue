@@ -11,11 +11,32 @@ on:
         description: "Quantidade de mensagens"
         required: false
         default: '50000'
+  workflow_call:
+    inputs:
+      candidate_ref:
+        required: true
+        type: string
+      expected_sha:
+        required: true
+        type: string
+      expected_version:
+        required: true
+        type: string
+      wheel_artifact:
+        required: false
+        type: string
   schedule:
     - cron: '17 3 * * 0'
 
 permissions:
   contents: read
+
+env:
+  RELEASE_CANDIDATE_REF: ${{ inputs.candidate_ref }}
+  RELEASE_CANDIDATE_SHA: ${{ inputs.expected_sha }}
+  RELEASE_CANDIDATE_VERSION: ${{ inputs.expected_version }}
+  SOAK_DURATION: ${{ inputs.duration || '1800' }}
+  SOAK_MESSAGES: ${{ inputs.messages || '50000' }}
 
 jobs:
   soak:
@@ -25,6 +46,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -34,24 +57,53 @@ jobs:
       - name: Install maturin
         run: python -m pip install --upgrade "maturin>=1.14,<2"
 
-      - name: Build the extension
-        run: maturin develop --release --locked
+      - name: Download exact candidate wheel
+        if: inputs.candidate_ref != ''
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: ${{ inputs.wheel_artifact }}
+          path: ${{ runner.temp }}/candidate-wheel
+
+      - name: Build or install the candidate wheel
+        shell: bash
+        run: |
+          if [[ -n "$RELEASE_CANDIDATE_REF" ]]; then
+            candidate_wheel=$(find "$RUNNER_TEMP/candidate-wheel" -name '*cp313*manylinux*x86_64.whl' -print -quit)
+            test -n "$candidate_wheel"
+            python -m pip install --force-reinstall --no-index "$candidate_wheel"
+          else
+            maturin develop --release --locked
+          fi
 
       - name: Run stress test
         shell: bash
         run: |
+          candidate_args=()
+          if [[ -n "$RELEASE_CANDIDATE_REF" ]]; then
+            candidate_args=(
+              --candidate-sha "$RELEASE_CANDIDATE_SHA"
+              --candidate-ref "$RELEASE_CANDIDATE_REF"
+              --candidate-version "$RELEASE_CANDIDATE_VERSION"
+              --require-wheel
+            )
+          fi
           python stress/run_soak.py \
-            --duration "${{ inputs.duration || '1800' }}" \
-            --messages "${{ inputs.messages || '50000' }}" \
+            --duration "$SOAK_DURATION" \
+            --messages "$SOAK_MESSAGES" \
             --producers 4 \
             --consumers 8 \
             --crash-rate 0.01 \
-            > stress-report.json
+            --output stress-report.json \
+            --markdown-output stress-report.md \
+            "${candidate_args[@]}"
 
       - name: Upload stress report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: stress-report-${{ github.run_id }}
-          path: stress-report.json
+          path: |
+            stress-report.json
+            stress-report.md
           if-no-files-found: warn
+          retention-days: 30

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "dependencies": [
+    {"issue": 15, "changelog_terms": ["pyrefly"]},
+    {"issue": 17, "changelog_terms": ["state machine"]},
+    {"issue": 18, "changelog_terms": ["storage crash"]},
+    {"issue": 19, "changelog_terms": ["operational chaos"]},
+    {"issue": 20, "changelog_terms": ["storage compatibility"]},
+    {"issue": 21, "changelog_terms": ["runtime diagnostics"]},
+    {"issue": 22, "changelog_terms": ["integrity", "backups"]},
+    {"issue": 23, "changelog_terms": ["canonical single-process benchmark"]},
+    {"issue": 24, "changelog_terms": ["multiprocess benchmark"]},
+    {"issue": 25, "changelog_terms": ["backpressure"]},
+    {"issue": 26, "changelog_terms": ["subscription concurrency"]},
+    {"issue": 27, "changelog_terms": ["handler timeouts"]},
+    {"issue": 28, "changelog_terms": ["causation metadata"]},
+    {"issue": 29, "changelog_terms": ["operational envelope"]}
+  ]
+}

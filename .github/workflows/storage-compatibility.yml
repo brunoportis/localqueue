@@ -5,9 +5,28 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      candidate_ref:
+        required: true
+        type: string
+      expected_sha:
+        required: true
+        type: string
+      expected_version:
+        required: true
+        type: string
+      wheel_artifact:
+        required: false
+        type: string
 
 permissions:
   contents: read
+
+env:
+  RELEASE_CANDIDATE_REF: ${{ inputs.candidate_ref }}
+  RELEASE_CANDIDATE_SHA: ${{ inputs.expected_sha }}
+  RELEASE_CANDIDATE_VERSION: ${{ inputs.expected_version }}
 
 jobs:
   matrix:
@@ -16,6 +35,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.14'
@@ -25,19 +46,68 @@ jobs:
         with:
           path: ~/.cache/localqueue-compat
           key: storage-compat-${{ runner.os }}-${{ hashFiles('compatibility/baselines.toml', 'compatibility/eventbus-dependencies.toml') }}
+      - name: Download exact candidate wheel
+        if: inputs.candidate_ref != ''
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: ${{ inputs.wheel_artifact }}
+          path: ${{ runner.temp }}/candidate-wheel
       - name: Run release-to-release compatibility matrix
+        shell: bash
         run: |
-          uv run python compatibility/run_matrix.py \
-            --current . \
-            --cache-dir ~/.cache/localqueue-compat \
-            --output compatibility-report.json
+          if [[ -n "$RELEASE_CANDIDATE_REF" ]]; then
+            candidate_wheel=$(find "$RUNNER_TEMP/candidate-wheel" -name '*cp314*manylinux*x86_64.whl' -print -quit)
+            test -n "$candidate_wheel"
+            uv run python compatibility/run_matrix.py \
+              --current "$candidate_wheel" \
+              --current-commit-sha "$RELEASE_CANDIDATE_SHA" \
+              --candidate-ref "$RELEASE_CANDIDATE_REF" \
+              --candidate-version "$RELEASE_CANDIDATE_VERSION" \
+              --cache-dir ~/.cache/localqueue-compat \
+              --output compatibility-report.json
+          else
+            uv run python compatibility/run_matrix.py \
+              --current . \
+              --cache-dir ~/.cache/localqueue-compat \
+              --output compatibility-report.json
+          fi
       - name: Prove verified cache works offline
+        shell: bash
         run: |
-          uv run --no-sync python compatibility/run_matrix.py \
-            --current . \
-            --cache-dir ~/.cache/localqueue-compat \
-            --offline \
-            --output compatibility-report-offline.json
+          if [[ -n "$RELEASE_CANDIDATE_REF" ]]; then
+            candidate_wheel=$(find "$RUNNER_TEMP/candidate-wheel" -name '*cp314*manylinux*x86_64.whl' -print -quit)
+            uv run --no-sync python compatibility/run_matrix.py \
+              --current "$candidate_wheel" \
+              --current-commit-sha "$RELEASE_CANDIDATE_SHA" \
+              --candidate-ref "$RELEASE_CANDIDATE_REF" \
+              --candidate-version "$RELEASE_CANDIDATE_VERSION" \
+              --cache-dir ~/.cache/localqueue-compat \
+              --offline \
+              --output compatibility-report-offline.json
+          else
+            uv run --no-sync python compatibility/run_matrix.py \
+              --current . \
+              --cache-dir ~/.cache/localqueue-compat \
+              --offline \
+              --output compatibility-report-offline.json
+          fi
+      - name: Render release compatibility summary
+        if: inputs.candidate_ref != ''
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from release_gate.markdown import evidence_markdown
+
+          report = json.loads(Path("compatibility-report.json").read_text(encoding="utf-8"))
+          report["summary"] = {
+              "online": report["status"],
+              "offline": json.loads(Path("compatibility-report-offline.json").read_text(encoding="utf-8"))["status"],
+          }
+          Path("compatibility.md").write_text(
+              evidence_markdown("Storage compatibility", report), encoding="utf-8"
+          )
+          PY
       - name: Upload compatibility report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -46,4 +116,6 @@ jobs:
           path: |
             compatibility-report.json
             compatibility-report-offline.json
+            compatibility.md
           if-no-files-found: warn
+          retention-days: 30

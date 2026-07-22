@@ -5,9 +5,25 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      candidate_ref:
+        required: true
+        type: string
+      expected_sha:
+        required: true
+        type: string
+      expected_version:
+        required: true
+        type: string
 
 permissions:
   contents: read
+
+env:
+  RELEASE_CANDIDATE_REF: ${{ inputs.candidate_ref }}
+  RELEASE_CANDIDATE_SHA: ${{ inputs.expected_sha }}
+  RELEASE_CANDIDATE_VERSION: ${{ inputs.expected_version }}
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -20,6 +36,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -51,6 +69,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          ref: ${{ inputs.expected_sha || github.sha }}
           fetch-depth: 0
 
       - name: Run Gitleaks
@@ -68,6 +87,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # master
@@ -98,6 +119,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
 
       - name: Run cargo-deny
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
@@ -110,6 +133,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
 
       - name: Install Rust 1.83
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # master
@@ -137,6 +162,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -218,6 +245,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -241,7 +270,29 @@ jobs:
       - name: Run deterministic crash and control scenarios
         run: |
           source .venv/bin/activate
-          pytest -ra tests/test_crash_recovery.py tests/test_backup.py
+          if [[ -n "$RELEASE_CANDIDATE_REF" ]]; then
+            python scripts/run_crash_campaign.py \
+              --candidate-sha "$RELEASE_CANDIDATE_SHA" \
+              --candidate-ref "$RELEASE_CANDIDATE_REF" \
+              --candidate-version "$RELEASE_CANDIDATE_VERSION" \
+              --output "$RUNNER_TEMP/deterministic-crash.json" \
+              --markdown-output "$RUNNER_TEMP/deterministic-crash.md" \
+              --scenario-dir "$RUNNER_TEMP/crash-scenarios"
+          else
+            pytest -ra tests/test_crash_recovery.py tests/test_backup.py
+          fi
+
+      - name: Upload deterministic crash evidence
+        if: always() && inputs.candidate_ref != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: deterministic-crash
+          path: |
+            ${{ runner.temp }}/deterministic-crash.json
+            ${{ runner.temp }}/deterministic-crash.md
+            ${{ runner.temp }}/crash-scenarios/
+          if-no-files-found: error
+          retention-days: 30
 
   wheel-smoke:
     name: Build and smoke-test wheel
@@ -250,14 +301,16 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13'
 
-      - name: Install maturin
-        run: python -m pip install --upgrade "maturin>=1.14,<2"
+      - name: Install wheel and release artifact tooling
+        run: python -m pip install --upgrade "maturin>=1.14,<2" "packaging>=24,<26"
 
       - name: Build wheel
         run: maturin build --release --locked -i python
@@ -274,31 +327,26 @@ jobs:
           cd "$RUNNER_TEMP"
           python "$GITHUB_WORKSPACE/tests/test_wheel_isolation.py"
 
+      - name: Validate inventory from the wheel Maturin produced
+        shell: bash
+        run: |
+          inventory_sha="${RELEASE_CANDIDATE_SHA:-$(git rev-parse HEAD)}"
+          inventory_version="${RELEASE_CANDIDATE_VERSION:-$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')}"
+          python -m release_gate.cli inventory \
+            --directory target/wheels \
+            --pattern '*.whl' \
+            --candidate-sha "$inventory_sha" \
+            --version "$inventory_version" \
+            --build-job linux-x86_64 \
+            --smoke-status built-not-smoke-tested \
+            --smoke-passed-filename "$(basename target/wheels/*.whl)" \
+            --output "$RUNNER_TEMP/ci-wheel-inventory.json"
+
       - name: Import package outside the checkout
         shell: bash
         run: |
           cd "$RUNNER_TEMP"
-          python - <<'PY'
-          import importlib.metadata
-          import tempfile
-          import localqueue
-
-          from localqueue import SimpleQueue
-          from localqueue import localqueue as native
-
-          assert "site-packages" in localqueue.__file__
-          assert "site-packages" in native.__file__
-          assert native.__version__ == importlib.metadata.version("localqueue")
-
-          with tempfile.TemporaryDirectory() as path:
-              queue = SimpleQueue(path)
-              queue.put({"source": "wheel-smoke"})
-              job = queue.get(block=False)
-              assert job.data == {"source": "wheel-smoke"}
-              queue.ack(job)
-              assert queue.stats()["acked"] == 1
-              queue.close()
-          PY
+          python "$GITHUB_WORKSPACE/scripts/smoke_installed_wheel.py"
 
       - name: Run canonical benchmark from installed wheel
         shell: bash
@@ -330,6 +378,29 @@ jobs:
           assert os.environ["GITHUB_WORKSPACE"] not in native.__file__
           PY
 
+      - name: Write release wheel smoke summary
+        if: inputs.candidate_ref != ''
+        shell: bash
+        run: |
+          module_path=$(cd "$RUNNER_TEMP" && python -c 'import localqueue; print(localqueue.__file__)')
+          python -m release_gate.cli summary-report \
+            --name wheel-smoke \
+            --status passed \
+            --candidate-sha "$RELEASE_CANDIDATE_SHA" \
+            --candidate-ref "$RELEASE_CANDIDATE_REF" \
+            --version "$RELEASE_CANDIDATE_VERSION" \
+            --installed-module-path "$module_path" \
+            --output "$RUNNER_TEMP/wheel-smoke-summary.json"
+
+      - name: Upload release wheel smoke summary
+        if: inputs.candidate_ref != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ci-wheel-smoke-summary
+          path: ${{ runner.temp }}/wheel-smoke-summary.json
+          if-no-files-found: error
+          retention-days: 30
+
   multiprocess-benchmark:
     name: Multiprocess benchmark correctness (Linux)
     needs: [python-quality, rust-quality, python-tests]
@@ -340,6 +411,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -394,3 +467,49 @@ jobs:
         run: |
           test "${BENCHMARK_EXIT:-1}" -eq 0
           test "${RENDER_EXIT:-1}" -eq 0
+
+  release-summary:
+    name: Release candidate CI summary
+    if: always() && inputs.candidate_ref != ''
+    needs:
+      - python-quality
+      - secrets
+      - rust-quality
+      - rust-dependencies
+      - msrv
+      - python-tests
+      - crash-harness
+      - wheel-smoke
+      - multiprocess-benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.expected_sha }}
+      - name: Record complete CI status
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        shell: bash
+        run: |
+          if jq -e 'all(.[]; .result == "success")' <<<"$NEEDS_JSON" >/dev/null; then
+            status=passed
+          else
+            status=failed
+          fi
+          python -m release_gate.cli summary-report \
+            --name complete-ci \
+            --status "$status" \
+            --candidate-sha "$RELEASE_CANDIDATE_SHA" \
+            --candidate-ref "$RELEASE_CANDIDATE_REF" \
+            --version "$RELEASE_CANDIDATE_VERSION" \
+            --output ci-summary.json
+          test "$status" = passed
+      - name: Upload CI summary
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ci-summary
+          path: ci-summary.json
+          if-no-files-found: error
+          retention-days: 30

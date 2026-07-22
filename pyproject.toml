@@ -28,6 +28,7 @@ dev = [
     "pytest-cov>=7,<8",
     "maturin>=1.14",
     "pydantic>=2,<3",
+    "packaging>=24,<26",
     "ruff>=0.15,<1",
     "pyrefly>=1.1,<2",
     "pre-commit>=4,<5",

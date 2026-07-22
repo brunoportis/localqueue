@@ -36,9 +36,13 @@ def result_dict(result: ScenarioResult) -> dict[str, Any]:
     return value
 
 
-def make_report(profile: str, results: list[ScenarioResult]) -> dict[str, Any]:
+def make_report(
+    profile: str,
+    results: list[ScenarioResult],
+    subject: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     statuses = [r.status for r in results]
-    return {
+    report = {
         "schema_version": SCHEMA_VERSION,
         "profile": profile,
         "platform": {
@@ -55,6 +59,10 @@ def make_report(profile: str, results: list[ScenarioResult]) -> dict[str, Any]:
         "scenarios": [result_dict(r) for r in results],
         "passed": bool(results) and all(r.status == "passed" for r in results),
     }
+    if subject is not None:
+        report["subject"] = subject
+        report["status"] = "passed" if report["passed"] else "failed"
+    return report
 
 
 def write_report(path: Path, report: dict[str, Any]) -> None:

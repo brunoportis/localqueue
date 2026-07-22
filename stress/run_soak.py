@@ -16,12 +16,20 @@ import multiprocessing as mp
 import os
 import random
 import sqlite3
+import sys
 import tempfile
 import time
 from pathlib import Path
 from typing import Any
 
-from localqueue import Empty, SimpleQueue
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from localqueue import Empty, SimpleQueue  # noqa: E402
+
+from release_gate.markdown import evidence_markdown  # noqa: E402
+from release_gate.subject import installed_subject  # noqa: E402
 
 
 def produce(path: str, queue_name: str, first: int, count: int) -> None:
@@ -224,10 +232,53 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--crash-rate", type=float, default=0.01)
     parser.add_argument("--max-restarts", type=int, default=100)
     parser.add_argument("--path", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--markdown-output", type=Path)
+    parser.add_argument("--candidate-sha")
+    parser.add_argument("--candidate-ref")
+    parser.add_argument("--candidate-version")
+    parser.add_argument("--require-wheel", action="store_true")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
-    result = run(parse_args())
-    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    arguments = parse_args()
+    result = run(arguments)
+    identity = (
+        arguments.candidate_sha,
+        arguments.candidate_ref,
+        arguments.candidate_version,
+    )
+    if any(identity):
+        if not all(identity):
+            raise SystemExit("candidate SHA, ref and version must be provided together")
+        result["subject"] = installed_subject(
+            arguments.candidate_sha,
+            arguments.candidate_ref,
+            arguments.candidate_version,
+            require_wheel=arguments.require_wheel,
+        )
+    result["schema_version"] = 1
+    result["configuration"] = {
+        "duration_seconds": arguments.duration,
+        "messages": arguments.messages,
+        "producers": arguments.producers,
+        "consumers": arguments.consumers,
+        "nack_rate": arguments.nack_rate,
+        "fail_rate": arguments.fail_rate,
+        "crash_rate": arguments.crash_rate,
+        "max_restarts": arguments.max_restarts,
+        "seed": arguments.seed,
+    }
+    result["status"] = "passed" if result["success"] else "failed"
+    rendered = json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    if arguments.output:
+        arguments.output.parent.mkdir(parents=True, exist_ok=True)
+        arguments.output.write_text(rendered, encoding="utf-8")
+    else:
+        print(rendered, end="")
+    if arguments.markdown_output:
+        arguments.markdown_output.write_text(
+            evidence_markdown("Multiprocess soak", result), encoding="utf-8"
+        )
     raise SystemExit(0 if result["success"] else 1)
