@@ -30,6 +30,7 @@ service.
 [Guarantees](#delivery-guarantees) ·
 [Backpressure](#bounded-backlog-and-backpressure) ·
 [Diagnostics](#runtime-diagnostics) · [API](#api-overview) ·
+[Storage compatibility](docs/storage-compatibility.md) ·
 [Changelog](CHANGELOG.md) ·
 [Development](#development)
 
