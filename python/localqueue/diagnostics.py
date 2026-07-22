@@ -84,7 +84,7 @@ def build_diagnostics(
     *,
     queue_name: str,
     serializer_identity: str,
-    lease_seconds: float,
+    lease_seconds: Union[int, float],
     max_retries: int,
 ) -> QueueDiagnostics:
     """Convert the private native snapshot into the public Python model."""
@@ -101,7 +101,7 @@ def build_diagnostics(
         observed_at=snapshot.observed_at_ms / 1000.0,
         queue_name=queue_name,
         serializer_identity=serializer_identity,
-        lease_seconds=lease_seconds,
+        lease_seconds=float(lease_seconds),
         max_retries=max_retries,
         journal_mode=snapshot.journal_mode,
         synchronous=snapshot.synchronous,

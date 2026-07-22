@@ -203,6 +203,8 @@ def test_active_lease_is_reported_without_changing_it(tmp_path: Path) -> None:
     report = queue.diagnostics()
 
     assert report.processing == 1
+    assert report.lease_seconds == 30.0
+    assert isinstance(report.lease_seconds, float)
     assert report.active_leases == 1
     assert report.expired_leases == 0
     assert report.oldest_processing_updated_age_seconds is not None
