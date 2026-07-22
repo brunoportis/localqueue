@@ -211,9 +211,7 @@ class SimpleQueue:
             busy_timeout_ms = (
                 None
                 if remaining is None
-                else math.ceil(
-                    min(remaining, _BACKPRESSURE_MAX_SLEEP_SECONDS) * 1000
-                )
+                else math.ceil(min(remaining, _BACKPRESSURE_MAX_SLEEP_SECONDS) * 1000)
             )
             try:
                 return self._run_enqueue_attempt(operation, busy_timeout_ms)
