@@ -24,7 +24,7 @@ jobs:
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/localqueue-compat
-          key: storage-compat-${{ runner.os }}-${{ hashFiles('compatibility/baselines.toml') }}
+          key: storage-compat-${{ runner.os }}-${{ hashFiles('compatibility/baselines.toml', 'compatibility/eventbus-dependencies.toml') }}
       - name: Run release-to-release compatibility matrix
         run: |
           uv run python compatibility/run_matrix.py \

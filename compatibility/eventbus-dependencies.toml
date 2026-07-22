@@ -1,0 +1,43 @@
+[lock]
+python_tag = "cp314"
+platform_tag = "manylinux_2_17_x86_64.manylinux2014_x86_64"
+
+[[artifact]]
+package = "annotated-types"
+version = "0.7.0"
+filename = "annotated_types-0.7.0-py3-none-any.whl"
+sha256 = "1f02e8b43a8fbbc3f3e0d4f0f4bfc8131bcb4eebe8849b8e5c773f3a1c582a53"
+python_tag = "py3"
+platform_tag = "any"
+
+[[artifact]]
+package = "pydantic"
+version = "2.12.5"
+filename = "pydantic-2.12.5-py3-none-any.whl"
+sha256 = "e561593fccf61e8a20fc46dfc2dfe075b8be7d0188df33f221ad1f0139180f9d"
+python_tag = "py3"
+platform_tag = "any"
+
+[[artifact]]
+package = "pydantic-core"
+version = "2.41.5"
+filename = "pydantic_core-2.41.5-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+sha256 = "22f0fb8c1c583a3b6f24df2470833b40207e907b90c928cc8d3594b76f874375"
+python_tag = "cp314"
+platform_tag = "manylinux_2_17_x86_64.manylinux2014_x86_64"
+
+[[artifact]]
+package = "typing-extensions"
+version = "4.16.0"
+filename = "typing_extensions-4.16.0-py3-none-any.whl"
+sha256 = "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8"
+python_tag = "py3"
+platform_tag = "any"
+
+[[artifact]]
+package = "typing-inspection"
+version = "0.4.2"
+filename = "typing_inspection-0.4.2-py3-none-any.whl"
+sha256 = "4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7"
+python_tag = "py3"
+platform_tag = "any"

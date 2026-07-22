@@ -19,6 +19,7 @@ from urllib.request import urlopen
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "compatibility" / "baselines.toml"
 POLICY = ROOT / "compatibility" / "policy.toml"
+DEPENDENCY_LOCK = ROOT / "compatibility" / "eventbus-dependencies.toml"
 REPORT_VERSION = 1
 
 
@@ -82,29 +83,23 @@ def load_manifest(path: Path = MANIFEST) -> dict[str, Any]:
     return data
 
 
-def wheel_url(entry: dict[str, Any]) -> str:
-    return f"https://files.pythonhosted.org/packages/{entry['wheel']}"  # replaced from PyPI JSON below
-
-
-def download_wheel(
-    entry: dict[str, Any], cache: Path, offline: bool
+def download_artifact(
+    entry: dict[str, Any], cache: Path, offline: bool, filename: str
 ) -> tuple[Path, str]:
-    destination = cache / entry["wheel"]
+    destination = cache / filename
     if destination.exists():
         status = "cache"
     elif offline:
-        raise MatrixError(f"offline cache miss: {entry['wheel']}")
+        raise MatrixError(f"offline cache miss: {filename}")
     else:
         metadata_url = (
             f"https://pypi.org/pypi/{entry['package']}/{entry['version']}/json"
         )
         with urlopen(metadata_url, timeout=30) as response:
             metadata = json.load(response)
-        candidates = [
-            item for item in metadata["urls"] if item["filename"] == entry["wheel"]
-        ]
+        candidates = [item for item in metadata["urls"] if item["filename"] == filename]
         if len(candidates) != 1 or candidates[0].get("yanked"):
-            raise MatrixError(f"expected wheel is absent or yanked: {entry['wheel']}")
+            raise MatrixError(f"expected wheel is absent or yanked: {filename}")
         source = candidates[0]["url"]
         cache.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_suffix(".download")
@@ -112,9 +107,31 @@ def download_wheel(
             temporary.write_bytes(response.read())
         temporary.replace(destination)
         status = "download"
-    if destination.name != entry["wheel"] or sha256(destination) != entry["sha256"]:
-        raise MatrixError(f"wheel filename or SHA-256 mismatch: {entry['wheel']}")
+    if destination.name != filename or sha256(destination) != entry["sha256"]:
+        raise MatrixError(f"wheel filename or SHA-256 mismatch: {filename}")
     return destination, status
+
+
+def download_wheel(
+    entry: dict[str, Any], cache: Path, offline: bool
+) -> tuple[Path, str]:
+    return download_artifact(entry, cache, offline, entry["wheel"])
+
+
+def dependency_wheelhouse(
+    cache: Path, offline: bool
+) -> tuple[Path, list[dict[str, str]]]:
+    lock = load_toml(DEPENDENCY_LOCK)
+    wheelhouse = cache / "eventbus-dependencies"
+    used: list[dict[str, str]] = []
+    for artifact in lock["artifact"]:
+        path, source = download_artifact(
+            artifact, wheelhouse, offline, artifact["filename"]
+        )
+        used.append(
+            {"filename": path.name, "sha256": artifact["sha256"], "source": source}
+        )
+    return wheelhouse, used
 
 
 def isolated_python(base: Path, python: str) -> Path:
@@ -124,12 +141,33 @@ def isolated_python(base: Path, python: str) -> Path:
     return base / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
-def install(python: Path, wheel: Path, event_bus: bool) -> None:
-    command = [str(python), "-m", "pip", "install", "--no-deps", str(wheel)]
+def install(
+    python: Path, wheel: Path, event_bus: bool, wheelhouse: Path | None = None
+) -> None:
+    command = [
+        str(python),
+        "-m",
+        "pip",
+        "install",
+        "--no-index",
+        "--no-deps",
+        str(wheel),
+    ]
+    if wheelhouse is not None:
+        command[4:4] = ["--find-links", str(wheelhouse)]
     subprocess.run(command, check=True, capture_output=True, text=True)
     if event_bus:
         subprocess.run(
-            [str(python), "-m", "pip", "install", "pydantic==2.12.5"],
+            [
+                str(python),
+                "-m",
+                "pip",
+                "install",
+                "--no-index",
+                "--find-links",
+                str(wheelhouse),
+                "pydantic==2.12.5",
+            ],
             check=True,
             capture_output=True,
             text=True,
@@ -234,16 +272,42 @@ def build_current(current: Path, work: Path, python: str) -> Path:
         check=True,
     )
     wheels = list(output.glob("*.whl"))
-    if not wheels:
-        raise MatrixError("maturin did not produce a wheel")
-    result = work / wheels[-1].name
-    shutil.copy2(wheels[-1], result)
+    if len(wheels) != 1:
+        raise MatrixError(f"maturin must produce exactly one wheel, got {len(wheels)}")
+    result = work / wheels[0].name
+    shutil.copy2(wheels[0], result)
     return result
+
+
+def current_provenance(current: Path, supplied_sha: str | None) -> dict[str, Any]:
+    if current.is_file():
+        sha = supplied_sha or os.environ.get("LOCALQUEUE_COMMIT_SHA")
+        return {
+            "source_kind": "explicit wheel",
+            "source_path": sanitize(current.resolve()),
+            "commit_sha": sha,
+            "provenance_source": "--current-commit-sha"
+            if supplied_sha
+            else ("LOCALQUEUE_COMMIT_SHA" if sha else "unknown"),
+            "dirty": None,
+        }
+    commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=current, text=True
+    ).strip()
+    dirty = subprocess.run(["git", "diff", "--quiet"], cwd=current).returncode != 0
+    return {
+        "source_kind": "checkout wheel",
+        "source_path": sanitize(current.resolve()),
+        "commit_sha": commit,
+        "provenance_source": "current checkout git HEAD",
+        "dirty": dirty,
+    }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--current", type=Path, required=True)
+    parser.add_argument("--current-commit-sha")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--cache-dir", type=Path)
     parser.add_argument("--work-dir", type=Path)
@@ -281,17 +345,18 @@ def main() -> int:
             / manifest["matrix"]["python_tag"]
             / manifest["matrix"]["platform_tag"]
         )
+        dependency_cache, dependency_artifacts = dependency_wheelhouse(
+            cache, args.offline
+        )
+        report["dependency_lock_sha256"] = sha256(DEPENDENCY_LOCK)
+        report["dependency_artifacts"] = dependency_artifacts
         current_wheel = build_current(args.current.resolve(), work, interpreter)
         current_venv = isolated_python(work / "current-venv", interpreter)
-        install(current_venv, current_wheel, True)
+        install(current_venv, current_wheel, True, dependency_cache)
         current_proof = prove_isolation(current_venv, args.current.resolve())
-        report["current_wheel"] = {
-            "source_kind": "checkout wheel"
-            if args.current.is_dir()
-            else "explicit wheel",
-            "commit_sha": subprocess.check_output(
-                ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
-            ).strip(),
+        report["current_wheel"] = current_provenance(
+            args.current.resolve(), args.current_commit_sha
+        ) | {
             "filename": current_wheel.name,
             "sha256": sha256(current_wheel),
             "package_version": current_proof["version"],
@@ -321,10 +386,14 @@ def main() -> int:
                 historical = isolated_python(
                     work / f"historical-{entry['version']}", interpreter
                 )
-                install(historical, wheel, entry["event_bus"])
+                install(historical, wheel, entry["event_bus"], dependency_cache)
                 result["isolation_proof"] = prove_isolation(
                     historical, args.current.resolve()
                 )
+                if result["isolation_proof"]["version"] != entry["version"]:
+                    raise MatrixError(
+                        f"installed version differs from baseline: {entry['version']}"
+                    )
                 fixture = work / "fixtures" / entry["version"]
                 create = copied_script(
                     work / f"scripts-{entry['version']}", "create_fixture.py"
