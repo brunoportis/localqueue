@@ -75,6 +75,12 @@ impl NativeQueue {
         })
     }
 
+    #[cfg(feature = "__crash_test")]
+    #[doc(hidden)]
+    pub fn _test_configure_failpoint(&self, name: &str, address: &str) -> PyResult<()> {
+        crate::failpoints::configure(name, address).map_err(pyo3::exceptions::PyValueError::new_err)
+    }
+
     pub fn put(&self, py: Python<'_>, payload: Vec<u8>, job_id: Option<&str>) -> PyResult<i64> {
         let job_id = job_id.map(str::to_owned);
         py.detach(move || {
@@ -248,6 +254,8 @@ impl NativeQueue {
                 return Ok(None);
             }
 
+            #[cfg(feature = "__crash_test")]
+            crate::failpoints::hit(crate::failpoints::Failpoint::ClaimBeforeCommit);
             tx.commit().map_err(QueueError::from)?;
             Ok(Some(Lease {
                 id,
@@ -265,7 +273,10 @@ impl NativeQueue {
             let now = now_ms();
             let mut guard = self.conn()?;
             let conn = guard.as_mut().unwrap();
-            let changed = conn
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(QueueError::from)?;
+            let changed = tx
                 .execute(
                     "UPDATE messages SET
                     status = ?1,
@@ -288,6 +299,9 @@ impl NativeQueue {
             if changed == 0 {
                 return Err(QueueError::LeaseExpired.into());
             }
+            #[cfg(feature = "__crash_test")]
+            crate::failpoints::hit(crate::failpoints::Failpoint::AckBeforeCommit);
+            tx.commit().map_err(QueueError::from)?;
             Ok(())
         })
     }
@@ -362,6 +376,8 @@ impl NativeQueue {
                 )
                 .map_err(QueueError::from)?;
 
+            #[cfg(feature = "__crash_test")]
+            crate::failpoints::hit(crate::failpoints::Failpoint::NackBeforeCommit);
             tx.commit().map_err(QueueError::from)?;
             if changed == 0 {
                 return Err(QueueError::LeaseExpired.into());
@@ -384,7 +400,10 @@ impl NativeQueue {
             let now = now_ms();
             let mut guard = self.conn()?;
             let conn = guard.as_mut().unwrap();
-            let changed = conn
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(QueueError::from)?;
+            let changed = tx
                 .execute(
                     "UPDATE messages SET
                     status = ?1,
@@ -409,6 +428,9 @@ impl NativeQueue {
             if changed == 0 {
                 return Err(QueueError::LeaseExpired.into());
             }
+            #[cfg(feature = "__crash_test")]
+            crate::failpoints::hit(crate::failpoints::Failpoint::FailBeforeCommit);
+            tx.commit().map_err(QueueError::from)?;
             Ok(())
         })
     }

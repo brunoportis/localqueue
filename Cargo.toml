@@ -11,6 +11,11 @@ repository = "https://github.com/brunoportis/localqueue"
 name = "localqueue"
 crate-type = ["cdylib"]
 
+[features]
+default = []
+# Internal-only crash harness support. Never enable this for a published wheel.
+__crash_test = []
+
 [dependencies]
 pyo3 = { version = "0.29", features = ["extension-module"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
