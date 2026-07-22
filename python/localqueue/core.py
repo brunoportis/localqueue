@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Optional, Protocol, Union
 
 from localqueue import localqueue as _native
+from localqueue.diagnostics import QueueDiagnostics, build_diagnostics
 from localqueue.exceptions import Empty, LocalQueueError
 from localqueue.job import Job
 
@@ -216,6 +217,23 @@ class SimpleQueue:
             "acked": stats.acked,
             "failed": stats.failed,
         }
+
+    def diagnostics(self) -> QueueDiagnostics:
+        """Return an immutable, read-only operational snapshot."""
+        snapshot = self._get_native().diagnostics()
+        serializer_type = type(self.serializer)
+        serializer_identity = (
+            "localqueue.JsonSerializer"
+            if serializer_type is JsonSerializer
+            else f"{serializer_type.__module__}.{serializer_type.__qualname__}"
+        )
+        return build_diagnostics(
+            snapshot,
+            queue_name=self.name,
+            serializer_identity=serializer_identity,
+            lease_seconds=self.lease_seconds,
+            max_retries=self.max_retries,
+        )
 
     def _to_job(self, lease: "_native.Lease") -> Job:
         data = self.serializer.loads(lease.payload)
