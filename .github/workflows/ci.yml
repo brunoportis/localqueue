@@ -234,7 +234,7 @@ jobs:
       - name: Run deterministic crash and control scenarios
         run: |
           source .venv/bin/activate
-          pytest -ra tests/test_crash_recovery.py
+          pytest -ra tests/test_crash_recovery.py tests/test_backup.py
 
   wheel-smoke:
     name: Build and smoke-test wheel

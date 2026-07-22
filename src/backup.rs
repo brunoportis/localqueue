@@ -1,30 +1,65 @@
 use pyo3::prelude::*;
-use rusqlite::backup::{Backup, StepResult};
+use rusqlite::backup::{Backup, Progress, StepResult};
 use rusqlite::{Connection, OpenFlags};
-use std::ffi::OsString;
-use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(any(test, feature = "__crash_test"))]
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::error::{QueueError, Result};
-use crate::storage::{sqlite_sidecar_path, Storage};
+use crate::storage::{sqlite_sidecar_path, Storage, BUSY_TIMEOUT_MS};
 
-static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const DATABASE_NAME: &str = "localqueue.db";
+const INCOMPLETE_NAME: &str = ".localqueue.db.incomplete";
+const PAGES_PER_STEP: i32 = 100;
+const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(10);
+const MAX_RETRY_DELAY: Duration = Duration::from_millis(100);
+
+#[cfg(any(test, feature = "__crash_test"))]
+static TEST_BACKUP_MAX_PAGE_COUNT: AtomicI64 = AtomicI64::new(0);
 
 #[derive(Debug, Clone)]
 #[pyclass(skip_from_py_object)]
 pub struct BackupSnapshot {
     #[pyo3(get)]
-    pub overwritten: bool,
+    pub schema_version: u8,
     #[pyo3(get)]
     pub elapsed_ms: u64,
     #[pyo3(get)]
+    pub pages_copied: u64,
+    #[pyo3(get)]
+    pub page_count: u64,
+    #[pyo3(get)]
     pub database_size_bytes: u64,
+    #[pyo3(get)]
+    pub verified: bool,
+    #[pyo3(get)]
+    pub verification_mode: String,
+    #[pyo3(get)]
+    pub verification_messages: Vec<String>,
 }
 
-pub fn create(storage: &Storage, destination: &str, overwrite: bool) -> Result<BackupSnapshot> {
+#[derive(Debug, Clone, Copy)]
+struct CopyProgress {
+    pages_copied: u64,
+    page_count: u64,
+}
+
+pub fn create(storage: &Storage, destination_directory: &str) -> Result<BackupSnapshot> {
+    create_with_copy(storage, destination_directory, |source, target| {
+        copy_database(source, target, PAGES_PER_STEP, || {})
+    })
+}
+
+fn create_with_copy<F>(
+    storage: &Storage,
+    destination_directory: &str,
+    copy: F,
+) -> Result<BackupSnapshot>
+where
+    F: FnOnce(&Connection, &mut Connection) -> rusqlite::Result<CopyProgress>,
+{
     {
         let guard = storage.connection();
         if guard.is_none() {
@@ -32,13 +67,58 @@ pub fn create(storage: &Storage, destination: &str, overwrite: bool) -> Result<B
         }
     }
 
-    let destination = std::path::absolute(destination)?;
-    if destination.is_dir() {
-        return Err(QueueError::InvalidBackupDestination(
-            "destination is a directory".to_owned(),
-        ));
+    let destination = validate_destination(storage.path(), destination_directory)?;
+    let started = Instant::now();
+    let reserved = ReservedDirectory::create(destination)?;
+
+    let source = Connection::open_with_flags(
+        storage.path(),
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+    )?;
+    source.pragma_update(None, "busy_timeout", BUSY_TIMEOUT_MS)?;
+    let mut target = Connection::open_with_flags(
+        reserved.incomplete_path(),
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_CREATE
+            | OpenFlags::SQLITE_OPEN_URI,
+    )?;
+    target.pragma_update(None, "busy_timeout", BUSY_TIMEOUT_MS)?;
+
+    #[cfg(any(test, feature = "__crash_test"))]
+    {
+        let page_limit = TEST_BACKUP_MAX_PAGE_COUNT.swap(0, Ordering::SeqCst);
+        if page_limit > 0 {
+            target.pragma_update(None, "max_page_count", page_limit)?;
+        }
     }
-    let parent = destination.parent().ok_or_else(|| {
+
+    let progress = copy(&source, &mut target)?;
+    target.pragma_update(None, "journal_mode", "DELETE")?;
+    // The destination connection must be completely closed before independent
+    // verification and before the final database name is published.
+    drop(target);
+    drop(source);
+
+    let verification_messages = verify_backup(reserved.incomplete_path())?;
+    remove_sqlite_sidecars(reserved.incomplete_path())?;
+    let database_size_bytes = std::fs::metadata(reserved.incomplete_path())?.len();
+    reserved.publish()?;
+
+    Ok(BackupSnapshot {
+        schema_version: 1,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+        pages_copied: progress.pages_copied,
+        page_count: progress.page_count,
+        database_size_bytes,
+        verified: true,
+        verification_mode: "full".to_owned(),
+        verification_messages,
+    })
+}
+
+fn validate_destination(source: &Path, destination_directory: &str) -> Result<PathBuf> {
+    let requested = std::path::absolute(destination_directory)?;
+    let parent = requested.parent().ok_or_else(|| {
         QueueError::InvalidBackupDestination("destination has no parent directory".to_owned())
     })?;
     if !parent.is_dir() {
@@ -46,52 +126,26 @@ pub fn create(storage: &Storage, destination: &str, overwrite: bool) -> Result<B
             "destination parent is not an existing directory".to_owned(),
         ));
     }
+    let name = requested.file_name().ok_or_else(|| {
+        QueueError::InvalidBackupDestination("destination must include a directory name".to_owned())
+    })?;
+    let destination = std::fs::canonicalize(parent)?.join(name);
+    let source_identity = std::fs::canonicalize(source)?;
+    let source_directory = source_identity.parent().ok_or_else(|| {
+        QueueError::InvalidBackupDestination("source database has no parent directory".to_owned())
+    })?;
 
-    let source_identity = std::fs::canonicalize(storage.path())?;
-    let destination_identity = if destination.exists() {
-        std::fs::canonicalize(&destination)?
-    } else {
-        std::fs::canonicalize(parent)?.join(destination.file_name().ok_or_else(|| {
-            QueueError::InvalidBackupDestination("destination must include a file name".to_owned())
-        })?)
-    };
-    if destination_identity == source_identity {
+    if destination == source_identity
+        || destination.starts_with(&source_identity)
+        || destination == source_directory
+        || destination.starts_with(source_directory)
+    {
         return Err(QueueError::InvalidBackupDestination(
-            "destination is the active database".to_owned(),
+            "destination cannot be the source database directory or be contained in it".to_owned(),
         ));
     }
 
-    let destination_existed = destination.exists();
-    if destination_existed && !overwrite {
-        return Err(QueueError::BackupDestinationExists(destination));
-    }
-
-    let started = Instant::now();
-    let temporary = TemporaryBackup::create(parent, &destination)?;
-    let source = Connection::open_with_flags(
-        storage.path(),
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
-    )?;
-    source.pragma_update(None, "busy_timeout", 5000)?;
-    let mut target = Connection::open_with_flags(
-        temporary.path(),
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_URI,
-    )?;
-    target.pragma_update(None, "busy_timeout", 5000)?;
-
-    copy_database(&source, &mut target, 100, || {})?;
-    drop(target);
-    drop(source);
-    verify_backup(temporary.path())?;
-
-    let database_size_bytes = std::fs::metadata(temporary.path())?.len();
-    temporary.publish(&destination, overwrite)?;
-
-    Ok(BackupSnapshot {
-        overwritten: destination_existed,
-        elapsed_ms: started.elapsed().as_millis() as u64,
-        database_size_bytes,
-    })
+    Ok(destination)
 }
 
 fn copy_database<F>(
@@ -99,130 +153,240 @@ fn copy_database<F>(
     target: &mut Connection,
     pages_per_step: i32,
     mut after_step: F,
-) -> rusqlite::Result<()>
+) -> rusqlite::Result<CopyProgress>
 where
     F: FnMut(),
 {
     let backup = Backup::new(source, target)?;
+    let started = Instant::now();
+    run_backup_steps(
+        || {
+            let result = backup.step(pages_per_step)?;
+            let progress = backup.progress();
+            after_step();
+            Ok((result, progress))
+        },
+        || started.elapsed(),
+        thread::sleep,
+        Duration::from_millis(BUSY_TIMEOUT_MS),
+    )
+}
+
+fn run_backup_steps<Step, Now, Sleep>(
+    mut step: Step,
+    mut now: Now,
+    mut sleep: Sleep,
+    lock_deadline: Duration,
+) -> rusqlite::Result<CopyProgress>
+where
+    Step: FnMut() -> rusqlite::Result<(StepResult, Progress)>,
+    Now: FnMut() -> Duration,
+    Sleep: FnMut(Duration),
+{
+    let mut locked_since = None;
+    let mut retry_delay = INITIAL_RETRY_DELAY;
+
     loop {
-        let step = backup.step(pages_per_step)?;
-        after_step();
-        match step {
-            StepResult::Done => return Ok(()),
-            StepResult::More | StepResult::Busy | StepResult::Locked => {
-                thread::sleep(Duration::from_millis(10));
+        let (result, progress) = step()?;
+        match result {
+            StepResult::Done => {
+                let page_count = u64::try_from(progress.pagecount.max(0)).unwrap_or(0);
+                let remaining = u64::try_from(progress.remaining.max(0)).unwrap_or(0);
+                return Ok(CopyProgress {
+                    pages_copied: page_count.saturating_sub(remaining),
+                    page_count,
+                });
+            }
+            StepResult::More => {
+                locked_since = None;
+                retry_delay = INITIAL_RETRY_DELAY;
+                sleep(INITIAL_RETRY_DELAY);
+            }
+            StepResult::Busy | StepResult::Locked => {
+                let current = now();
+                let lock_started = *locked_since.get_or_insert(current);
+                let locked_for = current.saturating_sub(lock_started);
+                if locked_for >= lock_deadline {
+                    let (code, label) = if result == StepResult::Busy {
+                        (rusqlite::ffi::SQLITE_BUSY, "busy")
+                    } else {
+                        (rusqlite::ffi::SQLITE_LOCKED, "locked")
+                    };
+                    return Err(rusqlite::Error::SqliteFailure(
+                        rusqlite::ffi::Error::new(code),
+                        Some(format!(
+                            "online backup remained {label} for the {BUSY_TIMEOUT_MS} ms busy timeout"
+                        )),
+                    ));
+                }
+                let remaining = lock_deadline - locked_for;
+                sleep(retry_delay.min(remaining));
+                retry_delay = (retry_delay * 2).min(MAX_RETRY_DELAY);
             }
             _ => unreachable!("rusqlite returned an unknown backup step"),
         }
     }
 }
 
-fn verify_backup(path: &Path) -> Result<()> {
+fn verify_backup(path: &Path) -> Result<Vec<String>> {
     let connection = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
     )?;
-    let mut statement = connection.prepare("PRAGMA integrity_check")?;
+    let mut statement = connection.prepare("PRAGMA integrity_check(100)")?;
     let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
     let messages = rows.collect::<std::result::Result<Vec<_>, _>>()?;
     if messages.len() == 1 && messages[0] == "ok" {
-        Ok(())
+        Ok(messages)
     } else {
         Err(QueueError::BackupIntegrity(messages))
     }
 }
 
-struct TemporaryBackup {
-    path: PathBuf,
+fn remove_sqlite_sidecars(database: &Path) -> std::io::Result<()> {
+    for suffix in ["-journal", "-wal", "-shm"] {
+        match std::fs::remove_file(sqlite_sidecar_path(database, suffix)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+struct ReservedDirectory {
+    directory: PathBuf,
+    incomplete: PathBuf,
+    final_database: PathBuf,
     published: bool,
 }
 
-impl TemporaryBackup {
-    fn create(parent: &Path, destination: &Path) -> Result<Self> {
-        let file_name = destination
-            .file_name()
-            .ok_or_else(|| {
-                QueueError::InvalidBackupDestination(
-                    "destination must include a file name".to_owned(),
-                )
-            })?
-            .to_os_string();
-
-        for _ in 0..100 {
-            let sequence = TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let mut temporary_name = OsString::from(".");
-            temporary_name.push(&file_name);
-            temporary_name.push(format!(".localqueue-{}-{sequence}.tmp", std::process::id()));
-            let path = parent.join(temporary_name);
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(file) => {
-                    drop(file);
-                    return Ok(Self {
-                        path,
-                        published: false,
-                    });
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error.into()),
+impl ReservedDirectory {
+    fn create(directory: PathBuf) -> Result<Self> {
+        match std::fs::create_dir(&directory) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(QueueError::BackupDestinationExists(directory));
             }
+            Err(error) => return Err(error.into()),
         }
-
-        Err(QueueError::InvalidBackupDestination(
-            "could not allocate a temporary backup file".to_owned(),
-        ))
+        Ok(Self {
+            incomplete: directory.join(INCOMPLETE_NAME),
+            final_database: directory.join(DATABASE_NAME),
+            directory,
+            published: false,
+        })
     }
 
-    fn path(&self) -> &Path {
-        &self.path
+    fn incomplete_path(&self) -> &Path {
+        &self.incomplete
     }
 
-    fn publish(mut self, destination: &Path, overwrite: bool) -> Result<()> {
-        if overwrite {
-            publish_overwriting(&self.path, destination)?;
-        } else {
-            match std::fs::hard_link(&self.path, destination) {
-                Ok(()) => std::fs::remove_file(&self.path)?,
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    return Err(QueueError::BackupDestinationExists(destination.to_owned()));
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
+    fn publish(mut self) -> Result<()> {
+        std::fs::rename(&self.incomplete, &self.final_database)?;
         self.published = true;
         Ok(())
     }
 }
 
-impl Drop for TemporaryBackup {
+impl Drop for ReservedDirectory {
     fn drop(&mut self) {
-        if !self.published {
-            let _ = std::fs::remove_file(&self.path);
+        if self.published {
+            return;
         }
-        for suffix in ["-journal", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(sqlite_sidecar_path(&self.path, suffix));
-        }
+        let _ = std::fs::remove_file(&self.incomplete);
+        let _ = remove_sqlite_sidecars(&self.incomplete);
+        // This intentionally removes only an empty directory owned by this
+        // operation. It never recursively removes a pre-existing path.
+        let _ = std::fs::remove_dir(&self.directory);
     }
 }
 
-#[cfg(unix)]
-fn publish_overwriting(temporary: &Path, destination: &Path) -> Result<()> {
-    std::fs::rename(temporary, destination)?;
-    Ok(())
-}
-
-#[cfg(windows)]
-fn publish_overwriting(temporary: &Path, destination: &Path) -> Result<()> {
-    if destination.exists() {
-        std::fs::remove_file(destination)?;
-    }
-    std::fs::rename(temporary, destination)?;
-    Ok(())
+#[cfg(any(test, feature = "__crash_test"))]
+pub fn set_test_backup_max_page_count(pages: i64) {
+    TEST_BACKUP_MAX_PAGE_COUNT.store(pages, Ordering::SeqCst);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use rusqlite::ErrorCode;
+    use std::cell::Cell;
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "{name}-{}-{}",
+                std::process::id(),
+                crate::storage::now_ms()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn progress(remaining: i32, pagecount: i32) -> Progress {
+        Progress {
+            remaining,
+            pagecount,
+        }
+    }
+
+    fn run_fake_steps(results: Vec<StepResult>) -> rusqlite::Result<CopyProgress> {
+        let elapsed = Cell::new(Duration::ZERO);
+        let mut results = results.into_iter();
+        run_backup_steps(
+            || {
+                let result = results.next().unwrap_or(StepResult::Done);
+                Ok((result, progress(i32::from(result != StepResult::Done), 1)))
+            },
+            || elapsed.get(),
+            |duration| elapsed.set(elapsed.get() + duration),
+            Duration::from_millis(BUSY_TIMEOUT_MS),
+        )
+    }
+
+    #[test]
+    fn transient_busy_and_locked_steps_recover() {
+        for transient in [StepResult::Busy, StepResult::Locked] {
+            let result = run_fake_steps(vec![transient, StepResult::More, StepResult::Done])
+                .expect("transient lock should recover");
+            assert_eq!(result.pages_copied, 1);
+            assert_eq!(result.page_count, 1);
+        }
+    }
+
+    #[test]
+    fn persistent_busy_stops_at_the_explicit_deadline() {
+        let elapsed = Cell::new(Duration::ZERO);
+        let error = run_backup_steps(
+            || Ok((StepResult::Busy, progress(1, 1))),
+            || elapsed.get(),
+            |duration| elapsed.set(elapsed.get() + duration),
+            Duration::from_millis(BUSY_TIMEOUT_MS),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            rusqlite::Error::SqliteFailure(failure, Some(message))
+                if failure.code == ErrorCode::DatabaseBusy
+                    && message.contains("5000 ms busy timeout")
+        ));
+        assert_eq!(elapsed.get(), Duration::from_millis(BUSY_TIMEOUT_MS));
+    }
 
     #[test]
     fn destination_full_error_is_preserved() {
@@ -236,7 +400,7 @@ mod tests {
         let mut target = Connection::open_in_memory().unwrap();
         target.pragma_update(None, "max_page_count", 1).unwrap();
 
-        let error = copy_database(&source, &mut target, 100, || {}).unwrap_err();
+        let error = copy_database(&source, &mut target, PAGES_PER_STEP, || {}).unwrap_err();
 
         assert!(matches!(
             error,
@@ -246,15 +410,92 @@ mod tests {
     }
 
     #[test]
-    fn stepped_backup_is_consistent_when_another_connection_writes() {
-        let directory = std::env::temp_dir().join(format!(
-            "localqueue-backup-concurrency-{}-{}",
-            std::process::id(),
-            crate::storage::now_ms()
+    fn staged_timeout_preserves_error_cleans_directory_and_allows_retry() {
+        let root = TempDir::new("localqueue-backup-timeout");
+        let source_directory = root.path().join("source");
+        std::fs::create_dir(&source_directory).unwrap();
+        let source_path = source_directory.join(DATABASE_NAME);
+        let storage = Storage::new(source_path.to_str().unwrap(), false).unwrap();
+        let failed_destination = root.path().join("timed-out");
+
+        let error = create_with_copy(&storage, failed_destination.to_str().unwrap(), |_, _| {
+            let elapsed = Cell::new(Duration::ZERO);
+            run_backup_steps(
+                || Ok((StepResult::Busy, progress(1, 1))),
+                || elapsed.get(),
+                |duration| elapsed.set(elapsed.get() + duration),
+                Duration::from_millis(BUSY_TIMEOUT_MS),
+            )
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            QueueError::Sqlite(rusqlite::Error::SqliteFailure(failure, Some(message)))
+                if failure.code == ErrorCode::DatabaseBusy
+                    && message.contains("5000 ms busy timeout")
         ));
-        std::fs::create_dir_all(&directory).unwrap();
-        let source_path = directory.join("source.db");
-        let target_path = directory.join("target.db");
+        assert!(!failed_destination.exists());
+
+        let retry_destination = root.path().join("retry");
+        let retry = create(&storage, retry_destination.to_str().unwrap()).unwrap();
+        assert!(retry.verified);
+        assert!(retry_destination.join(DATABASE_NAME).is_file());
+    }
+
+    #[test]
+    fn staged_disk_full_preserves_source_cleans_directory_and_allows_retry() {
+        let root = TempDir::new("localqueue-backup-full");
+        let source_directory = root.path().join("source");
+        std::fs::create_dir(&source_directory).unwrap();
+        let source_path = source_directory.join(DATABASE_NAME);
+        let storage = Storage::new(source_path.to_str().unwrap(), false).unwrap();
+        {
+            let guard = storage.connection();
+            guard
+                .as_ref()
+                .unwrap()
+                .execute_batch(
+                    "CREATE TABLE backup_full_fixture(value BLOB);
+                     INSERT INTO backup_full_fixture VALUES (zeroblob(262144));",
+                )
+                .unwrap();
+        }
+        let source_size = std::fs::metadata(&source_path).unwrap().len();
+        let failed_destination = root.path().join("disk-full");
+        set_test_backup_max_page_count(1);
+
+        let error = create(&storage, failed_destination.to_str().unwrap()).unwrap_err();
+
+        assert!(matches!(
+            error,
+            QueueError::Sqlite(rusqlite::Error::SqliteFailure(failure, _))
+                if failure.code == ErrorCode::DiskFull
+        ));
+        assert!(!failed_destination.exists());
+        assert_eq!(std::fs::metadata(&source_path).unwrap().len(), source_size);
+        let source = storage.connection();
+        assert_eq!(
+            source
+                .as_ref()
+                .unwrap()
+                .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+                .unwrap(),
+            "ok"
+        );
+        drop(source);
+
+        let retry_destination = root.path().join("retry");
+        let retry = create(&storage, retry_destination.to_str().unwrap()).unwrap();
+        assert!(retry.verified);
+        assert!(retry_destination.join(DATABASE_NAME).is_file());
+    }
+
+    #[test]
+    fn stepped_backup_is_consistent_when_another_connection_writes() {
+        let directory = TempDir::new("localqueue-backup-concurrency");
+        let source_path = directory.path().join("source.db");
+        let target_path = directory.path().join("target.db");
         let source = Connection::open(&source_path).unwrap();
         source.pragma_update(None, "journal_mode", "WAL").unwrap();
         source
@@ -287,9 +528,5 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM data", [], |row| row.get(0))
             .unwrap();
         assert!(matches!(count, 200 | 201));
-        drop(verified);
-        drop(writer);
-        drop(source);
-        std::fs::remove_dir_all(directory).unwrap();
     }
 }

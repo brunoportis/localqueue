@@ -243,29 +243,42 @@ class SimpleQueue:
         )
 
     def check_integrity(
-        self, mode: Literal["full", "quick"] = "full"
+        self,
+        *,
+        mode: Literal["full", "quick"] = "full",
+        max_errors: int = 100,
     ) -> IntegrityCheckResult:
         """Run a read-only SQLite integrity check on the shared database."""
         if mode not in ("full", "quick"):
             raise ValueError("'mode' must be 'full' or 'quick'")
+        if not isinstance(max_errors, int) or isinstance(max_errors, bool):
+            raise TypeError("'max_errors' must be an integer")
+        if not 1 <= max_errors <= 1000:
+            raise ValueError("'max_errors' must be between 1 and 1000")
         return build_integrity_result(
-            self._get_native().check_integrity(quick=mode == "quick")
+            self._get_native().check_integrity(
+                quick=mode == "quick", max_errors=max_errors
+            )
         )
 
     def backup(
         self,
-        destination: Union[str, os.PathLike[str]],
-        *,
-        overwrite: bool = False,
+        destination_directory: Union[str, os.PathLike[str]],
     ) -> BackupResult:
-        """Create a consistent online backup in a destination SQLite file.
+        """Create a consistent online backup in a new destination directory.
 
-        The destination parent must already exist. Existing files are rejected
-        unless ``overwrite=True`` is explicit.
+        The destination parent must already exist. The destination itself must
+        not exist and is reserved atomically by this operation.
         """
-        destination_string = os.fspath(destination)
-        snapshot = self._get_native().backup(destination_string, overwrite=overwrite)
-        return build_backup_result(snapshot, destination=destination_string)
+        destination_string = os.fspath(destination_directory)
+        database_path = os.path.join(destination_string, "localqueue.db")
+        stable_destination = os.path.abspath(destination_string)
+        snapshot = self._get_native().backup(stable_destination)
+        return build_backup_result(
+            snapshot,
+            destination=destination_string,
+            database_path=database_path,
+        )
 
     def _to_job(self, lease: "_native.Lease") -> Job:
         data = self.serializer.loads(lease.payload)

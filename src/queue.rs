@@ -97,6 +97,19 @@ impl NativeQueue {
             .map_err(Into::into)
     }
 
+    /// Limit the next backup's private destination database for disk-full tests.
+    #[cfg(feature = "__crash_test")]
+    #[doc(hidden)]
+    pub fn _test_set_backup_max_page_count(&self, pages: i64) -> PyResult<()> {
+        if pages < 1 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "pages must be at least 1",
+            ));
+        }
+        crate::backup::set_test_backup_max_page_count(pages);
+        Ok(())
+    }
+
     /// Read the connection-local busy timeout for the operational chaos harness.
     #[cfg(feature = "__crash_test")]
     #[doc(hidden)]
@@ -573,21 +586,20 @@ impl NativeQueue {
     }
 
     /// Run a read-only SQLite full or quick integrity check.
-    #[pyo3(signature = (quick = false))]
-    pub fn check_integrity(&self, py: Python<'_>, quick: bool) -> PyResult<IntegrityCheckSnapshot> {
-        py.detach(move || check_integrity(&self.storage, quick).map_err(Into::into))
+    #[pyo3(signature = (quick = false, max_errors = 100))]
+    pub fn check_integrity(
+        &self,
+        py: Python<'_>,
+        quick: bool,
+        max_errors: u16,
+    ) -> PyResult<IntegrityCheckSnapshot> {
+        py.detach(move || check_integrity(&self.storage, quick, max_errors).map_err(Into::into))
     }
 
     /// Create a consistent SQLite online backup at `destination`.
-    #[pyo3(signature = (destination, overwrite = false))]
-    pub fn backup(
-        &self,
-        py: Python<'_>,
-        destination: &str,
-        overwrite: bool,
-    ) -> PyResult<BackupSnapshot> {
+    pub fn backup(&self, py: Python<'_>, destination: &str) -> PyResult<BackupSnapshot> {
         let destination = destination.to_owned();
-        py.detach(move || create_backup(&self.storage, &destination, overwrite).map_err(Into::into))
+        py.detach(move || create_backup(&self.storage, &destination).map_err(Into::into))
     }
 
     /// Return the SQLite pragmas used by the active connection.

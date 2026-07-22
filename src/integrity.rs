@@ -8,35 +8,49 @@ use crate::storage::Storage;
 #[pyclass(skip_from_py_object)]
 pub struct IntegrityCheckSnapshot {
     #[pyo3(get)]
+    pub schema_version: u8,
+    #[pyo3(get)]
+    pub mode: String,
+    #[pyo3(get)]
+    pub max_errors: u16,
+    #[pyo3(get)]
     pub ok: bool,
     #[pyo3(get)]
     pub messages: Vec<String>,
     #[pyo3(get)]
     pub elapsed_ms: u64,
-    #[pyo3(get)]
-    pub check_mode: String,
 }
 
-pub fn check(storage: &Storage, quick: bool) -> Result<IntegrityCheckSnapshot> {
+pub const MIN_MAX_ERRORS: u16 = 1;
+pub const MAX_MAX_ERRORS: u16 = 1_000;
+
+pub fn check(storage: &Storage, quick: bool, max_errors: u16) -> Result<IntegrityCheckSnapshot> {
+    if !(MIN_MAX_ERRORS..=MAX_MAX_ERRORS).contains(&max_errors) {
+        return Err(QueueError::InvalidIntegrityMaxErrors);
+    }
     let mut guard = storage.connection();
     let conn = guard.as_mut().ok_or(QueueError::Closed)?;
     let started = Instant::now();
-    let (statement, check_mode) = if quick {
-        ("PRAGMA quick_check", "quick")
+    // Only these two known commands can be constructed. `max_errors` has
+    // already been restricted to the documented integer interval above.
+    let (statement, mode) = if quick {
+        (format!("PRAGMA quick_check({max_errors})"), "quick")
     } else {
-        ("PRAGMA integrity_check", "full")
+        (format!("PRAGMA integrity_check({max_errors})"), "full")
     };
 
-    let mut query = conn.prepare(statement)?;
+    let mut query = conn.prepare(&statement)?;
     let rows = query.query_map([], |row| row.get::<_, String>(0))?;
     let messages = rows.collect::<std::result::Result<Vec<_>, _>>()?;
     let ok = messages.len() == 1 && messages[0] == "ok";
 
     Ok(IntegrityCheckSnapshot {
+        schema_version: 1,
+        mode: mode.to_owned(),
+        max_errors,
         ok,
         messages,
         elapsed_ms: started.elapsed().as_millis() as u64,
-        check_mode: check_mode.to_owned(),
     })
 }
 
@@ -58,15 +72,17 @@ mod tests {
         let path = storage_path("healthy");
         let storage = Storage::new(path.to_str().unwrap(), false).unwrap();
 
-        let full = check(&storage, false).unwrap();
-        let quick = check(&storage, true).unwrap();
+        let full = check(&storage, false, 100).unwrap();
+        let quick = check(&storage, true, 7).unwrap();
 
         assert!(full.ok);
         assert_eq!(full.messages, ["ok"]);
-        assert_eq!(full.check_mode, "full");
+        assert_eq!(full.mode, "full");
+        assert_eq!(full.max_errors, 100);
         assert!(quick.ok);
         assert_eq!(quick.messages, ["ok"]);
-        assert_eq!(quick.check_mode, "quick");
+        assert_eq!(quick.mode, "quick");
+        assert_eq!(quick.max_errors, 7);
         storage.close().unwrap();
         std::fs::remove_file(path).unwrap();
     }
@@ -87,7 +103,7 @@ mod tests {
             .unwrap();
         }
 
-        let result = check(&storage, false).unwrap();
+        let result = check(&storage, false, 100).unwrap();
 
         assert!(!result.ok);
         assert!(result
