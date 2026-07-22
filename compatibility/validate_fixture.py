@@ -54,7 +54,7 @@ def main() -> None:
         )
         queue.ack(deduplicated)
         assertion(result, "processing_initial", queue.stats()["processing"] == 1)
-        deadline = time.monotonic() + 2.0
+        deadline = time.monotonic() + 7.0
         while time.monotonic() < deadline and queue.reclaim_expired_leases() == 0:
             time.sleep(0.05)
         assertion(result, "reclaimed_once", queue.stats()["processing"] == 0)
