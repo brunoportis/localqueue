@@ -6,6 +6,18 @@ from dataclasses import replace
 
 from localqueue.benchmark.config import BenchmarkConfig
 
+MULTIPROCESS_CI = (
+    (1, 1, 100),
+    (4, 8, 100),
+    (1, 1, 100_000),
+    (4, 8, 100_000),
+)
+MULTIPROCESS_RELEASE = tuple(
+    (p, c, size)
+    for p, c in ((1, 1), (4, 1), (1, 8), (4, 8))
+    for size in (100, 1024, 100_000)
+)
+
 _STANDARD = BenchmarkConfig(
     name="standard",
     warmups=3,
@@ -52,4 +64,12 @@ def get_profile(name: str) -> BenchmarkConfig:
         return _STANDARD
     if name == "smoke":
         return _SMOKE
+    raise ValueError(f"unknown profile: {name}")
+
+
+def multiprocess_matrix(name: str) -> tuple[tuple[int, int, int], ...]:
+    if name == "multiprocess-ci":
+        return MULTIPROCESS_CI
+    if name == "multiprocess-release":
+        return MULTIPROCESS_RELEASE
     raise ValueError(f"unknown profile: {name}")

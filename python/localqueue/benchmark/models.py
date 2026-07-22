@@ -21,6 +21,7 @@ class ScenarioResult:
     correctness: dict[str, Any]
     status: str
     error: dict[str, str] | None = None
+    multiprocess: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -35,6 +36,7 @@ class ScenarioResult:
             "correctness": self.correctness,
             "status": self.status,
             "error": self.error,
+            "multiprocess": self.multiprocess,
         }
 
 

@@ -389,6 +389,7 @@ extra:
 ```bash
 uv sync --extra benchmark
 uv run python -m localqueue.benchmark --profile smoke --output smoke.json
+uv run python -m localqueue.benchmark --profile multiprocess-ci --output multiprocess.json
 ```
 
 See the [benchmark guide](docs/benchmarks.md) for NORMAL/FULL durability and

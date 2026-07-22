@@ -15,6 +15,7 @@ from localqueue.benchmark.errors import BenchmarkExecutionError
 from localqueue.benchmark.metrics import MetricSummary, percentile
 from localqueue.benchmark.models import BenchmarkReport, ScenarioResult
 from localqueue.benchmark.profiles import get_profile
+from localqueue.benchmark.render import render_markdown
 from localqueue.benchmark.runner import run_profile
 from localqueue.exceptions import LocalQueueError
 
@@ -24,6 +25,187 @@ def test_percentile_uses_nearest_rank() -> None:
     assert percentile(samples, 0.50) == 30
     assert percentile(samples, 0.95) == 90
     assert percentile(samples, 0.99) == 90
+
+
+def test_markdown_renderer_supports_single_process_and_escapes_content() -> None:
+    report = {
+        "schema_version": 1,
+        "subject": {"package_version": "1|2", "commit_sha": "abc`def"},
+        "environment": {"os": "line1\nline2"},
+        "profile": {"name": "standard", "canonical": True},
+        "scenarios": [
+            {
+                "scenario_id": "put|one",
+                "parameters": {
+                    "durability": "normal",
+                    "payload_requested_bytes": 100,
+                    "payload_serialized_bytes": 101,
+                    "serializer": "json",
+                    "padding_method": "x",
+                },
+                "work_units": {"messages": 2},
+                "summary": {
+                    "p50_ns": 1,
+                    "p95_ns": 2,
+                    "p99_ns": 3,
+                    "messages_per_second": 4,
+                },
+                "correctness": {"ok": True},
+                "status": "passed",
+            }
+        ],
+    }
+    first = render_markdown(report)
+    assert first == render_markdown(report)
+    assert "1\\|2" in first
+    assert "abc\\`def" in first
+    assert "line1<br>line2" in first
+    assert "put\\|one" in first
+
+
+def test_markdown_renderer_includes_multiprocess_evidence() -> None:
+    report = {
+        "schema_version": 1,
+        "subject": {"package_version": "1.2.3", "commit_sha": "abc"},
+        "environment": {"os": "Linux"},
+        "profile": {
+            "name": "multiprocess-release",
+            "canonical": False,
+            "overrides": {"large_db_rows": 100},
+        },
+        "scenarios": [
+            {
+                "scenario_id": "wrapper",
+                "status": "failed",
+                "sqlite": {},
+                "correctness": {},
+                "multiprocess": {
+                    "scenario_id": "mp-large",
+                    "parameters": {
+                        "durability": "full",
+                        "producers": 1,
+                        "consumers": 1,
+                        "payload_requested_bytes": 100,
+                        "payload_serialized_bytes": 100,
+                        "serializer": "localqueue.JsonSerializer",
+                        "padding_method": "sha256",
+                        "messages": 2,
+                    },
+                    "throughput": {"produced_per_second": 3.0, "acked_per_second": 2.0},
+                    "metric_series": {
+                        "claim_latency": {
+                            "summary": {"p50_ns": 1, "p95_ns": 2, "p99_ns": 3}
+                        },
+                        "roundtrip_latency": {
+                            "summary": {"p50_ns": 4, "p95_ns": 5, "p99_ns": 6}
+                        },
+                    },
+                    "processes": [
+                        {
+                            "id": "producer-0",
+                            "role": "producer",
+                            "status": "failed",
+                            "exit_code": 1,
+                            "peak_rss_bytes": None,
+                            "rss_method": None,
+                            "error": {
+                                "type": "ProducerError",
+                                "message": "producer failed",
+                            },
+                        },
+                        {
+                            "id": "consumer-0",
+                            "role": "consumer",
+                            "status": "failed",
+                            "exit_code": 1,
+                            "peak_rss_bytes": None,
+                            "rss_method": None,
+                            "error": {
+                                "type": "ConsumerError",
+                                "message": "consumer failed",
+                            },
+                        },
+                    ],
+                    "large_database": {
+                        "target_rows": 100,
+                        "actual_rows": 100,
+                        "batch_size": 17,
+                        "preload_elapsed_ns": 123,
+                        "measured_claims": 10,
+                        "measured_acks": 10,
+                        "final_counts": {"ready": 90, "processing": 0, "failed": 0},
+                        "stats_before": {"ready": 0},
+                        "stats_after_preload": {"ready": 100},
+                        "stats_after": {"ready": 90},
+                        "integrity": {"ok": True},
+                    },
+                    "sqlite": {"journal_mode": "wal", "synchronous_name": "FULL"},
+                    "files": {
+                        "after_close": {"database": {"exists": True, "size_bytes": 42}}
+                    },
+                    "correctness": {
+                        "ok": False,
+                        "id_validation": {"ok": False},
+                        "stats": {"ready": 1},
+                        "integrity": {"ok": True},
+                    },
+                    "error": {"type": "RuntimeError", "message": "failed"},
+                    "status": "failed",
+                },
+            }
+        ],
+        "run": {"status": "failed"},
+    }
+    rendered = render_markdown(report)
+    for expected in (
+        "1.2.3",
+        "large_db_rows",
+        "producer-0",
+        "consumer-0",
+        "ProducerError",
+        "producer failed",
+        "ConsumerError",
+        "consumer failed",
+        "target_rows",
+        "preload_elapsed_ns",
+        "measured_acks",
+        "final_counts",
+        "FULL",
+        "after_close",
+        "ID validation",
+        "Failure",
+        "Limitations",
+    ):
+        assert expected in rendered
+
+
+def test_markdown_does_not_expose_temporary_paths() -> None:
+    temporary_path = "/tmp/localqueue-mp-run-secret/scenario/output.json"
+    report = {
+        "schema_version": 1,
+        "subject": {"package_version": "1.0", "commit_sha": "abc"},
+        "environment": {"workdir_filesystem": "<benchmark-workdir>"},
+        "profile": {"name": "multiprocess-ci", "canonical": False},
+        "scenarios": [
+            {
+                "scenario_id": "mp-failed",
+                "parameters": {},
+                "status": "failed",
+                "error": {
+                    "type": "OSError",
+                    "message": "cannot open <path>/output.json",
+                },
+                "correctness": {"ok": False},
+            }
+        ],
+    }
+
+    first = render_markdown(report)
+
+    assert first == render_markdown(report)
+    assert temporary_path not in first
+    assert "cannot open &lt;path&gt;" not in first
+    assert "cannot open <path>/output.json" in first
 
 
 def test_percentile_single_sample_and_empty_input() -> None:

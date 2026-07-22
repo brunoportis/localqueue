@@ -1,0 +1,162 @@
+name: Benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Fixed benchmark profile
+        required: true
+        default: multiprocess-ci
+        type: choice
+        options:
+          - multiprocess-ci
+          - multiprocess-release
+      release_ref:
+        description: Optional existing v* draft-release tag
+        required: false
+        type: string
+      large_db_rows:
+        description: Optional explicit large-DB override (non-canonical)
+        required: false
+        type: string
+      durability:
+        description: Optional durability filter
+        required: false
+        type: choice
+        options:
+          - ''
+          - normal
+          - full
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    name: ${{ inputs.profile }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Validate inputs
+        shell: bash
+        env:
+          RELEASE_REF: ${{ inputs.release_ref }}
+          LARGE_DB_ROWS: ${{ inputs.large_db_rows }}
+        run: |
+          if [[ -n "$RELEASE_REF" && "$RELEASE_REF" != v* ]]; then
+            echo "release_ref must start with v" >&2
+            exit 1
+          fi
+          if [[ -n "$LARGE_DB_ROWS" && ! "$LARGE_DB_ROWS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "large_db_rows must be a positive integer" >&2
+            exit 1
+          fi
+
+      - name: Check out requested source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.release_ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+
+      - name: Resolve source commit
+        id: source
+        shell: bash
+        env:
+          RELEASE_REF: ${{ inputs.release_ref }}
+        run: |
+          commit_sha=$(git rev-parse HEAD)
+          echo "commit_sha=$commit_sha" >> "$GITHUB_OUTPUT"
+          if [[ -n "$RELEASE_REF" ]]; then
+            python scripts/check_release_version.py --tag "$RELEASE_REF"
+            test "$(git rev-list -n 1 "$RELEASE_REF")" = "$commit_sha"
+          fi
+
+      - name: Obtain benchmark wheel
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REF: ${{ inputs.release_ref }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/wheels"
+          if [[ -n "$RELEASE_REF" ]]; then
+            gh release download "$RELEASE_REF" \
+              --repo "$GITHUB_REPOSITORY" \
+              --dir "$RUNNER_TEMP/wheels" \
+              --pattern '*cp313*manylinux*x86_64.whl'
+          else
+            python -m pip install --upgrade "maturin>=1.14,<2"
+            maturin build --release --locked -i python
+            cp target/wheels/*.whl "$RUNNER_TEMP/wheels/"
+          fi
+          test "$(find "$RUNNER_TEMP/wheels" -name '*.whl' | wc -l)" -eq 1
+
+      - name: Install wheel in isolated environment
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/benchmark-venv"
+          source "$RUNNER_TEMP/benchmark-venv/bin/activate"
+          python -m pip install --force-reinstall --no-index "$RUNNER_TEMP"/wheels/*.whl
+          cd "$RUNNER_TEMP"
+          python - <<'PY'
+          import importlib.metadata
+          import localqueue
+          from localqueue import localqueue as native
+
+          assert "site-packages" in localqueue.__file__
+          assert "site-packages" in native.__file__
+          assert native.__version__ == importlib.metadata.version("localqueue")
+          assert not any(name.startswith("_test_") for name in dir(native.NativeQueue))
+          PY
+
+      - name: Run benchmark and render partial report
+        id: run
+        shell: bash
+        env:
+          COMMIT_SHA: ${{ steps.source.outputs.commit_sha }}
+          PROFILE: ${{ inputs.profile }}
+          DURABILITY: ${{ inputs.durability }}
+          LARGE_DB_ROWS: ${{ inputs.large_db_rows }}
+        run: |
+          source "$RUNNER_TEMP/benchmark-venv/bin/activate"
+          args=(--profile "$PROFILE" --output "$RUNNER_TEMP/benchmark-report.json")
+          if [[ -n "$DURABILITY" ]]; then args+=(--durability "$DURABILITY"); fi
+          if [[ -n "$LARGE_DB_ROWS" ]]; then args+=(--large-db-rows "$LARGE_DB_ROWS"); fi
+          set +e
+          cd "$RUNNER_TEMP"
+          LOCALQUEUE_COMMIT_SHA="$COMMIT_SHA" python -m localqueue.benchmark "${args[@]}"
+          benchmark_exit=$?
+          if [[ -f benchmark-report.json ]]; then
+            python -m localqueue.benchmark render benchmark-report.json \
+              --output benchmark-report.md
+            render_exit=$?
+          else
+            render_exit=0
+          fi
+          echo "benchmark_exit=$benchmark_exit" >> "$GITHUB_OUTPUT"
+          echo "render_exit=$render_exit" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ inputs.profile }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/benchmark-report.json
+            ${{ runner.temp }}/benchmark-report.md
+          if-no-files-found: warn
+
+      - name: Enforce benchmark result
+        if: always()
+        shell: bash
+        env:
+          BENCHMARK_EXIT: ${{ steps.run.outputs.benchmark_exit }}
+          RENDER_EXIT: ${{ steps.run.outputs.render_exit }}
+        run: |
+          test "${BENCHMARK_EXIT:-1}" -eq 0
+          test "${RENDER_EXIT:-1}" -eq 0
