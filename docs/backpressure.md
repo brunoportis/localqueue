@@ -146,4 +146,6 @@ configured contract on one machine and local store.
 
 EventBus fanout remains unlimited in this release. `EventBus` has no capacity
 option, and the dispatch queue's `NativeQueue` policy is not applied to target
-subscription queues.
+subscription queues. Its per-subscription `concurrency` option instead bounds
+only active handlers in one consumer process; it neither limits fan-out nor
+creates producer backpressure. See [Event bus](event-bus.md#per-subscription-concurrency).

@@ -167,7 +167,7 @@ from .topology import TOPOLOGY
 
 
 bus = EventBus("./data", name="app", topology=TOPOLOGY)
-email = bus.subscription("email")
+email = bus.subscription("email", concurrency=8)
 
 
 @email.handler(UserCreated)
@@ -225,6 +225,46 @@ heartbeat renews the delivery lease while a handler runs. Handler returns are
 acked; transient exceptions are retried up to `max_retries`; exceptions listed
 in `permanent_errors`, unknown event types, and invalid payloads go directly to
 dead letter.
+
+## Per-subscription concurrency
+
+Each process can bound simultaneous deliveries for a subscription when creating
+its local binder:
+
+```python
+email = bus.subscription("email", concurrency=8)
+billing = bus.subscription("billing", concurrency=1)
+```
+
+`concurrency` is a positive integer and defaults to `1`. It is process-local,
+in-memory configuration: it is not stored in the topology or SQLite. Reusing a
+subscription binder keeps its configured value; assigning a conflicting value
+in the same process raises `ValueError`.
+
+At most that many deliveries are claimed and handled by this process at once.
+When all slots are occupied, the consumer does not claim another delivery
+until a handler reaches its ACK, NACK, permanent-failure, or lease-loss path.
+Every active delivery retains its own heartbeat and receipt-fenced transition.
+Other processes still compete normally for the same durable subscription
+queue, so this setting is not a global limit.
+
+With the default `concurrency=1`, one process claims and processes deliveries
+sequentially. With a larger value, claim order remains FIFO where possible,
+but handler completion order is intentionally unspecified. Choose a value from
+the concurrency the downstream dependency can safely absorb (for example,
+email-provider or database connection limits), then measure and adjust; it is
+not automatic CPU sizing and it is not a handler timeout.
+
+This bound limits active local handlers, not durable backlog or producer rate.
+Use `SimpleQueue(max_pending_jobs=...)` for producer-side backlog limits and
+the resulting `Full` backpressure policy. EventBus fan-out itself remains
+unlimited.
+
+Cancelling `run()` or `run_subscription()` stops further claims, cancels active
+async delivery tasks, closes the subscription queue, and propagates
+`CancelledError`. A synchronous handler already running in `asyncio.to_thread()`
+cannot be forcibly stopped; its result is not transitioned after cancellation,
+so normal lease expiry/retry recovery applies.
 
 ## Four distinct concepts
 

@@ -21,6 +21,8 @@ from localqueue.bus.topology import (
 )
 from localqueue.core import JsonSerializer, Serializer, SimpleQueue
 
+_DEFAULT_CONCURRENCY = object()
+
 
 class NoSubscribers(Exception):
     """Raised by ``dispatch`` when the topology has no matching route."""
@@ -93,6 +95,7 @@ class EventBus:
         )
 
         self._handlers: dict[tuple[str, str], _HandlerRegistration] = {}
+        self._subscription_concurrency: dict[str, int] = {}
 
     @staticmethod
     def _validate_name(value: str, field: str) -> None:
@@ -124,13 +127,33 @@ class EventBus:
             permanent_errors=permanent_errors,
         )
 
-    def subscription(self, name: str) -> Subscription:
+    def subscription(
+        self, name: str, *, concurrency: int | object = _DEFAULT_CONCURRENCY
+    ) -> Subscription:
         """Return a local handler binder for a declared subscription."""
         if not self.topology.has_subscription(name):
             raise ValueError(
                 f"subscription {name!r} is not declared in the bus topology"
             )
-        return Subscription(self, name)
+        if concurrency is not _DEFAULT_CONCURRENCY:
+            if not isinstance(concurrency, int) or isinstance(concurrency, bool):
+                raise TypeError("'concurrency' must be a positive integer")
+            if concurrency <= 0:
+                raise ValueError("'concurrency' must be a positive integer")
+            configured = self._subscription_concurrency.get(name)
+            if configured is not None and configured != concurrency:
+                raise ValueError(
+                    f"subscription {name!r} is already configured with "
+                    f"concurrency={configured}"
+                )
+            self._subscription_concurrency[name] = concurrency
+        return Subscription(
+            self, name, concurrency=self._subscription_concurrency.get(name, 1)
+        )
+
+    def _concurrency_for(self, subscription: str) -> int:
+        """Return this process's configured bound for ``subscription``."""
+        return self._subscription_concurrency.get(subscription, 1)
 
     def _register_handler(
         self,

@@ -26,17 +26,48 @@ async def run_consumer(
 ) -> None:
     """Consume ``subscription`` until cancellation or an idle timeout.
 
-    Each non-blocking poll runs in a worker thread. When the queue is empty,
-    the event loop waits for the polling interval. ``CancelledError`` closes
-    the queue in ``finally`` and propagates.
+    Each non-blocking poll runs in a worker thread. A bounded set of delivery
+    tasks keeps heartbeats and transitions independent while preventing new
+    claims when every configured subscription slot is occupied.
+
+    When cancelled, active delivery tasks are cancelled before the queue is
+    closed, and ``CancelledError`` propagates to the caller.
     """
     queue = bus._open_subscription_queue(subscription)
+    concurrency = bus._concurrency_for(subscription)
+    active: set[asyncio.Task[None]] = set()
+
+    async def reap(*, wait: bool) -> None:
+        """Observe completed deliveries, optionally waiting for one."""
+        if not active:
+            return
+        done, _ = await asyncio.wait(
+            active,
+            return_when=(asyncio.FIRST_COMPLETED if wait else asyncio.ALL_COMPLETED),
+        )
+        active.difference_update(done)
+        for task in done:
+            task.result()
+
     try:
         idle_since: Optional[float] = None
         while True:
+            if len(active) >= concurrency:
+                await reap(wait=True)
+                continue
             try:
                 job = await asyncio.to_thread(queue.get, False)
             except Empty:
+                if active:
+                    done, _ = await asyncio.wait(
+                        active,
+                        timeout=_POLL_INTERVAL,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    active.difference_update(done)
+                    for task in done:
+                        task.result()
+                    continue
                 if idle_timeout is not None:
                     now = asyncio.get_running_loop().time()
                     idle_since = idle_since if idle_since is not None else now
@@ -45,8 +76,14 @@ async def run_consumer(
                 await asyncio.sleep(_POLL_INTERVAL)
                 continue
             idle_since = None
-            await _process_delivery(bus, subscription, queue, job)
+            active.add(
+                asyncio.create_task(_process_delivery(bus, subscription, queue, job))
+            )
     finally:
+        for task in active:
+            task.cancel()
+        if active:
+            await asyncio.gather(*active, return_exceptions=True)
         queue.close()
 
 

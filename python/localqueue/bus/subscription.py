@@ -13,9 +13,10 @@ if TYPE_CHECKING:
 class Subscription:
     """Bind local handlers to one statically declared subscription."""
 
-    def __init__(self, bus: EventBus, name: str) -> None:
+    def __init__(self, bus: EventBus, name: str, *, concurrency: int) -> None:
         self._bus = bus
         self.name = name
+        self.concurrency = concurrency
 
     def handler(
         self,
