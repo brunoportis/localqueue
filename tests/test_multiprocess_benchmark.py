@@ -540,6 +540,17 @@ def test_worker_errors_are_structured_and_paths_are_sanitized(tmp_path: Path) ->
     }
     assert str(tmp_path) not in str(results)
 
+    windows = _sanitize_worker_results(
+        [
+            {
+                "id": "producer-0",
+                "error": r"failed at C:\bench\run\scenario\db",
+            }
+        ],
+        (r"C:\bench\run\scenario",),
+    )
+    assert windows[0]["error"]["message"] == "failed at <path>/db"
+
 
 def test_ipc_oserror_after_barrier_cleans_processes_queue_and_workdir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

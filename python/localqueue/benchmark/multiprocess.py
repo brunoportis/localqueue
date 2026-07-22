@@ -63,7 +63,7 @@ def make_payload(
 def _error_payload(exc: BaseException, *paths: str | Path) -> dict[str, str]:
     return {
         "type": type(exc).__name__,
-        "message": sanitize_error_message(str(exc), tuple(paths)),
+        "message": sanitize_error_message(str(exc), tuple(paths)).replace("\\", "/"),
     }
 
 
@@ -343,12 +343,14 @@ def _sanitize_worker_results(
                 "type": str(error.get("type", "WorkerError")),
                 "message": sanitize_error_message(
                     str(error.get("message", "worker failed")), sensitive_paths
-                ),
+                ).replace("\\", "/"),
             }
         elif error is not None:
             sanitized["error"] = {
                 "type": "WorkerError",
-                "message": sanitize_error_message(str(error), sensitive_paths),
+                "message": sanitize_error_message(str(error), sensitive_paths).replace(
+                    "\\", "/"
+                ),
             }
         sanitized_results.append(sanitized)
     return sanitized_results
