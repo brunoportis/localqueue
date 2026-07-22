@@ -17,6 +17,36 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def _concurrent_consumer_group_worker(path, processed, active, duplicates, peak, lock):
+    """Consume with a per-process bound while recording aggregate activity."""
+    bus = EventBus(
+        path,
+        name="group",
+        topology=BusTopology({"email": [WorkSubmitted]}),
+        lease_seconds=5.0,
+    )
+
+    def handle(event):
+        event_id = str(event.event_id)
+        with lock:
+            if event_id in active:
+                duplicates.append(event_id)
+            active[event_id] = True
+            peak.value = max(peak.value, len(active))
+        import time
+
+        time.sleep(0.05)
+        with lock:
+            processed.append(event_id)
+            active.pop(event_id, None)
+
+    bus.subscription("email", concurrency=2).handler(WorkSubmitted, handle)
+    try:
+        asyncio.run(bus.run_subscription("email", idle_timeout=1.0))
+    finally:
+        bus.close()
+
+
 @pytest.fixture
 def bus(tmp_path):
     instance = EventBus(
@@ -45,6 +75,16 @@ class TestSubscriptionConcurrencyConfiguration:
 
         assert configured.concurrency == 8
         assert bus.subscription("email").concurrency == 8
+
+    def test_old_binder_reflects_configuration_and_is_read_only(self, bus):
+        old_binder = bus.subscription("email")
+        bus.subscription("email", concurrency=8)
+        new_binder = bus.subscription("email")
+
+        assert old_binder.concurrency == 8
+        assert new_binder.concurrency == 8
+        with pytest.raises(AttributeError):
+            old_binder.concurrency = 99
 
     def test_defaults_to_one_without_overwriting_configuration(self, bus):
         assert bus.subscription("email").concurrency == 1
@@ -344,6 +384,297 @@ class TestBoundedSubscriptionConcurrency:
             assert queue.stats()["ready"] == 1
         finally:
             queue.close()
+
+    def test_cancellation_of_sync_handler_leaves_delivery_untransitioned(self, bus):
+        subscription = bus.subscription("email", concurrency=1)
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+
+        @subscription.handler(WorkSubmitted)
+        def handle(event):
+            started.set()
+            release.wait(timeout=2.0)
+            finished.set()
+
+        bus.dispatch(WorkSubmitted(sequence=1))
+
+        async def consume_then_cancel():
+            task = asyncio.create_task(bus.run_subscription("email"))
+            assert await asyncio.to_thread(started.wait, 1.0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            release.set()
+            assert await asyncio.to_thread(finished.wait, 1.0)
+
+        run(consume_then_cancel())
+
+        queue = bus._open_subscription_queue("email")
+        try:
+            stats = queue.stats()
+            assert stats["acked"] == 0
+            assert stats["failed"] == 0
+            assert stats["processing"] == 1
+        finally:
+            queue.close()
+
+
+class TestSingleSubscriptionRunner:
+    def test_rejects_overlapping_run_subscription_calls(self, bus):
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        @bus.subscription("email").handler(WorkSubmitted)
+        async def handle(event):
+            started.set()
+            await release.wait()
+
+        bus.dispatch(WorkSubmitted(sequence=1))
+
+        async def consume():
+            first = asyncio.create_task(bus.run_subscription("email"))
+            await asyncio.wait_for(started.wait(), timeout=1.0)
+            with pytest.raises(RuntimeError, match="already running"):
+                await bus.run_subscription("email")
+            release.set()
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+
+        run(consume())
+
+    def test_releases_runner_after_queue_open_failure(self, bus, monkeypatch):
+        bus.on(WorkSubmitted, lambda event: None, subscription="email")
+        original_open = bus._open_subscription_queue
+
+        def fail_open(subscription):
+            raise OSError("open failed")
+
+        monkeypatch.setattr(bus, "_open_subscription_queue", fail_open)
+        with pytest.raises(OSError, match="open failed"):
+            run(bus.run_subscription("email"))
+        assert bus._running_subscriptions == set()
+
+        monkeypatch.setattr(bus, "_open_subscription_queue", original_open)
+        bus.dispatch(WorkSubmitted(sequence=1))
+        run(bus.run_subscription("email", idle_timeout=0.05))
+
+    def test_releases_runner_after_unexpected_delivery_failure(self, bus):
+        class Fatal(BaseException):
+            pass
+
+        @bus.subscription("email").handler(WorkSubmitted)
+        async def handle(event):
+            raise Fatal("fatal")
+
+        bus.dispatch(WorkSubmitted(sequence=1))
+        with pytest.raises(Fatal, match="fatal"):
+            run(bus.run_subscription("email"))
+
+        assert bus._running_subscriptions == set()
+
+    def test_run_and_run_subscription_cannot_overlap_same_subscription(self, tmp_path):
+        instance = EventBus(
+            str(tmp_path / "bus"),
+            topology=BusTopology(
+                {"email": [WorkSubmitted], "billing": [WorkSubmitted]}
+            ),
+        )
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        @instance.subscription("email").handler(WorkSubmitted)
+        async def email_handler(event):
+            started.set()
+            await release.wait()
+
+        @instance.subscription("billing").handler(WorkSubmitted)
+        async def billing_handler(event):
+            await release.wait()
+
+        instance.dispatch(WorkSubmitted(sequence=1))
+
+        async def consume():
+            task = asyncio.create_task(instance.run())
+            await asyncio.wait_for(started.wait(), timeout=1.0)
+            with pytest.raises(RuntimeError, match="already running"):
+                await instance.run_subscription("email")
+            release.set()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        try:
+            run(consume())
+        finally:
+            instance.close()
+
+    def test_two_run_calls_cannot_overlap(self, tmp_path):
+        instance = EventBus(
+            str(tmp_path / "bus"),
+            topology=BusTopology(
+                {"email": [WorkSubmitted], "billing": [WorkSubmitted]}
+            ),
+        )
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        @instance.subscription("email").handler(WorkSubmitted)
+        async def email_handler(event):
+            started.set()
+            await release.wait()
+
+        @instance.subscription("billing").handler(WorkSubmitted)
+        async def billing_handler(event):
+            await release.wait()
+
+        instance.dispatch(WorkSubmitted(sequence=1))
+
+        async def consume():
+            first = asyncio.create_task(instance.run())
+            await asyncio.wait_for(started.wait(), timeout=1.0)
+            with pytest.raises(RuntimeError, match="already running"):
+                await instance.run()
+            release.set()
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+
+        try:
+            run(consume())
+        finally:
+            instance.close()
+
+
+class TestConcurrentDeliveryFailures:
+    def test_observes_every_completed_delivery_before_propagating(self, bus):
+        class FirstFatal(BaseException):
+            pass
+
+        class SecondFatal(BaseException):
+            pass
+
+        release = asyncio.Event()
+        entered = 0
+
+        @bus.subscription("email", concurrency=2).handler(WorkSubmitted)
+        async def handle(event):
+            nonlocal entered
+            entered += 1
+            if entered == 2:
+                release.set()
+            await release.wait()
+            await asyncio.sleep(0)
+            if event.sequence == 1:
+                raise FirstFatal("first")
+            raise SecondFatal("second")
+
+        bus.dispatch(WorkSubmitted(sequence=1))
+        bus.dispatch(WorkSubmitted(sequence=2))
+
+        with pytest.raises(FirstFatal, match="first"):
+            run(bus.run_subscription("email"))
+        assert bus._running_subscriptions == set()
+
+
+class TestRunFailureCleanup:
+    def test_run_cancels_sibling_subscription_after_unexpected_failure(self, tmp_path):
+        class Fatal(BaseException):
+            pass
+
+        instance = EventBus(
+            str(tmp_path / "bus"),
+            topology=BusTopology(
+                {"email": [WorkSubmitted], "billing": [WorkSubmitted]}
+            ),
+        )
+        billing_started = asyncio.Event()
+        billing_cancelled = asyncio.Event()
+
+        @instance.subscription("billing").handler(WorkSubmitted)
+        async def billing_handler(event):
+            billing_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                billing_cancelled.set()
+                raise
+
+        @instance.subscription("email").handler(WorkSubmitted)
+        async def email_handler(event):
+            await billing_started.wait()
+            raise Fatal("email failed")
+
+        instance.dispatch(WorkSubmitted(sequence=1))
+        instance.dispatch(WorkSubmitted(sequence=2))
+        try:
+            with pytest.raises(Fatal, match="email failed"):
+                run(instance.run())
+            assert billing_cancelled.is_set()
+            queue = instance._open_subscription_queue("billing")
+            try:
+                assert queue.stats()["ready"] == 1
+            finally:
+                queue.close()
+            assert instance._running_subscriptions == set()
+        finally:
+            instance.close()
+
+
+class TestConcurrentConsumerGroup:
+    def test_each_process_applies_its_own_bound(self, tmp_path):
+        import multiprocessing
+
+        path = str(tmp_path / "group")
+        topology = BusTopology({"email": [WorkSubmitted]})
+        producer = EventBus(path, name="group", topology=topology, lease_seconds=5.0)
+        event_ids = []
+        for sequence in range(16):
+            event = WorkSubmitted(sequence=sequence)
+            event_ids.append(str(event.event_id))
+            producer.dispatch(event)
+        producer.close()
+
+        context = multiprocessing.get_context("spawn")
+        with context.Manager() as manager:
+            processed = manager.list()
+            active = manager.dict()
+            duplicates = manager.list()
+            peak = manager.Value("i", 0)
+            lock = manager.Lock()
+            processes = [
+                context.Process(
+                    target=_concurrent_consumer_group_worker,
+                    args=(path, processed, active, duplicates, peak, lock),
+                )
+                for _ in range(2)
+            ]
+            try:
+                for process in processes:
+                    process.start()
+                for process in processes:
+                    process.join(timeout=30)
+                assert [process.exitcode for process in processes] == [0, 0]
+            finally:
+                for process in processes:
+                    if process.is_alive():
+                        process.terminate()
+                    process.join(timeout=5)
+
+            assert list(duplicates) == []
+            assert sorted(processed) == sorted(event_ids)
+            assert peak.value > 2
+
+        verifier = EventBus(path, name="group", topology=topology)
+        queue = verifier._open_subscription_queue("email")
+        try:
+            stats = queue.stats()
+            assert stats["acked"] == len(event_ids)
+            assert stats["processing"] == 0
+        finally:
+            queue.close()
+            verifier.close()
 
 
 class TestIndependentSubscriptions:

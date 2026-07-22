@@ -94,7 +94,8 @@ class EventBus:
 
         self._handlers: dict[tuple[str, str], _HandlerRegistration] = {}
         self._subscription_concurrency: dict[str, int] = {}
-        self._started_subscriptions: set[str] = set()
+        self._frozen_subscriptions: set[str] = set()
+        self._running_subscriptions: set[str] = set()
 
     @staticmethod
     def _validate_name(value: str, field: str) -> None:
@@ -135,7 +136,7 @@ class EventBus:
                 f"subscription {name!r} is not declared in the bus topology"
             )
         if concurrency is not None:
-            if name in self._started_subscriptions:
+            if name in self._frozen_subscriptions:
                 raise RuntimeError(
                     f"subscription {name!r} concurrency must be configured before run"
                 )
@@ -150,17 +151,22 @@ class EventBus:
                     f"concurrency={configured}"
                 )
             self._subscription_concurrency[name] = concurrency
-        return Subscription(
-            self, name, concurrency=self._subscription_concurrency.get(name, 1)
-        )
+        return Subscription(self, name)
 
     def _concurrency_for(self, subscription: str) -> int:
         """Return this process's configured bound for ``subscription``."""
         return self._subscription_concurrency.get(subscription, 1)
 
     def _begin_consuming(self, subscription: str) -> None:
-        """Freeze subscription concurrency before its consumer starts."""
-        self._started_subscriptions.add(subscription)
+        """Freeze configuration and claim the local runner for a subscription."""
+        if subscription in self._running_subscriptions:
+            raise RuntimeError(f"subscription {subscription!r} is already running")
+        self._frozen_subscriptions.add(subscription)
+        self._running_subscriptions.add(subscription)
+
+    def _end_consuming(self, subscription: str) -> None:
+        """Release the local runner while retaining frozen configuration."""
+        self._running_subscriptions.discard(subscription)
 
     def _register_handler(
         self,
@@ -305,12 +311,19 @@ class EventBus:
         from localqueue.bus.consumer import run_consumer
 
         subscriptions = sorted({sub for (sub, _) in self._handlers})
-        await asyncio.gather(
-            *(
+        consumers = [
+            asyncio.create_task(
                 run_consumer(self, subscription, idle_timeout=idle_timeout)
-                for subscription in subscriptions
             )
-        )
+            for subscription in subscriptions
+        ]
+        try:
+            await asyncio.gather(*consumers)
+        except BaseException:
+            for consumer in consumers:
+                consumer.cancel()
+            await asyncio.gather(*consumers, return_exceptions=True)
+            raise
 
     async def run_subscription(
         self, subscription: str, *, idle_timeout: Optional[float] = None

@@ -34,15 +34,24 @@ async def run_consumer(
     closed, and ``CancelledError`` propagates to the caller.
     """
     bus._begin_consuming(subscription)
-    queue = bus._open_subscription_queue(subscription)
-    concurrency = bus._concurrency_for(subscription)
+    queue: Any | None = None
     active: set[asyncio.Task[None]] = set()
+    delivery_order: dict[asyncio.Task[None], int] = {}
+    next_delivery_order = 0
 
     def reap(done: set[asyncio.Task[None]]) -> None:
-        """Remove completed deliveries and propagate unexpected failures."""
-        active.difference_update(done)
-        for task in done:
-            task.result()
+        """Observe every completed delivery before propagating one failure."""
+        primary: BaseException | None = None
+        for task in sorted(done, key=delivery_order.__getitem__):
+            active.discard(task)
+            delivery_order.pop(task)
+            try:
+                task.result()
+            except BaseException as error:
+                if primary is None:
+                    primary = error
+        if primary is not None:
+            raise primary
 
     async def wait_for_delivery(timeout: Optional[float] = None) -> None:
         """Wait for one delivery completion and consume its result."""
@@ -56,6 +65,8 @@ async def run_consumer(
         reap(done)
 
     try:
+        queue = bus._open_subscription_queue(subscription)
+        concurrency = bus._concurrency_for(subscription)
         idle_since: Optional[float] = None
         while True:
             if len(active) >= concurrency:
@@ -75,15 +86,18 @@ async def run_consumer(
                 await asyncio.sleep(_POLL_INTERVAL)
                 continue
             idle_since = None
-            active.add(
-                asyncio.create_task(_process_delivery(bus, subscription, queue, job))
-            )
+            task = asyncio.create_task(_process_delivery(bus, subscription, queue, job))
+            active.add(task)
+            delivery_order[task] = next_delivery_order
+            next_delivery_order += 1
     finally:
         for task in active:
             task.cancel()
         if active:
             await asyncio.gather(*active, return_exceptions=True)
-        queue.close()
+        if queue is not None:
+            queue.close()
+        bus._end_consuming(subscription)
 
 
 async def _heartbeat(

@@ -256,6 +256,10 @@ Every active delivery retains its own heartbeat and receipt-fenced transition.
 Other processes still compete normally for the same durable subscription
 queue, so this setting is not a global limit.
 
+Within one `EventBus` instance, a subscription has one active consumer runner.
+Starting that same subscription again while it runs raises `RuntimeError`; this
+prevents two local claim loops from multiplying its configured bound.
+
 With the default `concurrency=1`, one process claims and processes deliveries
 sequentially: a delivery completes its transition before the next claim. With
 a larger value, claims follow the queue's available order, but handler and ACK
