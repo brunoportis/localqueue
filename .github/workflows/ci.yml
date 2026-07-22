@@ -219,16 +219,22 @@ jobs:
 
       - name: Install test build tooling
         run: |
+          python -m venv .venv
+          source .venv/bin/activate
           python -m pip install --upgrade \
             "maturin>=1.14,<2" \
             "pytest>=8,<10" \
             "pydantic>=2,<3"
 
       - name: Build extension with explicit test-only feature
-        run: maturin develop --locked --features __crash_test
+        run: |
+          source .venv/bin/activate
+          maturin develop --locked --features __crash_test
 
       - name: Run deterministic crash and control scenarios
-        run: pytest -ra tests/test_crash_recovery.py
+        run: |
+          source .venv/bin/activate
+          pytest -ra tests/test_crash_recovery.py
 
   wheel-smoke:
     name: Build and smoke-test wheel
