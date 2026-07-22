@@ -96,7 +96,6 @@ def producer_target(
         raise
     finally:
         queue.close()
-        done.set()
 
 
 def consumer_target(
@@ -129,11 +128,17 @@ def consumer_target(
                 ):
                     break
                 continue
-            claims.append(time.monotonic_ns() - before)
+            claim_done = time.monotonic_ns()
+            claims.append(claim_done - before)
             claimed += 1
             queue.ack(job)
             acked += 1
-            roundtrips.append(time.monotonic_ns() - before)
+            created_ns = (
+                job.data.get("created_ns") if isinstance(job.data, dict) else None
+            )
+            if not isinstance(created_ns, int):
+                raise RuntimeError("payload created_ns is missing or invalid")
+            roundtrips.append(time.monotonic_ns() - created_ns)
         output.put(
             {
                 "id": f"consumer-{index}",
@@ -244,18 +249,45 @@ def run_multiprocess_scenario(
     started = time.monotonic()
     [p.start() for p in ps + cs]
     ready.wait()
-    for process in ps + cs:
+    producer_results = []
+    for process in ps:
+        process.join(timeout)
+    for process in ps:
+        if process.is_alive():
+            process.terminate()
+            process.join(5)
+    # The parent, and only the parent, publishes the global completion signal.
+    producer_results = []
+    while len(producer_results) < producers:
+        try:
+            result = output.get(timeout=1.0)
+        except Exception:
+            break
+        producer_results.append(result)
+    valid_producers = {r.get("id") for r in producer_results}
+    if (
+        len(valid_producers) == producers
+        and all(
+            r.get("status") == "passed" and r.get("exit_code") == 0
+            for r in producer_results
+        )
+        and all(p.exitcode == 0 for p in ps)
+    ):
+        done.set()
+    for process in cs:
         process.join(timeout)
     for process in ps + cs:
         if process.is_alive():
             process.terminate()
             process.join(5)
-    results = []
-    while True:
+    results = producer_results
+    while len(results) < producers + consumers:
         try:
-            results.append(output.get_nowait())
+            results.append(output.get(timeout=1.0))
         except Exception:
             break
+    output.close()
+    output.join_thread()
     elapsed = max(1, int((time.monotonic() - started) * 1e9))
     produced = sum(r.get("produced", 0) for r in results)
     claimed = sum(r.get("claimed", 0) for r in results)
@@ -264,8 +296,8 @@ def run_multiprocess_scenario(
     stats = queue.stats()
     integrity = queue.check_integrity(mode="full").to_dict()
     queue.close()
-    claims = [v for r in results for v in r.get("claim_samples", [])]
-    roundtrips = [v for r in results for v in r.get("roundtrip_samples", [])]
+    claims = sorted((v for r in results for v in r.get("claim_samples", [])))
+    roundtrips = sorted((v for r in results for v in r.get("roundtrip_samples", [])))
     ok = (
         produced == claimed == acked == messages
         and stats.get("ready") == 0

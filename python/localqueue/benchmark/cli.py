@@ -44,6 +44,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--durability", choices=("normal", "full"))
     parser.add_argument("--workdir", type=Path)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--large-db-rows", type=int, default=1_000_000)
     args = parser.parse_args(argv)
     try:
         if args.profile.startswith("multiprocess-"):
@@ -71,7 +72,9 @@ def main(argv: list[str] | None = None) -> int:
                 "profile": {
                     "profile_schema_version": 1,
                     "name": args.profile,
-                    "canonical": args.profile.endswith("release"),
+                    "canonical": args.profile.endswith("release")
+                    and args.large_db_rows == 1_000_000,
+                    "large_db_rows": args.large_db_rows,
                     "matrix": multiprocess_matrix(args.profile),
                 },
                 "run": {
