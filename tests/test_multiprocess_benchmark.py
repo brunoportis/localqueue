@@ -5,10 +5,17 @@ import pytest
 from localqueue.benchmark.errors import BenchmarkExecutionError
 from localqueue.benchmark.multiprocess import (
     make_payload,
+    run_large_database_scenario,
     run_multiprocess_scenario,
     validate_ids,
 )
-from localqueue.benchmark.multiprocess_models import MultiprocessConfig
+from localqueue.benchmark.multiprocess_models import (
+    FileSnapshot,
+    LargeDatabaseResult,
+    MultiprocessConfig,
+    MultiprocessScenarioConfig,
+    ThroughputResult,
+)
 
 
 def test_payload_has_deterministic_identity_and_size_metadata() -> None:
@@ -114,3 +121,30 @@ def test_systematic_samples_are_ordered_by_global_message_id(tmp_path: Path) -> 
     assert (
         result["metric_series"]["claim_latency"]["ordering_key"] == "global_message_id"
     )
+
+
+def test_reduced_large_database_records_preload_and_counts(tmp_path: Path) -> None:
+    result = run_large_database_scenario(
+        tmp_path, rows=100, durability="normal", batch_size=17
+    )
+    assert result["status"] == "passed"
+    assert result["large_database"]["target_rows"] == 100
+    assert result["large_database"]["actual_rows"] == 100
+    assert result["large_database"]["batch_size"] == 17
+    assert result["correctness"]["integrity"]["ok"] is True
+    assert "after_preload" in result["files"]
+
+
+def test_public_models_validate_and_serialize_deterministically() -> None:
+    scenario = MultiprocessScenarioConfig(1, 1, 100, "normal")
+    throughput = ThroughputResult(2, 2, 2, 1_000_000_000)
+    large = LargeDatabaseResult(100, 100, 10, 5)
+    assert scenario.to_dict()["durability"] == "normal"
+    assert throughput.to_dict()["acked_per_second"] == 2.0
+    assert large.to_dict()["target_rows"] == 100
+    assert FileSnapshot(False, None).to_dict() == {
+        "exists": False,
+        "size_bytes": None,
+    }
+    with pytest.raises(ValueError, match="null size"):
+        FileSnapshot(False, 0)

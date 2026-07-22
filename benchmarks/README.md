@@ -1,7 +1,16 @@
 # Benchmarks
 
-Instale a dependência opcional e execute o benchmark fora da suíte normal de
-testes:
+O harness canônico fica no pacote instalado:
+
+```bash
+python -m localqueue.benchmark --profile multiprocess-ci --output multiprocess.json
+python -m localqueue.benchmark render multiprocess.json --output multiprocess.md
+```
+
+Consulte `docs/benchmarks.md` para matriz, sampling, IDs, RSS, DB/WAL/SHM e o
+cenário release de um milhão de linhas. Não há thresholds de performance.
+
+Os comandos abaixo são wrappers comparativos legados:
 
 ```bash
 uv pip install -e '.[benchmark]'

@@ -66,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workdir", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--large-db-rows", type=int, default=1_000_000)
+    parser.add_argument("--keep-workdir", action="store_true")
     args = parser.parse_args(argv)
     try:
         if args.profile.startswith("multiprocess-"):
@@ -75,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:
                     messages=200 if args.profile.endswith("ci") else 5000,
                     durability=args.durability,
                     large_db_rows=args.large_db_rows,
+                    keep_workdir=args.keep_workdir,
                 ),
                 args.output,
                 args.workdir,

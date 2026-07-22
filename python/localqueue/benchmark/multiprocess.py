@@ -10,6 +10,7 @@ import operator
 import platform
 import queue as queue_module
 import shutil
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -242,6 +243,119 @@ def validate_ids(ids: list[int], messages: int, *, exact: bool) -> IDValidation:
     )
 
 
+def _file_snapshot(database: Path) -> dict[str, dict[str, int | bool | None]]:
+    def one(path: Path) -> dict[str, int | bool | None]:
+        return {
+            "exists": path.exists(),
+            "size_bytes": path.stat().st_size if path.exists() else None,
+        }
+
+    return {
+        "database": one(database),
+        "wal": one(Path(f"{database}-wal")),
+        "shm": one(Path(f"{database}-shm")),
+    }
+
+
+def _sqlite_settings(queue: SimpleQueue) -> dict[str, Any]:
+    diagnostics = queue.diagnostics()
+    return {
+        "journal_mode": diagnostics.journal_mode,
+        "synchronous": diagnostics.synchronous,
+        "synchronous_name": {1: "NORMAL", 2: "FULL"}.get(
+            diagnostics.synchronous, "UNKNOWN"
+        ),
+        "durability_mode": diagnostics.durability_mode,
+        "busy_timeout_ms": diagnostics.busy_timeout_ms,
+        "page_size": diagnostics.page_size,
+        "sqlite_version": diagnostics.sqlite_version,
+    }
+
+
+def run_large_database_scenario(
+    path: Path,
+    *,
+    rows: int,
+    durability: str,
+    payload_bytes: int = 100,
+    batch_size: int = 1000,
+    keep_workdir: bool = False,
+) -> dict[str, Any]:
+    path.mkdir(parents=True, exist_ok=True)
+    run_path = Path(tempfile.mkdtemp(prefix="localqueue-large-db-", dir=path))
+    database = run_path / "localqueue.db"
+    queue = SimpleQueue(str(run_path), "large-database", fsync=durability == "full")
+    snapshots: dict[str, Any] = {"before_workload": _file_snapshot(database)}
+    before_stats = queue.stats()
+    try:
+        started = time.monotonic_ns()
+        actual_payload = 0
+        for start in range(0, rows, batch_size):
+            items: list[Any] = []
+            for identifier in range(start, min(rows, start + batch_size)):
+                payload, actual_payload = make_payload(identifier, 0, payload_bytes)
+                items.append(payload)
+            queue.put_many(items)
+        preload_elapsed = time.monotonic_ns() - started
+        snapshots["after_preload"] = _file_snapshot(database)
+        stats_after_preload = queue.stats()
+        measured = min(rows, 1000)
+        measure_started = time.monotonic_ns()
+        for _ in range(measured):
+            job = queue.get()
+            queue.ack(job)
+        measure_elapsed = time.monotonic_ns() - measure_started
+        snapshots["after_drain"] = _file_snapshot(database)
+        stats_after = queue.stats()
+        integrity = queue.check_integrity(mode="full").to_dict()
+        sqlite = _sqlite_settings(queue)
+    finally:
+        queue.close()
+        if not keep_workdir and sys.exc_info()[0] is not None:
+            shutil.rmtree(run_path, ignore_errors=True)
+    snapshots["after_close"] = _file_snapshot(database)
+    ok = (
+        stats_after["ready"] == rows - measured
+        and stats_after["processing"] == 0
+        and integrity["ok"]
+    )
+    result = {
+        "scenario_id": f"mp-large-db-{rows}-{durability}",
+        "operation": "multiprocess_large_database",
+        "parameters": {
+            "durability": durability,
+            "payload_requested_bytes": payload_bytes,
+            "payload_serialized_bytes": actual_payload,
+        },
+        "large_database": {
+            "target_rows": rows,
+            "actual_rows": stats_after_preload["ready"],
+            "batch_size": batch_size,
+            "preload_elapsed_ns": preload_elapsed,
+            "measured_claims": measured,
+        },
+        "throughput": {
+            "messages_claimed": measured,
+            "messages_acked": measured,
+            "elapsed_ns": measure_elapsed,
+            "acked_per_second": measured / (measure_elapsed / 1e9),
+        },
+        "sqlite": sqlite,
+        "files": snapshots,
+        "correctness": {
+            "ok": ok,
+            "stats_before": before_stats,
+            "stats_after_preload": stats_after_preload,
+            "stats_after": stats_after,
+            "integrity": integrity,
+        },
+        "status": "passed" if ok else "failed",
+    }
+    if not keep_workdir:
+        shutil.rmtree(run_path, ignore_errors=True)
+    return result
+
+
 def run_multiprocess_scenario(
     path: Path,
     *,
@@ -252,6 +366,7 @@ def run_multiprocess_scenario(
     durability: str,
     timeout: float = 120.0,
     exact_id_validation: bool = True,
+    keep_workdir: bool = False,
 ) -> dict[str, Any]:
     path.mkdir(parents=True, exist_ok=True)
     run_path = Path(tempfile.mkdtemp(prefix="localqueue-mp-run-", dir=path))
@@ -260,6 +375,11 @@ def run_multiprocess_scenario(
     )
     scenario_path.mkdir()
     name = "benchmark"
+    database = scenario_path / "localqueue.db"
+    file_phases: dict[str, Any] = {"before_workload": _file_snapshot(database)}
+    initializer = SimpleQueue(str(scenario_path), name, fsync=durability == "full")
+    sqlite = _sqlite_settings(initializer)
+    initializer.close()
     ctx = multiprocessing.get_context("spawn")
     output = ctx.Queue()
     ready = ctx.Barrier(producers + consumers + 1)
@@ -351,6 +471,7 @@ def run_multiprocess_scenario(
             for logical_id in producer_ids
         )
     ):
+        file_phases["after_producers"] = _file_snapshot(database)
         done.set()
     while len(result_by_id) < len(process_by_id) and time.monotonic() < deadline:
         collect_one()
@@ -381,7 +502,9 @@ def run_multiprocess_scenario(
     queue = SimpleQueue(str(scenario_path), name, fsync=durability == "full")
     stats = queue.stats()
     integrity = queue.check_integrity(mode="full").to_dict()
+    file_phases["after_drain"] = _file_snapshot(database)
     queue.close()
+    file_phases["after_close"] = _file_snapshot(database)
     claims = [v for r in results for v in r.get("claim_samples", [])]
     roundtrips = [v for r in results for v in r.get("roundtrip_samples", [])]
     consumed_ids = [
@@ -429,28 +552,11 @@ def run_multiprocess_scenario(
             "id_validation": id_validation.to_dict(),
         },
         "status": "passed" if ok else "failed",
-        "files": {
-            "database": {
-                "exists": (scenario_path / "localqueue.db").exists(),
-                "size_bytes": (scenario_path / "localqueue.db").stat().st_size
-                if (scenario_path / "localqueue.db").exists()
-                else None,
-            },
-            "wal": {
-                "exists": (scenario_path / "localqueue.db-wal").exists(),
-                "size_bytes": (scenario_path / "localqueue.db-wal").stat().st_size
-                if (scenario_path / "localqueue.db-wal").exists()
-                else None,
-            },
-            "shm": {
-                "exists": (scenario_path / "localqueue.db-shm").exists(),
-                "size_bytes": (scenario_path / "localqueue.db-shm").stat().st_size
-                if (scenario_path / "localqueue.db-shm").exists()
-                else None,
-            },
-        },
+        "sqlite": sqlite,
+        "files": file_phases,
     }
-    shutil.rmtree(run_path, ignore_errors=True)
+    if not keep_workdir:
+        shutil.rmtree(run_path, ignore_errors=True)
     return result
 
 
@@ -487,6 +593,7 @@ def run_multiprocess_profile(
                     durability=durability,
                     timeout=config.timeout_seconds,
                     exact_id_validation=config.profile == "multiprocess-ci",
+                    keep_workdir=config.keep_workdir,
                 )
                 report.scenarios.append(
                     ScenarioResult(
@@ -494,7 +601,7 @@ def run_multiprocess_profile(
                         operation=raw["operation"],
                         parameters=raw["parameters"],
                         work_units={"messages": config.messages},
-                        sqlite={},
+                        sqlite=raw.get("sqlite", {}),
                         warmup={},
                         measured_samples_ns=[],
                         summary=None,
@@ -512,6 +619,35 @@ def run_multiprocess_profile(
                     raise BenchmarkExecutionError(
                         raw["scenario_id"], RuntimeError("scenario correctness failed")
                     )
+        if config.profile == "multiprocess-release":
+            raw = run_large_database_scenario(
+                root,
+                rows=config.large_db_rows,
+                durability=config.durability or "full",
+                keep_workdir=config.keep_workdir,
+            )
+            report.scenarios.append(
+                ScenarioResult(
+                    scenario_id=raw["scenario_id"],
+                    operation=raw["operation"],
+                    parameters=raw["parameters"],
+                    work_units={"messages": config.large_db_rows},
+                    sqlite=raw["sqlite"],
+                    warmup={},
+                    measured_samples_ns=[],
+                    summary=None,
+                    correctness=raw["correctness"],
+                    status=raw["status"],
+                    multiprocess=raw,
+                )
+            )
+            if output is not None:
+                _atomic_write(output, report)
+            if raw["status"] != "passed":
+                raise BenchmarkExecutionError(
+                    raw["scenario_id"],
+                    RuntimeError("large database correctness failed"),
+                )
         report.run["status"] = "passed"
     except Exception as error:
         report.run["status"] = "failed"

@@ -19,6 +19,32 @@ is not performance evidence. `standard` has fixed warmups, sample counts,
 payload, batch sizes, fan-out sizes, lease, retry settings, and scenario order;
 none of those values adapt to host speed.
 
+## Multiprocess profiles
+
+The spawn-only harness runs real producer and consumer processes:
+
+```bash
+uv run python -m localqueue.benchmark --profile multiprocess-ci --output multiprocess.json
+uv run python -m localqueue.benchmark render multiprocess.json --output multiprocess.md
+```
+
+`multiprocess-ci` covers 1P/1C and 4P/8C, NORMAL and FULL, and serialized
+targets near 100 B and 100 KiB. It validates correctness and plumbing, not
+stable performance. `multiprocess-release` covers 1P/1C, 4P/1C, 1P/8C, and
+4P/8C with 100 B, 1 KiB, and 100 KiB payloads under both durability modes. It
+also preloads a canonical 1,000,000-row database through public `put_many()`
+batches. `--large-db-rows` is a development override and makes the report
+non-canonical; `--keep-workdir` preserves databases for diagnosis.
+
+Claim latency spans the successful `get` call; empty polls are excluded.
+Roundtrip begins immediately before producer `put` and ends after consumer
+ACK. Both use the monotonic clock and are comparable only on the same host.
+Samples are systematic and ordered by global message ID; throughput uses real
+totals and scenario-wide elapsed time. CI validates exact IDs, while release
+records count, sum, XOR, and SHA-256. Reports record RSS when available,
+SQLite settings, and DB/WAL/SHM snapshots. JSON and Markdown are artifacts,
+never PyPI distributions.
+
 ## Scenarios and units
 
 `put` measures one `queue.put(payload)` per sample. `put_many` measures one
