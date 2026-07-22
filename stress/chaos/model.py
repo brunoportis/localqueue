@@ -45,15 +45,29 @@ class ScenarioResult:
     artifacts: list[str] = field(default_factory=list)
     limitations: list[str] = field(default_factory=list)
     skip_reason: str | None = None
+    required_invariants: frozenset[str] = field(default_factory=frozenset, repr=False)
+    required_fields: frozenset[str] = field(default_factory=frozenset, repr=False)
+    fresh_process_required: bool = field(default=False, repr=False)
+    fresh_process_validated: bool = False
 
     def invariant(self, name: str, passed: bool, detail: str) -> None:
         self.invariants.append({"name": name, "passed": passed, "detail": detail})
 
     def finish(self) -> "ScenarioResult":
         if self.status == "passed":
-            self.status = (
-                "passed" if all(x["passed"] for x in self.invariants) else "failed"
+            names = {item["name"] for item in self.invariants}
+            complete = bool(self.invariants)
+            complete = complete and self.required_invariants.issubset(names)
+            complete = complete and all(item["passed"] for item in self.invariants)
+            complete = complete and all(
+                getattr(self, field_name) is not None
+                for field_name in self.required_fields
             )
+            if self.retry_safe is True:
+                complete = complete and self.retry_attempted and self.retry_succeeded
+            if self.fresh_process_required:
+                complete = complete and self.fresh_process_validated
+            self.status = "passed" if complete else "failed"
         return self
 
 

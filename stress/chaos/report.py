@@ -26,6 +26,9 @@ def normalize_error(error: BaseException) -> dict[str, str]:
 
 def result_dict(result: ScenarioResult) -> dict[str, Any]:
     value = asdict(result)
+    value.pop("required_invariants", None)
+    value.pop("required_fields", None)
+    value.pop("fresh_process_required", None)
     if value["status"] == "skipped":
         value["skip"] = {"reason": value.pop("skip_reason") or "unspecified"}
     else:

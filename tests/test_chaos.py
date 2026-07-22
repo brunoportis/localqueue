@@ -9,14 +9,18 @@ from pathlib import Path
 import pytest
 
 from stress.chaos.model import SCENARIO_NAMES, ScenarioResult
-from stress.chaos.process import run_process
+from stress.chaos.process import ProcessFailure, run_process, wait_for_notification
 from stress.chaos.report import make_report, normalize_error
 
 RUNNER = Path(__file__).parents[1] / "stress" / "run_chaos.py"
 
 
 def test_success_report_is_versioned_and_complete():
-    result = ScenarioResult("example", status="passed")
+    result = ScenarioResult(
+        "example",
+        status="passed",
+        required_invariants=frozenset({"example"}),
+    )
     result.invariant("example", True, "ok")
     report = make_report("ci", [result])
     assert report["schema_version"] == 1
@@ -29,6 +33,31 @@ def test_failure_report_is_not_passed():
     report = make_report("ci", [result])
     assert report["passed"] is False
     assert report["summary"]["failed"] == 1
+
+
+def test_scenario_without_invariants_cannot_pass():
+    result = ScenarioResult("unsafe", status="passed").finish()
+    assert result.status == "failed"
+
+
+def test_missing_required_field_cannot_pass():
+    result = ScenarioResult(
+        "unsafe",
+        status="passed",
+        required_invariants=frozenset({"checked"}),
+        required_fields=frozenset({"integrity_check"}),
+    )
+    result.invariant("checked", True, "check ran")
+    assert result.finish().status == "failed"
+
+
+def test_retry_safe_requires_real_attempt_and_success():
+    result = ScenarioResult(
+        "unsafe", status="passed", required_invariants=frozenset({"checked"})
+    )
+    result.invariant("checked", True, "check ran")
+    result.retry_safe = True
+    assert result.finish().status == "failed"
 
 
 def test_error_normalization_is_stable():
@@ -113,6 +142,18 @@ def test_subprocess_timeout_is_bounded():
     with pytest.raises(TimeoutError, match="timeout"):
         run_process([sys.executable, "-c", "import time; time.sleep(2)"], timeout=0.05)
     assert time.monotonic() - started < 1
+
+
+def test_child_exit_before_readiness_is_reported_and_stderr_preserved(tmp_path: Path):
+    with pytest.raises(ProcessFailure, match="before synchronization") as failure:
+        wait_for_notification(
+            [sys.executable, "-c", "import sys; print('child-error', file=sys.stderr)"],
+            expected="ready",
+            timeout=1,
+            artifacts_dir=tmp_path,
+        )
+    assert "child-error" in failure.value.stderr
+    assert (tmp_path / "child.stderr.txt").read_text().strip() == "child-error"
 
 
 @pytest.mark.parametrize("missing", [("--profile",), ("--output",)])
