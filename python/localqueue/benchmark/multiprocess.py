@@ -254,7 +254,7 @@ def run_multiprocess_scenario(
     started = time.monotonic()
     [p.start() for p in ps + cs]
     ready.wait()
-    producer_results = []
+    producer_results: list[dict[str, Any]] = []
     for process in ps:
         process.join(timeout)
     for process in ps:
@@ -297,7 +297,7 @@ def run_multiprocess_scenario(
     produced = sum(r.get("produced", 0) for r in results)
     claimed = sum(r.get("claimed", 0) for r in results)
     acked = sum(r.get("acked", 0) for r in results)
-    queue = SimpleQueue(scenario_path, name, fsync=durability == "full")
+    queue = SimpleQueue(str(scenario_path), name, fsync=durability == "full")
     stats = queue.stats()
     integrity = queue.check_integrity(mode="full").to_dict()
     queue.close()

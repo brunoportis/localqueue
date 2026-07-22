@@ -8,6 +8,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from localqueue.benchmark.config import BenchmarkConfig
 from localqueue.benchmark.environment import environment, subject
@@ -18,7 +19,7 @@ from localqueue.benchmark.render import render_file
 from localqueue.benchmark.runner import run_profile
 
 
-def _atomic_json(path: Path, data: dict[str, object]) -> None:
+def _atomic_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
@@ -38,6 +39,7 @@ def _atomic_json(path: Path, data: dict[str, object]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    data: dict[str, Any] = {}
     if argv is None:
         argv = sys.argv[1:]
     if argv and argv[0] == "render":
@@ -134,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
         for scenario in data["scenarios"]:
             print(f"{scenario['scenario_id']} {scenario['status']}")
         return 0 if data["run"]["status"] == "passed" else 1
+    assert report is not None
     profile = report.profile
     print(
         f"profile={profile['name']} durability={profile['durability'].upper()} package={report.subject['package_version']} commit={report.subject['commit_sha'] or 'unavailable'}"
