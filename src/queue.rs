@@ -2,8 +2,10 @@ use pyo3::prelude::*;
 use rusqlite::{params, Connection, TransactionBehavior};
 use std::sync::MutexGuard;
 
+use crate::backup::{create as create_backup, BackupSnapshot};
 use crate::diagnostics::{collect as collect_diagnostics, DiagnosticsSnapshot};
 use crate::error::QueueError;
+use crate::integrity::{check as check_integrity, IntegrityCheckSnapshot};
 use crate::storage::{now_ms, EnqueueEntry, Storage};
 
 pub const STATUS_READY: i64 = 0;
@@ -568,6 +570,24 @@ impl NativeQueue {
     /// Capture a bounded, read-only operational snapshot.
     pub fn diagnostics(&self, py: Python<'_>) -> PyResult<DiagnosticsSnapshot> {
         py.detach(move || collect_diagnostics(&self.storage, &self.queue).map_err(Into::into))
+    }
+
+    /// Run a read-only SQLite full or quick integrity check.
+    #[pyo3(signature = (quick = false))]
+    pub fn check_integrity(&self, py: Python<'_>, quick: bool) -> PyResult<IntegrityCheckSnapshot> {
+        py.detach(move || check_integrity(&self.storage, quick).map_err(Into::into))
+    }
+
+    /// Create a consistent SQLite online backup at `destination`.
+    #[pyo3(signature = (destination, overwrite = false))]
+    pub fn backup(
+        &self,
+        py: Python<'_>,
+        destination: &str,
+        overwrite: bool,
+    ) -> PyResult<BackupSnapshot> {
+        let destination = destination.to_owned();
+        py.detach(move || create_backup(&self.storage, &destination, overwrite).map_err(Into::into))
     }
 
     /// Return the SQLite pragmas used by the active connection.

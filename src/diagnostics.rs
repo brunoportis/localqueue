@@ -1,11 +1,10 @@
 use pyo3::prelude::*;
 use rusqlite::params;
-use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::error::{QueueError, Result};
 use crate::queue::{STATUS_ACKED, STATUS_FAILED, STATUS_LEASED, STATUS_READY};
-use crate::storage::{now_ms, Storage};
+use crate::storage::{now_ms, sqlite_sidecar_path, Storage};
 
 pub const DIAGNOSTICS_SCHEMA_VERSION: i64 = 1;
 
@@ -150,8 +149,8 @@ where
         durability_mode: durability_mode(synchronous).to_owned(),
         busy_timeout_ms,
         database_size_bytes: best_effort_size(database_path),
-        wal_size_bytes: best_effort_size(&sidecar_path(database_path, "-wal")),
-        shm_size_bytes: best_effort_size(&sidecar_path(database_path, "-shm")),
+        wal_size_bytes: best_effort_size(&sqlite_sidecar_path(database_path, "-wal")),
+        shm_size_bytes: best_effort_size(&sqlite_sidecar_path(database_path, "-shm")),
         page_count,
         page_size,
         freelist_count,
@@ -177,12 +176,6 @@ fn durability_mode(synchronous: i64) -> &'static str {
 
 fn age_ms(observed_at_ms: i64, timestamp_ms: Option<i64>) -> Option<i64> {
     timestamp_ms.map(|timestamp| observed_at_ms.saturating_sub(timestamp).max(0))
-}
-
-fn sidecar_path(database_path: &Path, suffix: &str) -> PathBuf {
-    let mut path = OsString::from(database_path.as_os_str());
-    path.push(suffix);
-    PathBuf::from(path)
 }
 
 fn best_effort_size(path: &Path) -> Option<u64> {

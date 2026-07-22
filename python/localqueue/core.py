@@ -4,15 +4,22 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time as _time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional, Protocol, Union
+from typing import Any, Literal, Optional, Protocol, Union
 
 from localqueue import localqueue as _native
 from localqueue.diagnostics import QueueDiagnostics, build_diagnostics
 from localqueue.exceptions import Empty, LocalQueueError
 from localqueue.job import Job
+from localqueue.maintenance import (
+    BackupResult,
+    IntegrityCheckResult,
+    build_backup_result,
+    build_integrity_result,
+)
 
 log = logging.getLogger(__name__)
 
@@ -234,6 +241,31 @@ class SimpleQueue:
             lease_seconds=self.lease_seconds,
             max_retries=self.max_retries,
         )
+
+    def check_integrity(
+        self, mode: Literal["full", "quick"] = "full"
+    ) -> IntegrityCheckResult:
+        """Run a read-only SQLite integrity check on the shared database."""
+        if mode not in ("full", "quick"):
+            raise ValueError("'mode' must be 'full' or 'quick'")
+        return build_integrity_result(
+            self._get_native().check_integrity(quick=mode == "quick")
+        )
+
+    def backup(
+        self,
+        destination: Union[str, os.PathLike[str]],
+        *,
+        overwrite: bool = False,
+    ) -> BackupResult:
+        """Create a consistent online backup in a destination SQLite file.
+
+        The destination parent must already exist. Existing files are rejected
+        unless ``overwrite=True`` is explicit.
+        """
+        destination_string = os.fspath(destination)
+        snapshot = self._get_native().backup(destination_string, overwrite=overwrite)
+        return build_backup_result(snapshot, destination=destination_string)
 
     def _to_job(self, lease: "_native.Lease") -> Job:
         data = self.serializer.loads(lease.payload)

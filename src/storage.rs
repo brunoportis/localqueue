@@ -1,4 +1,5 @@
 use rusqlite::{params, Connection, ErrorCode, OpenFlags, TransactionBehavior};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::thread;
@@ -137,6 +138,12 @@ fn stable_database_path(path: &str) -> Result<PathBuf> {
         return Ok(PathBuf::from(path));
     }
     Ok(std::path::absolute(path)?)
+}
+
+pub(crate) fn sqlite_sidecar_path(database_path: &Path, suffix: &str) -> PathBuf {
+    let mut path = OsString::from(database_path.as_os_str());
+    path.push(suffix);
+    PathBuf::from(path)
 }
 
 fn enable_wal(conn: &Connection) -> Result<()> {
