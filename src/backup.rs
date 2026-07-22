@@ -2,7 +2,7 @@ use pyo3::prelude::*;
 use rusqlite::backup::{Backup, Progress, StepResult};
 use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
-#[cfg(any(test, feature = "__crash_test"))]
+#[cfg(feature = "__crash_test")]
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -16,7 +16,7 @@ const PAGES_PER_STEP: i32 = 100;
 const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(10);
 const MAX_RETRY_DELAY: Duration = Duration::from_millis(100);
 
-#[cfg(any(test, feature = "__crash_test"))]
+#[cfg(feature = "__crash_test")]
 static TEST_BACKUP_MAX_PAGE_COUNT: AtomicI64 = AtomicI64::new(0);
 
 #[derive(Debug, Clone)]
@@ -60,6 +60,19 @@ fn create_with_copy<F>(
 where
     F: FnOnce(&Connection, &mut Connection) -> rusqlite::Result<CopyProgress>,
 {
+    create_with_target_setup(storage, destination_directory, |_| Ok(()), copy)
+}
+
+fn create_with_target_setup<Setup, F>(
+    storage: &Storage,
+    destination_directory: &str,
+    setup_target: Setup,
+    copy: F,
+) -> Result<BackupSnapshot>
+where
+    Setup: FnOnce(&mut Connection) -> rusqlite::Result<()>,
+    F: FnOnce(&Connection, &mut Connection) -> rusqlite::Result<CopyProgress>,
+{
     {
         let guard = storage.connection();
         if guard.is_none() {
@@ -84,7 +97,9 @@ where
     )?;
     target.pragma_update(None, "busy_timeout", BUSY_TIMEOUT_MS)?;
 
-    #[cfg(any(test, feature = "__crash_test"))]
+    setup_target(&mut target)?;
+
+    #[cfg(feature = "__crash_test")]
     {
         let page_limit = TEST_BACKUP_MAX_PAGE_COUNT.swap(0, Ordering::SeqCst);
         if page_limit > 0 {
@@ -302,7 +317,7 @@ impl Drop for ReservedDirectory {
     }
 }
 
-#[cfg(any(test, feature = "__crash_test"))]
+#[cfg(feature = "__crash_test")]
 pub fn set_test_backup_max_page_count(pages: i64) {
     TEST_BACKUP_MAX_PAGE_COUNT.store(pages, Ordering::SeqCst);
 }
@@ -463,9 +478,13 @@ mod tests {
         }
         let source_size = std::fs::metadata(&source_path).unwrap().len();
         let failed_destination = root.path().join("disk-full");
-        set_test_backup_max_page_count(1);
-
-        let error = create(&storage, failed_destination.to_str().unwrap()).unwrap_err();
+        let error = create_with_target_setup(
+            &storage,
+            failed_destination.to_str().unwrap(),
+            |target| target.pragma_update(None, "max_page_count", 1),
+            |source, target| copy_database(source, target, PAGES_PER_STEP, || {}),
+        )
+        .unwrap_err();
 
         assert!(matches!(
             error,
@@ -489,6 +508,103 @@ mod tests {
         let retry = create(&storage, retry_destination.to_str().unwrap()).unwrap();
         assert!(retry.verified);
         assert!(retry_destination.join(DATABASE_NAME).is_file());
+    }
+
+    #[test]
+    fn staged_failure_invocations_keep_page_limits_isolated() {
+        use std::sync::{mpsc, Arc, Barrier};
+
+        let barrier = Arc::new(Barrier::new(3));
+        let (done_sender, done_receiver) = mpsc::channel();
+        let timeout_barrier = Arc::clone(&barrier);
+        let timeout_done = done_sender.clone();
+        let timeout_thread = thread::spawn(move || {
+            let root = TempDir::new("localqueue-backup-isolated-timeout");
+            let source_directory = root.path().join("source");
+            std::fs::create_dir(&source_directory).unwrap();
+            let source_path = source_directory.join(DATABASE_NAME);
+            let storage = Storage::new(source_path.to_str().unwrap(), false).unwrap();
+            timeout_barrier.wait();
+
+            let failed_destination = root.path().join("timed-out");
+            let error = create_with_copy(&storage, failed_destination.to_str().unwrap(), |_, _| {
+                let elapsed = Cell::new(Duration::ZERO);
+                run_backup_steps(
+                    || Ok((StepResult::Busy, progress(1, 1))),
+                    || elapsed.get(),
+                    |duration| elapsed.set(elapsed.get() + duration),
+                    Duration::from_millis(BUSY_TIMEOUT_MS),
+                )
+            })
+            .unwrap_err();
+            assert!(matches!(
+                error,
+                QueueError::Sqlite(rusqlite::Error::SqliteFailure(failure, _))
+                    if failure.code == ErrorCode::DatabaseBusy
+            ));
+            assert!(!failed_destination.exists());
+            let retry = create(&storage, root.path().join("retry").to_str().unwrap()).unwrap();
+            assert!(retry.verified);
+            timeout_done.send(()).unwrap();
+        });
+
+        let disk_full_barrier = Arc::clone(&barrier);
+        let disk_full_done = done_sender;
+        let disk_full_thread = thread::spawn(move || {
+            let root = TempDir::new("localqueue-backup-isolated-full");
+            let source_directory = root.path().join("source");
+            std::fs::create_dir(&source_directory).unwrap();
+            let source_path = source_directory.join(DATABASE_NAME);
+            let storage = Storage::new(source_path.to_str().unwrap(), false).unwrap();
+            {
+                let guard = storage.connection();
+                guard
+                    .as_ref()
+                    .unwrap()
+                    .execute_batch(
+                        "CREATE TABLE backup_full_fixture(value BLOB);
+                         INSERT INTO backup_full_fixture VALUES (zeroblob(262144));",
+                    )
+                    .unwrap();
+            }
+            let source_size = std::fs::metadata(&source_path).unwrap().len();
+            disk_full_barrier.wait();
+
+            let failed_destination = root.path().join("disk-full");
+            let error = create_with_target_setup(
+                &storage,
+                failed_destination.to_str().unwrap(),
+                |target| target.pragma_update(None, "max_page_count", 1),
+                |source, target| copy_database(source, target, PAGES_PER_STEP, || {}),
+            )
+            .unwrap_err();
+            assert!(matches!(
+                error,
+                QueueError::Sqlite(rusqlite::Error::SqliteFailure(failure, _))
+                    if failure.code == ErrorCode::DiskFull
+            ));
+            assert!(!failed_destination.exists());
+            assert_eq!(std::fs::metadata(&source_path).unwrap().len(), source_size);
+            let source = storage.connection();
+            assert_eq!(
+                source
+                    .as_ref()
+                    .unwrap()
+                    .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+                    .unwrap(),
+                "ok"
+            );
+            drop(source);
+            let retry = create(&storage, root.path().join("retry").to_str().unwrap()).unwrap();
+            assert!(retry.verified);
+            disk_full_done.send(()).unwrap();
+        });
+
+        barrier.wait();
+        done_receiver.recv_timeout(Duration::from_secs(10)).unwrap();
+        done_receiver.recv_timeout(Duration::from_secs(10)).unwrap();
+        timeout_thread.join().unwrap();
+        disk_full_thread.join().unwrap();
     }
 
     #[test]
