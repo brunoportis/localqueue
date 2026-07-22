@@ -40,9 +40,9 @@ class SynchronizedProcess:
     artifacts_dir: Path
 
     def kill_and_collect(self) -> tuple[int | None, str, str]:
+        terminate_process(self.process)
         self.connection.close()
         self.listener.close()
-        terminate_process(self.process)
         stdout, stderr = _collect(self.process, 2.0)
         _write_logs(self.artifacts_dir, stdout, stderr)
         return self.process.returncode, stdout, stderr
@@ -129,11 +129,11 @@ def wait_for_notification(
             process, notification, connection, listener, artifacts_dir
         )
     except Exception:
+        if process.poll() is None:
+            terminate_process(process)
         if connection is not None:
             connection.close()
         listener.close()
-        if process.poll() is None:
-            terminate_process(process)
         raise
 
 

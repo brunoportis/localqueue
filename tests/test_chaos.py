@@ -222,6 +222,31 @@ def test_child_exit_before_readiness_is_reported_and_stderr_preserved(tmp_path: 
     assert (tmp_path / "child.stderr.txt").read_text().strip() == "child-error"
 
 
+def test_kill_happens_before_failpoint_channel_is_released(tmp_path: Path):
+    marker = tmp_path / "continued.txt"
+    child = wait_for_notification(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import pathlib,socket,sys;"
+                "host,port=sys.argv[1].split(':');"
+                "control=socket.create_connection((host,int(port)),timeout=2);"
+                "control.sendall(b'ready\\n');"
+                "control.settimeout(2);control.recv(1);"
+                "pathlib.Path(sys.argv[2]).write_text('continued')"
+            ),
+            "{control_address}",
+            str(marker),
+        ],
+        expected="ready",
+        timeout=2,
+        artifacts_dir=tmp_path / "child",
+    )
+    child.kill_and_collect()
+    assert not marker.exists()
+
+
 @pytest.mark.parametrize("missing", [("--profile",), ("--output",)])
 def test_required_cli_arguments(missing: tuple[str]):
     args = [
