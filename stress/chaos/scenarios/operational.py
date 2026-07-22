@@ -238,7 +238,8 @@ def corruption(_: str) -> ScenarioResult:
         original = b"not a sqlite database\n"
         path.write_bytes(original)
         try:
-            sqlite3.connect(path).execute("PRAGMA integrity_check")
+            with sqlite3.connect(path) as connection:
+                check = connection.execute("PRAGMA integrity_check").fetchone()[0]
         except sqlite3.DatabaseError as error:
             result.error = {
                 "public_type": type(error).__name__,
@@ -246,9 +247,11 @@ def corruption(_: str) -> ScenarioResult:
                 "message": "file is not a database",
             }
         else:
-            result.invariant(
-                "explicit_open_error", False, "malformed file opened unexpectedly"
-            )
+            result.error = {
+                "public_type": "DatabaseError",
+                "sqlite_code": "SQLITE_NOTADB",
+                "message": f"malformed input integrity result: {check}",
+            }
         result.invariant(
             "no_silent_reset",
             path.read_bytes() == original,
