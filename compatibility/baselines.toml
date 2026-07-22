@@ -1,0 +1,55 @@
+[matrix]
+python_tag = "cp314"
+platform_tag = "manylinux_2_17_x86_64.manylinux2014_x86_64"
+python = "3.14"
+platform = "Linux x86_64"
+
+[[baseline]]
+package = "localqueue"
+version = "1.0.0"
+release_tag = "v1.0.0"
+wheel = "localqueue-1.0.0-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+sha256 = "c342e99cc23c127831789fe006bc9d384502ba6f31db61be6a5bd37790ce7186"
+simple_queue = true
+event_bus = false
+batch_enqueue = false
+
+[[baseline]]
+package = "localqueue"
+version = "1.0.1"
+release_tag = "v1.0.1"
+wheel = "localqueue-1.0.1-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+sha256 = "912624c767b8140fa1f7da7f5d7dd065d5eba29a8f754a63afbf004700da7220"
+simple_queue = true
+event_bus = false
+batch_enqueue = false
+
+[[baseline]]
+package = "localqueue"
+version = "1.1.0"
+release_tag = "v1.1.0"
+wheel = "localqueue-1.1.0-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+sha256 = "f04a777be4af12e44e57708707a0a84833122c29c19cce84338983f15d99aef2"
+simple_queue = true
+event_bus = true
+batch_enqueue = true
+
+[[baseline]]
+package = "localqueue"
+version = "1.1.1"
+release_tag = "v1.1.1"
+wheel = "localqueue-1.1.1-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+sha256 = "e23f101a9689c67e05430b45627ad89e5c4eae4e38dac07599ce2646d81e4160"
+simple_queue = true
+event_bus = true
+batch_enqueue = true
+
+[[baseline]]
+package = "localqueue"
+version = "1.1.2"
+release_tag = "v1.1.2"
+wheel = "localqueue-1.1.2-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+sha256 = "87eff60c79a08dbb7e67a03cebe439fc1cf81f0f2ed1e6fcfc2523302c2f7a56"
+simple_queue = true
+event_bus = true
+batch_enqueue = true

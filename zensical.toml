@@ -13,6 +13,7 @@ nav = [
   {"Backpressure" = "backpressure.md"},
   {"Runtime diagnostics" = "diagnostics.md"},
   {"Integrity and backup" = "maintenance.md"},
+  {"Storage compatibility" = "storage-compatibility.md"},
   {"Event bus" = "event-bus.md"},
   {"Benchmarks" = "benchmarks.md"},
   {"GitHub" = "https://github.com/brunoportis/localqueue"},
