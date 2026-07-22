@@ -1,5 +1,7 @@
 """The default extension must not expose crash-harness hooks."""
 
+from importlib import metadata
+
 import localqueue
 from localqueue import localqueue as native
 
@@ -16,6 +18,7 @@ def assert_no_failpoint_hooks(native_module=native, package=localqueue) -> None:
 
 def test_normal_extension_has_no_failpoint_hooks() -> None:
     assert_no_failpoint_hooks()
+    assert native.__version__ == metadata.version("localqueue")
 
 
 if __name__ == "__main__":

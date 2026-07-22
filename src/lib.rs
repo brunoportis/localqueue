@@ -20,6 +20,7 @@ use queue::{FailedMessage, Lease, NativeQueue, Stats};
 /// Native `localqueue` module.
 #[pymodule]
 fn localqueue(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_class::<NativeQueue>()?;
     m.add_class::<Lease>()?;
     m.add_class::<Stats>()?;
