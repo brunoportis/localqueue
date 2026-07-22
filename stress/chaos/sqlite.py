@@ -9,17 +9,23 @@ def database_path(queue_dir: Path) -> Path:
     return queue_dir / "localqueue.db"
 
 
-def inspect_pragmas(path: Path) -> dict[str, Any]:
+def inspect_persistent_pragmas(path: Path) -> dict[str, Any]:
     with sqlite3.connect(path) as connection:
         return {
             "journal_mode": str(
                 connection.execute("PRAGMA journal_mode").fetchone()[0]
             ).lower(),
-            "synchronous": int(connection.execute("PRAGMA synchronous").fetchone()[0]),
-            "busy_timeout_ms": int(
-                connection.execute("PRAGMA busy_timeout").fetchone()[0]
-            ),
         }
+
+
+def product_sqlite_settings(queue: Any) -> dict[str, Any]:
+    journal_mode, synchronous = queue._native.pragma_settings()
+    busy_timeout_ms = queue._native._test_busy_timeout()
+    return {
+        "journal_mode": str(journal_mode).lower(),
+        "synchronous": int(synchronous),
+        "busy_timeout_ms": int(busy_timeout_ms),
+    }
 
 
 def integrity_check(path: Path) -> str:

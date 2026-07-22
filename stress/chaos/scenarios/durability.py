@@ -5,7 +5,7 @@ from pathlib import Path
 from localqueue import SimpleQueue
 
 from ..model import ScenarioResult
-from ..sqlite import inspect_pragmas
+from ..sqlite import product_sqlite_settings
 from .common import ScenarioContext, counts, validate_queue
 
 
@@ -44,17 +44,12 @@ def run_mode(_: str, artifacts_dir: Path, *, fsync: bool) -> ScenarioResult:
         payload_ok = job.data == {"mode": mode}
         queue.ack(job)
         lifecycle_counts = counts(queue.stats())
-        journal_mode, synchronous = queue._native.pragma_settings()
+        result.pragmas = product_sqlite_settings(queue)
         queue.close()
-        external = inspect_pragmas(context.db_path)
-        result.pragmas = {
-            "journal_mode": journal_mode.lower(),
-            "synchronous": synchronous,
-            "busy_timeout_ms": external["busy_timeout_ms"],
-        }
         result.invariant(
             "product_pragmas",
-            journal_mode.lower() == "wal" and synchronous == expected_synchronous,
+            result.pragmas["journal_mode"] == "wal"
+            and result.pragmas["synchronous"] == expected_synchronous,
             "pragmas observed on the connection configured by SimpleQueue",
         )
         result.invariant(

@@ -80,5 +80,7 @@ The same feature also exposes `_test_set_max_page_count` for issue #19's
 deterministic disk-full scenario. SQLite's `max_page_count` is connection-local,
 so an external `sqlite3` connection cannot constrain the separate connection
 owned by `SimpleQueue`. This hook only imposes that SQLite condition; enqueue is
-still performed through public `SimpleQueue.put()`. Neither test-only method is
-compiled into normal builds or wheels.
+still performed through public `SimpleQueue.put()`. These test-only methods are
+not compiled into normal builds or wheels. `_test_busy_timeout` is likewise a
+read-only `__crash_test` hook used to report the connection-local timeout from
+the actual Rust connection rather than from a separate Python connection.

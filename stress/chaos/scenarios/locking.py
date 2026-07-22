@@ -8,7 +8,7 @@ from localqueue import SimpleQueue
 
 from ..model import ScenarioResult
 from ..process import wait_for_notification
-from ..sqlite import inspect_pragmas
+from ..sqlite import product_sqlite_settings
 from .common import (
     ScenarioContext,
     counts,
@@ -65,6 +65,7 @@ def run(_: str, artifacts_dir: Path) -> ScenarioResult:
     try:
         queue = SimpleQueue(str(context.queue_dir))
         result.counts_before = counts(queue.stats())
+        result.pragmas = product_sqlite_settings(queue)
         queue.close()
         holder = wait_for_notification(
             [
@@ -88,7 +89,6 @@ def run(_: str, artifacts_dir: Path) -> ScenarioResult:
             context, "put", {"locked": True}, timeout=8.0, label="contender"
         )
         duration = time.monotonic() - started
-        result.pragmas = inspect_pragmas(context.db_path)
         result.pragmas["observed_wait_ms"] = round(duration * 1000)
         result.operation_confirmed_to_caller = bool(operation.get("confirmed"))
         result.error = public_error(operation)

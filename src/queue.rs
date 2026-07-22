@@ -94,6 +94,17 @@ impl NativeQueue {
             .map_err(Into::into)
     }
 
+    /// Read the connection-local busy timeout for the operational chaos harness.
+    #[cfg(feature = "__crash_test")]
+    #[doc(hidden)]
+    pub fn _test_busy_timeout(&self) -> PyResult<i64> {
+        let mut guard = self.storage.connection();
+        let conn = guard.as_mut().ok_or(QueueError::Closed)?;
+        conn.query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .map_err(QueueError::from)
+            .map_err(Into::into)
+    }
+
     pub fn put(&self, py: Python<'_>, payload: Vec<u8>, job_id: Option<&str>) -> PyResult<i64> {
         let job_id = job_id.map(str::to_owned);
         py.detach(move || {

@@ -13,7 +13,9 @@ from stress.chaos.model import SCENARIO_NAMES, ScenarioResult
 from stress.chaos.process import ProcessFailure, run_process, wait_for_notification
 from stress.chaos.report import make_report, normalize_error
 from stress.chaos.scenarios.corruption import evaluate_open
+from stress.chaos.scenarios.process_crash import record_sidecar_evidence
 from stress.chaos.scenarios.readonly import evaluate as evaluate_readonly
+from stress.chaos.sqlite import inspect_persistent_pragmas, product_sqlite_settings
 
 RUNNER = Path(__file__).parents[1] / "stress" / "run_chaos.py"
 
@@ -107,6 +109,47 @@ def test_error_normalization_is_stable():
         normalize_error(RuntimeError("database is locked: /tmp/123"))["message"]
         == "database is locked"
     )
+
+
+def test_product_settings_come_only_from_the_native_connection(tmp_path: Path):
+    class NativeConnection:
+        def pragma_settings(self) -> tuple[str, int]:
+            return "wal", 1
+
+        def _test_busy_timeout(self) -> int:
+            return 4321
+
+    class Queue:
+        _native = NativeConnection()
+
+    database = tmp_path / "evidence.db"
+    import sqlite3
+
+    with sqlite3.connect(database) as external:
+        external.execute("PRAGMA synchronous=OFF")
+        external.execute("PRAGMA busy_timeout=17")
+
+    assert product_sqlite_settings(Queue()) == {
+        "journal_mode": "wal",
+        "synchronous": 1,
+        "busy_timeout_ms": 4321,
+    }
+    assert inspect_persistent_pragmas(database) == {"journal_mode": "delete"}
+
+
+def test_wal_evidence_fails_when_only_shm_exists(tmp_path: Path):
+    database = tmp_path / "localqueue.db"
+    Path(f"{database}-shm").write_bytes(b"shm-only")
+    result = ScenarioResult("wal-recovery")
+
+    record_sidecar_evidence(result, database)
+
+    invariants = {item["name"]: item["passed"] for item in result.invariants}
+    assert invariants["wal_present"] is False
+    assert result.pragmas["wal_present"] is False
+    assert result.pragmas["shm_present"] is True
+    assert result.pragmas["wal_size_bytes"] is None
+    assert result.pragmas["shm_size_bytes"] == 8
 
 
 def test_scenario_catalog_is_explicit():

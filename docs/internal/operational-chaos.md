@@ -32,10 +32,14 @@ hook, not an attempt to fill the runner. The hook exists because
 separate connection. Read-only uses actual
 POSIX permissions and is skipped with a reason when the runner cannot enforce
 them (for example, root). Lock contention uses a separate SQLite connection
-and a configured `busy_timeout`; it does not infer lock ownership from sleep.
+and reads the configured `busy_timeout` from the actual Rust connection; it
+does not infer lock ownership from sleep. Connection-local `synchronous` and
+`busy_timeout` values from external Python connections are never reported as
+product configuration.
 
-WAL recovery proves committed state can be reopened and checkpointed with WAL
-enabled. It is not physical power-loss evidence. `synchronous=NORMAL` is the
+WAL recovery requires a real `localqueue.db-wal` file, records SHM
+separately, and proves committed state can be reopened and checkpointed. It is
+not physical power-loss evidence. `synchronous=NORMAL` is the
 default crash-oriented mode; `FULL` requests stronger SQLite synchronization,
 but neither mode makes `SIGKILL` equivalent to a power cut through hardware,
 host caches, or storage firmware.

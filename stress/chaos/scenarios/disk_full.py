@@ -6,7 +6,7 @@ from pathlib import Path
 from localqueue import SimpleQueue
 
 from ..model import ScenarioResult
-from ..sqlite import inspect_pragmas, sqlite_error_fields
+from ..sqlite import product_sqlite_settings, sqlite_error_fields
 from .common import ScenarioContext, counts, run_queue_operation, validate_queue
 
 
@@ -41,7 +41,7 @@ def run(_: str, artifacts_dir: Path) -> ScenarioResult:
             pages = int(external.execute("PRAGMA page_count").fetchone()[0])
         set_page_limit = getattr(queue._native, "_test_set_max_page_count")
         applied_limit = int(set_page_limit(pages))
-        result.pragmas = inspect_pragmas(context.db_path)
+        result.pragmas = product_sqlite_settings(queue)
         result.pragmas["max_page_count"] = applied_limit
         try:
             queue.put({"payload": "x" * 1_000_000})

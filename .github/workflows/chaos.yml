@@ -53,6 +53,7 @@ jobs:
               queue = SimpleQueue(path)
               assert not hasattr(queue._native, "_test_configure_failpoint")
               assert not hasattr(queue._native, "_test_set_max_page_count")
+              assert not hasattr(queue._native, "_test_busy_timeout")
               queue.close()
           PY
 

@@ -36,6 +36,26 @@ def _snapshot_sidecars(context: ScenarioContext) -> None:
             shutil.copy2(source, context.path / f"localqueue.db{suffix}.snapshot")
 
 
+def record_sidecar_evidence(result: ScenarioResult, database: Path) -> None:
+    wal = Path(f"{database}-wal")
+    shm = Path(f"{database}-shm")
+    wal_present = wal.exists()
+    shm_present = shm.exists()
+    result.pragmas.update(
+        {
+            "wal_present": wal_present,
+            "shm_present": shm_present,
+            "wal_size_bytes": wal.stat().st_size if wal_present else None,
+            "shm_size_bytes": shm.stat().st_size if shm_present else None,
+        }
+    )
+    result.invariant(
+        "wal_present",
+        wal_present,
+        "localqueue.db-wal existed while the committed process remained alive",
+    )
+
+
 FAILPOINT_CHILD = r"""
 import sys
 from localqueue import SimpleQueue
@@ -190,13 +210,7 @@ def wal_recovery(_: str, artifacts_dir: Path) -> ScenarioResult:
         result.invariant(
             "commit_returned", True, "child reported after SimpleQueue.put returned"
         )
-        wal = Path(f"{context.db_path}-wal")
-        shm = Path(f"{context.db_path}-shm")
-        result.invariant(
-            "wal_present",
-            wal.exists() or shm.exists(),
-            "WAL or SHM existed while the committed process remained alive",
-        )
+        record_sidecar_evidence(result, context.db_path)
         _snapshot_sidecars(context)
         child.kill_and_collect()
         child = _failpoint_child(context, "enqueue-before-commit", "put")
