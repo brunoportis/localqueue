@@ -1,0 +1,2085 @@
+{
+  "schema_version": 1,
+  "subject": {
+    "package_version": "1.1.2",
+    "rust_extension_version": "1.1.2",
+    "commit_sha": "46c51c9218cd2ee8cc84d575f8ff635d2dd2b8da",
+    "commit_source": "environment",
+    "dirty_worktree": null,
+    "installed_module_path": "/tmp/localqueue-issue29-XL5IA6/venv/lib/python3.13/site-packages/localqueue/localqueue.cpython-313-x86_64-linux-gnu.so",
+    "package_native_versions_consistent": true
+  },
+  "environment": {
+    "python_implementation": "CPython",
+    "python_version": "3.13.13",
+    "sqlite_version": "3.50.4",
+    "os": "Linux",
+    "os_release": "7.0.13-arch1-2",
+    "architecture": "x86_64",
+    "cpu_model": null,
+    "logical_cpu_count": 12,
+    "total_memory_bytes": 29306621952,
+    "filesystem_type": "tmpfs",
+    "timer_implementation": "clock_gettime(CLOCK_MONOTONIC)",
+    "timer_resolution_ns": 1,
+    "workdir_filesystem": "/tmp",
+    "python_executable": "/tmp/localqueue-issue29-XL5IA6/venv/bin/python"
+  },
+  "profile": {
+    "profile_schema_version": 1,
+    "name": "standard",
+    "version": 1,
+    "durability": "normal",
+    "warmups": 3,
+    "samples": 25,
+    "payload_bytes": 128,
+    "batch_sizes": [
+      1,
+      10,
+      100,
+      1000
+    ],
+    "fanout_sizes": [
+      1,
+      10,
+      100
+    ],
+    "lease_seconds": 60.0,
+    "max_retries": 3,
+    "scenario_order": [
+      "put",
+      "put_many-1",
+      "put_many-10",
+      "put_many-100",
+      "put_many-1000",
+      "get_ack",
+      "roundtrip",
+      "fanout-1",
+      "fanout-10",
+      "fanout-100"
+    ]
+  },
+  "run": {
+    "status": "passed",
+    "throughput_source": "external perf_counter_ns elapsed",
+    "latency_source": "individual perf_counter_ns samples",
+    "workdir": null
+  },
+  "scenarios": [
+    {
+      "scenario_id": "put",
+      "operation": "put",
+      "parameters": {
+        "payload_requested_bytes": 128,
+        "payload_serialized_bytes": 128,
+        "serializer": "localqueue.JsonSerializer"
+      },
+      "work_units": {
+        "operations": 25,
+        "messages": 25
+      },
+      "sqlite": {
+        "journal_mode": "wal",
+        "synchronous": 1,
+        "synchronous_name": "NORMAL",
+        "durability_mode": "normal",
+        "busy_timeout_ms": 5000,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0"
+      },
+      "warmup": {
+        "count": 3,
+        "total_elapsed_ns": 126696,
+        "unit": "sample"
+      },
+      "measured_samples_ns": [
+        27151,
+        30136,
+        26569,
+        25397,
+        24215,
+        24736,
+        27221,
+        24425,
+        23784,
+        24044,
+        24455,
+        23353,
+        23404,
+        23845,
+        23564,
+        24736,
+        24085,
+        26249,
+        23624,
+        23624,
+        34755,
+        25187,
+        23975,
+        23524,
+        24035
+      ],
+      "summary": {
+        "count": 25,
+        "total_elapsed_ns": 635497,
+        "minimum_ns": 23353,
+        "maximum_ns": 34755,
+        "mean_ns": 25203.72,
+        "p50_ns": 24215,
+        "p95_ns": 30136,
+        "p99_ns": 34755,
+        "operations_per_second": 39339.28877713034,
+        "messages_per_second": 39339.28877713034,
+        "batches_per_second": null,
+        "dispatches_per_second": null,
+        "deliveries_per_second": null
+      },
+      "correctness": {
+        "ok": true,
+        "stats": {
+          "ready": 28,
+          "processing": 0,
+          "acked": 0,
+          "failed": 0
+        },
+        "expected_acked": 0,
+        "expected_ready": 28,
+        "integrity": {
+          "schema_version": 1,
+          "mode": "full",
+          "max_errors": 100,
+          "ok": true,
+          "messages": [
+            "ok"
+          ],
+          "elapsed_seconds": 0.0
+        }
+      },
+      "status": "passed",
+      "error": null,
+      "multiprocess": null
+    },
+    {
+      "scenario_id": "put_many-1",
+      "operation": "put_many",
+      "parameters": {
+        "batch_size": 1,
+        "payload_requested_bytes": 128,
+        "payload_serialized_bytes": 128,
+        "serializer": "localqueue.JsonSerializer"
+      },
+      "work_units": {
+        "operations": 25,
+        "batches": 25,
+        "messages": 25
+      },
+      "sqlite": {
+        "journal_mode": "wal",
+        "synchronous": 1,
+        "synchronous_name": "NORMAL",
+        "durability_mode": "normal",
+        "busy_timeout_ms": 5000,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0"
+      },
+      "warmup": {
+        "count": 3,
+        "total_elapsed_ns": 117699,
+        "unit": "sample"
+      },
+      "measured_samples_ns": [
+        28072,
+        29024,
+        26018,
+        25338,
+        25287,
+        24596,
+        24586,
+        24636,
+        24716,
+        24495,
+        24135,
+        26950,
+        24786,
+        24366,
+        24005,
+        25317,
+        24717,
+        24466,
+        24375,
+        24455,
+        36959,
+        25698,
+        25217,
+        24877,
+        24636
+      ],
+      "summary": {
+        "count": 25,
+        "total_elapsed_ns": 646147,
+        "minimum_ns": 24005,
+        "maximum_ns": 36959,
+        "mean_ns": 25669.08,
+        "p50_ns": 24717,
+        "p95_ns": 29024,
+        "p99_ns": 36959,
+        "operations_per_second": 38690.88612962685,
+        "messages_per_second": 38690.88612962685,
+        "batches_per_second": 38690.88612962685,
+        "dispatches_per_second": null,
+        "deliveries_per_second": null
+      },
+      "correctness": {
+        "ok": true,
+        "stats": {
+          "ready": 28,
+          "processing": 0,
+          "acked": 0,
+          "failed": 0
+        },
+        "expected_acked": 0,
+        "expected_ready": 28,
+        "integrity": {
+          "schema_version": 1,
+          "mode": "full",
+          "max_errors": 100,
+          "ok": true,
+          "messages": [
+            "ok"
+          ],
+          "elapsed_seconds": 0.0
+        }
+      },
+      "status": "passed",
+      "error": null,
+      "multiprocess": null
+    },
+    {
+      "scenario_id": "put_many-10",
+      "operation": "put_many",
+      "parameters": {
+        "batch_size": 10,
+        "payload_requested_bytes": 128,
+        "payload_serialized_bytes": 128,
+        "serializer": "localqueue.JsonSerializer"
+      },
+      "work_units": {
+        "operations": 25,
+        "batches": 25,
+        "messages": 250
+      },
+      "sqlite": {
+        "journal_mode": "wal",
+        "synchronous": 1,
+        "synchronous_name": "NORMAL",
+        "durability_mode": "normal",
+        "busy_timeout_ms": 5000,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0"
+      },
+      "warmup": {
+        "count": 3,
+        "total_elapsed_ns": 187420,
+        "unit": "sample"
+      },
+      "measured_samples_ns": [
+        51937,
+        56395,
+        50174,
+        86211,
+        48892,
+        46928,
+        54562,
+        49152,
+        55284,
+        46918,
+        67857,
+        51306,
+        46868,
+        55093,
+        62166,
+        56916,
+        46777,
+        55774,
+        47459,
+        46076,
+        52308,
+        49653,
+        56396,
+        55854,
+        57698
+      ],
+      "summary": {
+        "count": 25,
+        "total_elapsed_ns": 1359529,
+        "minimum_ns": 46076,
+        "maximum_ns": 86211,
+        "mean_ns": 54186.16,
+        "p50_ns": 52308,
+        "p95_ns": 67857,
+        "p99_ns": 86211,
+        "operations_per_second": 18388.721388068956,
+        "messages_per_second": 183887.21388068958,
+        "batches_per_second": 18388.721388068956,
+        "dispatches_per_second": null,
+        "deliveries_per_second": null
+      },
+      "correctness": {
+        "ok": true,
+        "stats": {
+          "ready": 280,
+          "processing": 0,
+          "acked": 0,
+          "failed": 0
+        },
+        "expected_acked": 0,
+        "expected_ready": 280,
+        "integrity": {
+          "schema_version": 1,
+          "mode": "full",
+          "max_errors": 100,
+          "ok": true,
+          "messages": [
+            "ok"
+          ],
+          "elapsed_seconds": 0.0
+        }
+      },
+      "status": "passed",
+      "error": null,
+      "multiprocess": null
+    },
+    {
+      "scenario_id": "put_many-100",
+      "operation": "put_many",
+      "parameters": {
+        "batch_size": 100,
+        "payload_requested_bytes": 128,
+        "payload_serialized_bytes": 128,
+        "serializer": "localqueue.JsonSerializer"
+      },
+      "work_units": {
+        "operations": 25,
+        "batches": 25,
+        "messages": 2500
+      },
+      "sqlite": {
+        "journal_mode": "wal",
+        "synchronous": 1,
+        "synchronous_name": "NORMAL",
+        "durability_mode": "normal",
+        "busy_timeout_ms": 5000,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0"
+      },
+      "warmup": {
+        "count": 3,
+        "total_elapsed_ns": 941719,
+        "unit": "sample"
+      },
+      "measured_samples_ns": [
+        292246,
+        300542,
+        314758,
+        446043,
+        310380,
+        312684,
+        311642,
+        296334,
+        311672,
+        312363,
+        327411,
+        374299,
+        317263,
+        303006,
+        336018,
+        317624,
+        302846,
+        304319,
+        322102,
+        297937,
+        304168,
+        321580,
+        315169,
+        388837,
+        337060
+      ],
+      "summary": {
+        "count": 25,
+        "total_elapsed_ns": 8085034,
+        "minimum_ns": 292246,
+        "maximum_ns": 446043,
+        "mean_ns": 323132.12,
+        "p50_ns": 312684,
+        "p95_ns": 388837,
+        "p99_ns": 446043,
+        "operations_per_second": 3092.1329458849527,
+        "messages_per_second": 309213.2945884953,
+        "batches_per_second": 3092.1329458849527,
+        "dispatches_per_second": null,
+        "deliveries_per_second": null
+      },
+      "correctness": {
+        "ok": true,
+        "stats": {
+          "ready": 2800,
+          "processing": 0,
+          "acked": 0,
+          "failed": 0
+        },
+        "expected_acked": 0,
+        "expected_ready": 2800,
+        "integrity": {
+          "schema_version": 1,
+          "mode": "full",
+          "max_errors": 100,
+          "ok": true,
+          "messages": [
+            "ok"
+          ],
+          "elapsed_seconds": 0.001
+        }
+      },
+      "status": "passed",
+      "error": null,
+      "multiprocess": null
+    },
+    {
+      "scenario_id": "put_many-1000",
+      "operation": "put_many",
+      "parameters": {
+        "batch_size": 1000,
+        "payload_requested_bytes": 128,
+        "payload_serialized_bytes": 128,
+        "serializer": "localqueue.JsonSerializer"
+      },
+      "work_units": {
+        "operations": 25,
+        "batches": 25,
+        "messages": 25000
+      },
+      "sqlite": {
+        "journal_mode": "wal",
+        "synchronous": 1,
+        "synchronous_name": "NORMAL",
+        "durability_mode": "normal",
+        "busy_timeout_ms": 5000,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0"
+      },
+      "warmup": {
+        "count": 3,
+        "total_elapsed_ns": 8024721,
+        "unit": "sample"
+      },
+      "measured_samples_ns": [
+        2750118,
+        2924413,
+        2727104,
+        2811202,
+        2773622,
+        2735240,
+        2678524,
+        2626476,
+        2628059,
+        2694554,
+        2667694,
+        2680528,
+        2681900,
+        2816893,
+        5392985,
+        2687942,
+        2655521,
+        2630094,
+        2646474,
+        2683944,
+        2774303,
+        2686679,
+        2713770,
+        2712507,
+        2726413
+      ],
+      "summary": {
+        "count": 25,
+        "total_elapsed_ns": 70515874,
+        "minimum_ns": 2626476,
+        "maximum_ns": 5392985,
+        "mean_ns": 2820278.36,
+        "p50_ns": 2694554,
+        "p95_ns": 2924413,
+        "p99_ns": 5392985,
+        "operations_per_second": 354.53010197391865,
+        "messages_per_second": 354530.1019739186,
+        "batches_per_second": 354.53010197391865,
+        "dispatches_per_second": null,
+        "deliveries_per_second": null
+      },
+      "correctness": {
+        "ok": true,
+        "stats": {
+          "ready": 28000,
+          "processing": 0,
+          "acked": 0,
+          "failed": 0
+        },
+        "expected_acked": 0,
+        "expected_ready": 28000,
+        "integrity": {
+          "schema_version": 1,
+          "mode": "full",
+          "max_errors": 100,
+          "ok": true,
+          "messages": [
+            "ok"
+          ],
+          "elapsed_seconds": 0.014
+        }
+      },
+      "status": "passed",
+      "error": null,
+      "multiprocess": null
+    },
+    {
+      "scenario_id": "get_ack",
+      "operation": "get_ack",
+      "parameters": {
+        "payload_requested_bytes": 128,
+        "payload_serialized_bytes": 128,
+        "serializer": "localqueue.JsonSerializer"
+      },
+      "work_units": {
+        "operations": 25,
+        "messages": 25
+      },
+      "sqlite": {
+        "journal_mode": "wal",
+        "synchronous": 1,
+        "synchronous_name": "NORMAL",
+        "durability_mode": "normal",
+        "busy_timeout_ms": 5000,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0"
+      },
+      "warmup": {
+        "count": 3,
+        "total_elapsed_ns": 354702,
+        "unit": "sample"
+      },
+      "measured_samples_ns": [
+        91601,
+        90690,
+        88576,
+        88055,
+        91201,
+        89698,
+        92262,
+        99637,
+        89768,
+        89727,
+        88014,
+        86682,
+        87073,
+        87042,
+        90819,
+        87654,
+        87203,
+        86772,
+        100247,
+        96140,
+        87153,
+        86962,
+        89467,
+        86171,
+        88636
+      ],
+      "summary": {
+        "count": 25,
+        "total_elapsed_ns": 2256485,
+        "minimum_ns": 86171,
+        "maximum_ns": 100247,
+        "mean_ns": 89890.0,
+        "p50_ns": 88636,
+        "p95_ns": 99637,
+        "p99_ns": 100247,
+        "operations_per_second": 11079.178456759075,
+        "messages_per_second": 11079.178456759075,
+        "batches_per_second": null,
+        "dispatches_per_second": null,
+        "deliveries_per_second": null
+      },
+      "correctness": {
+        "ok": true,
+        "stats": {
+          "ready": 0,
+          "processing": 0,
+          "acked": 28,
+          "failed": 0
+        },
+        "expected_acked": 28,
+        "expected_ready": 0,
+        "integrity": {
+          "schema_version": 1,
+          "mode": "full",
+          "max_errors": 100,
+          "ok": true,
+          "messages": [
+            "ok"
+          ],
+          "elapsed_seconds": 0.0
+        }
+      },
+      "status": "passed",
+      "error": null,
+      "multiprocess": null
+    },
+    {
+      "scenario_id": "roundtrip",
+      "operation": "roundtrip",
+      "parameters": {
+        "payload_requested_bytes": 128,
+        "payload_serialized_bytes": 128,
+        "serializer": "localqueue.JsonSerializer"
+      },
+      "work_units": {
+        "operations": 25,
+        "messages": 25
+      },
+      "sqlite": {
+        "journal_mode": "wal",
+        "synchronous": 1,
+        "synchronous_name": "NORMAL",
+        "durability_mode": "normal",
+        "busy_timeout_ms": 5000,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0"
+      },
+      "warmup": {
+        "count": 3,
+        "total_elapsed_ns": 427909,
+        "unit": "sample"
+      },
+      "measured_samples_ns": [
+        125515,
+        122710,
+        122669,
+        133810,
+        122058,
+        123621,
+        121156,
+        123881,
+        121136,
+        120264,
+        120455,
+        150250,
+        127148,
+        120024,
+        127879,
+        162804,
+        132528,
+        123180,
+        121097,
+        135173,
+        139020,
+        123871,
+        122900,
+        121387,
+        121747
+      ],
+      "summary": {
+        "count": 25,
+        "total_elapsed_ns": 3196873,
+        "minimum_ns": 120024,
+        "maximum_ns": 162804,
+        "mean_ns": 127451.32,
+        "p50_ns": 123180,
+        "p95_ns": 150250,
+        "p99_ns": 162804,
+        "operations_per_second": 7820.141744761209,
+        "messages_per_second": 7820.141744761209,
+        "batches_per_second": null,
+        "dispatches_per_second": null,
+        "deliveries_per_second": null
+      },
+      "correctness": {
+        "ok": true,
+        "stats": {
+          "ready": 0,
+          "processing": 0,
+          "acked": 28,
+          "failed": 0
+        },
+        "expected_acked": 28,
+        "expected_ready": 0,
+        "integrity": {
+          "schema_version": 1,
+          "mode": "full",
+          "max_errors": 100,
+          "ok": true,
+          "messages": [
+            "ok"
+          ],
+          "elapsed_seconds": 0.0
+        }
+      },
+      "status": "passed",
+      "error": null,
+      "multiprocess": null
+    },
+    {
+      "scenario_id": "fanout-1",
+      "operation": "fanout",
+      "parameters": {
+        "subscriptions": 1,
+        "payload_requested_bytes": 128,
+        "payload_serialized_bytes": 355,
+        "serializer": "localqueue.bus.JsonSerializer"
+      },
+      "work_units": {
+        "operations": 25,
+        "messages": 25,
+        "dispatches": 25,
+        "deliveries": 25
+      },
+      "sqlite": {
+        "journal_mode": "wal",
+        "synchronous": 1,
+        "synchronous_name": "NORMAL",
+        "durability_mode": "normal",
+        "busy_timeout_ms": 5000,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0"
+      },
+      "warmup": {
+        "count": 3,
+        "total_elapsed_ns": 240990,
+        "unit": "dispatch"
+      },
+      "measured_samples_ns": [
+        68658,
+        65653,
+        61936,
+        62306,
+        61154,
+        71875,
+        62096,
+        64721,
+        84969,
+        68088,
+        63338,
+        60463,
+        60083,
+        66164,
+        63338,
+        60353,
+        58740,
+        59010,
+        59441,
+        58870,
+        58199,
+        65412,
+        63879,
+        60242,
+        67987
+      ],
+      "summary": {
+        "count": 25,
+        "total_elapsed_ns": 1609777,
+        "minimum_ns": 58199,
+        "maximum_ns": 84969,
+        "mean_ns": 63879.0,
+        "p50_ns": 62306,
+        "p95_ns": 71875,
+        "p99_ns": 84969,
+        "operations_per_second": 15530.101374289732,
+        "messages_per_second": null,
+        "batches_per_second": null,
+        "dispatches_per_second": 15530.101374289732,
+        "deliveries_per_second": 15530.101374289732
+      },
+      "correctness": {
+        "ok": true,
+        "expected_deliveries": 28,
+        "observed_ready": 28,
+        "integrity": [
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.0
+          }
+        ]
+      },
+      "status": "passed",
+      "error": null,
+      "multiprocess": null
+    },
+    {
+      "scenario_id": "fanout-10",
+      "operation": "fanout",
+      "parameters": {
+        "subscriptions": 10,
+        "payload_requested_bytes": 128,
+        "payload_serialized_bytes": 355,
+        "serializer": "localqueue.bus.JsonSerializer"
+      },
+      "work_units": {
+        "operations": 25,
+        "messages": 25,
+        "dispatches": 25,
+        "deliveries": 250
+      },
+      "sqlite": {
+        "journal_mode": "wal",
+        "synchronous": 1,
+        "synchronous_name": "NORMAL",
+        "durability_mode": "normal",
+        "busy_timeout_ms": 5000,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0"
+      },
+      "warmup": {
+        "count": 3,
+        "total_elapsed_ns": 547613,
+        "unit": "dispatch"
+      },
+      "measured_samples_ns": [
+        126777,
+        122078,
+        183162,
+        135483,
+        137527,
+        127759,
+        134831,
+        126727,
+        138729,
+        132978,
+        129372,
+        129942,
+        147576,
+        161592,
+        158065,
+        142436,
+        147385,
+        149339,
+        162273,
+        152414,
+        144199,
+        142156,
+        148828,
+        241552,
+        294610
+      ],
+      "summary": {
+        "count": 25,
+        "total_elapsed_ns": 3831458,
+        "minimum_ns": 122078,
+        "maximum_ns": 294610,
+        "mean_ns": 152711.6,
+        "p50_ns": 142436,
+        "p95_ns": 241552,
+        "p99_ns": 294610,
+        "operations_per_second": 6524.93124027459,
+        "messages_per_second": null,
+        "batches_per_second": null,
+        "dispatches_per_second": 6524.93124027459,
+        "deliveries_per_second": 65249.312402745905
+      },
+      "correctness": {
+        "ok": true,
+        "expected_deliveries": 280,
+        "observed_ready": 280,
+        "integrity": [
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.0
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.0
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.0
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.0
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.0
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.0
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.0
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.0
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.0
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.0
+          }
+        ]
+      },
+      "status": "passed",
+      "error": null,
+      "multiprocess": null
+    },
+    {
+      "scenario_id": "fanout-100",
+      "operation": "fanout",
+      "parameters": {
+        "subscriptions": 100,
+        "payload_requested_bytes": 128,
+        "payload_serialized_bytes": 355,
+        "serializer": "localqueue.bus.JsonSerializer"
+      },
+      "work_units": {
+        "operations": 25,
+        "messages": 25,
+        "dispatches": 25,
+        "deliveries": 2500
+      },
+      "sqlite": {
+        "journal_mode": "wal",
+        "synchronous": 1,
+        "synchronous_name": "NORMAL",
+        "durability_mode": "normal",
+        "busy_timeout_ms": 5000,
+        "page_size": 4096,
+        "sqlite_version": "3.46.0"
+      },
+      "warmup": {
+        "count": 3,
+        "total_elapsed_ns": 2073804,
+        "unit": "dispatch"
+      },
+      "measured_samples_ns": [
+        740894,
+        739752,
+        739331,
+        1088474,
+        828998,
+        1275543,
+        1294649,
+        1302473,
+        1347878,
+        1347677,
+        1383054,
+        1286113,
+        853114,
+        856510,
+        869995,
+        874473,
+        1831542,
+        891866,
+        856130,
+        991171,
+        847804,
+        1163874,
+        1059249,
+        935728,
+        937211
+      ],
+      "summary": {
+        "count": 25,
+        "total_elapsed_ns": 26359123,
+        "minimum_ns": 739331,
+        "maximum_ns": 1831542,
+        "mean_ns": 1053740.12,
+        "p50_ns": 937211,
+        "p95_ns": 1383054,
+        "p99_ns": 1831542,
+        "operations_per_second": 948.4382314237085,
+        "messages_per_second": null,
+        "batches_per_second": null,
+        "dispatches_per_second": 948.4382314237085,
+        "deliveries_per_second": 94843.82314237085
+      },
+      "correctness": {
+        "ok": true,
+        "expected_deliveries": 2800,
+        "observed_ready": 2800,
+        "integrity": [
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.002
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.002
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.002
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.002
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.002
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.002
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.002
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.002
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.002
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.002
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.002
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.002
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.002
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.002
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.002
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.002
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          },
+          {
+            "schema_version": 1,
+            "mode": "full",
+            "max_errors": 100,
+            "ok": true,
+            "messages": [
+              "ok"
+            ],
+            "elapsed_seconds": 0.003
+          }
+        ]
+      },
+      "status": "passed",
+      "error": null,
+      "multiprocess": null
+    }
+  ]
+}

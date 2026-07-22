@@ -1,5 +1,8 @@
 # Event bus
 
+For deployment boundaries and operational limits, see the
+[operational envelope](operational-envelope.md).
+
 `localqueue.bus` is an optional, persistent publish/subscribe layer built on
 the same SQLite-backed queues. Install the `bus` extra:
 

@@ -1,5 +1,10 @@
 # Checklist de execução
 
+Release checklist requirement: release notes must link to
+`docs/operational-envelope.md`, public wording must be reviewed against that
+page, and release-candidate reports must replace or complement preliminary
+measurements. Issue #32 owns the GO/NO-GO decision.
+
 Este checklist acompanha `tasks/plan.md`. Estado atual: **implementação e
 publicação `v1.1.1` concluídas; aguardando propagação externa de Pages e
 configuração do token Codecov**.

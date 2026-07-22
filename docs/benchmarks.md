@@ -1,5 +1,8 @@
 # Canonical benchmarks
 
+For workload selection and limits on interpreting measurements, see the
+[operational envelope](operational-envelope.md).
+
 Install the optional benchmark extra. It adds the EventBus dependency without
 adding anything to the base runtime:
 
