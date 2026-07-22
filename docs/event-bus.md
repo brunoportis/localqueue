@@ -268,7 +268,8 @@ failure.
 
 External cancellation of `run()` or `run_subscription()` takes precedence over
 the handler timeout and is propagated as `CancelledError`, without being
-reported as a timeout. Lease loss takes precedence over a successful handler
+reported as a timeout, including while a timed-out handler is performing
+cooperative cleanup. Lease loss takes precedence over a successful handler
 result: EventBus never ACKs a result after it knows the lease is lost, and the
 receipt-fenced queue transition also rejects any lease lost concurrently.
 

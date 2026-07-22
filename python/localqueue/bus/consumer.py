@@ -26,6 +26,19 @@ async def _deadline_timer(timeout: float) -> None:
     await asyncio.sleep(timeout)
 
 
+async def _observe_cancelled_handler(
+    handler_task: asyncio.Task[Any],
+) -> tuple[str, Exception | None]:
+    """Observe a timed-out handler without conflating consumer cancellation."""
+    try:
+        await handler_task
+    except asyncio.CancelledError:
+        return "cancelled", None
+    except Exception as error:  # noqa: BLE001 - cleanup failure is reported
+        return "error", error
+    return "returned", None
+
+
 async def _run_async_handler(handler: Any, event: Any, timeout: float | None) -> bool:
     """Run an async handler and return whether its internal deadline elapsed.
 
@@ -52,13 +65,22 @@ async def _run_async_handler(handler: Any, event: Any, timeout: float | None) ->
         # The timer won. Preserve that state even if cooperative cancellation
         # lets the handler return normally or raise during cleanup.
         handler_task.cancel()
+        observer_task = asyncio.create_task(_observe_cancelled_handler(handler_task))
         try:
-            await handler_task
+            outcome, cleanup_error = await asyncio.shield(observer_task)
         except asyncio.CancelledError:
-            pass
-        except BaseException as error:  # noqa: BLE001 - cleanup is observed
+            # This cancellation reached the consumer while it was waiting for
+            # cleanup, so it has precedence over the internal timeout.
+            handler_task.cancel()
+            timer_task.cancel()
+            await asyncio.gather(
+                handler_task, timer_task, observer_task, return_exceptions=True
+            )
+            raise
+        if outcome == "error" and cleanup_error is not None:
             log.warning(
-                "Timed-out handler cleanup failed with %s", type(error).__name__
+                "Timed-out handler cleanup failed with %s",
+                type(cleanup_error).__name__,
             )
         await asyncio.gather(timer_task, return_exceptions=True)
         return True

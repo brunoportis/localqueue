@@ -367,6 +367,84 @@ class TestTimeoutPrecedenceAndCleanup:
 
 
 class TestControlledTimeoutLifecycle:
+    def test_external_cancellation_during_timeout_cleanup_wins(
+        self, bus, monkeypatch, caplog
+    ):
+        from localqueue.bus import consumer
+        from localqueue.core import SimpleQueue
+
+        timer_started, release_timer, _ = controlled_deadline(monkeypatch)
+        handler_started = asyncio.Event()
+        cleanup_started = asyncio.Event()
+        release_cleanup = asyncio.Event()
+        handler_finished = asyncio.Event()
+        heartbeat_started = asyncio.Event()
+        heartbeat_cancelled = asyncio.Event()
+        transitions = []
+
+        async def heartbeat(queue, job, interval, state):
+            heartbeat_started.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                heartbeat_cancelled.set()
+                raise
+
+        monkeypatch.setattr(consumer, "_heartbeat", heartbeat)
+        for name in ("ack", "nack", "fail"):
+            original = getattr(SimpleQueue, name)
+
+            def transition(self, job, _original=original, _name=name, **kwargs):
+                transitions.append(_name)
+                return _original(self, job, **kwargs)
+
+            monkeypatch.setattr(SimpleQueue, name, transition)
+
+        @bus.on(WorkSubmitted, subscription="email", timeout=1.0)
+        async def handle(event):
+            handler_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cleanup_started.set()
+                try:
+                    await release_cleanup.wait()
+                finally:
+                    handler_finished.set()
+
+        bus.dispatch(WorkSubmitted(sequence=1))
+
+        async def consume_then_cancel_during_cleanup():
+            task = asyncio.create_task(bus.run_subscription("email"))
+            try:
+                await asyncio.wait_for(handler_started.wait(), timeout=1.0)
+                await asyncio.wait_for(timer_started.wait(), timeout=1.0)
+                await asyncio.wait_for(heartbeat_started.wait(), timeout=1.0)
+                release_timer.set()
+                await asyncio.wait_for(cleanup_started.wait(), timeout=1.0)
+                task.cancel()
+                release_cleanup.set()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            finally:
+                release_cleanup.set()
+                if not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+
+            pending = [
+                item
+                for item in asyncio.all_tasks()
+                if item is not asyncio.current_task() and not item.done()
+            ]
+            assert pending == []
+
+        run(consume_then_cancel_during_cleanup())
+        assert transitions == []
+        assert handler_finished.is_set()
+        assert heartbeat_cancelled.is_set()
+        assert "handler timeout" not in caplog.text
+
     def test_direct_and_decorator_registration_keep_timeout_for_each_api(
         self, tmp_path
     ):
