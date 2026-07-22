@@ -19,6 +19,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         "|---|---:|---:|---:|---:|---:|---:|---|",
     ]
     for s in report.get("scenarios", []):
+        if isinstance(s.get("multiprocess"), dict):
+            s = s["multiprocess"]
         p = s.get("parameters", {})
         t = s.get("throughput", {})
         m = s.get("metric_series", {})

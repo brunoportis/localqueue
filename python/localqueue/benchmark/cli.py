@@ -103,6 +103,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     assert report is not None
     profile = report.profile
+    if args.profile.startswith("multiprocess-"):
+        print(
+            f"profile={profile['name']} canonical={profile['canonical']} "
+            f"package={report.subject['package_version']}"
+        )
+        for scenario in report.scenarios:
+            print(f"{scenario.scenario_id} {scenario.status}")
+        return 0 if report.run["status"] == "passed" else 1
     print(
         f"profile={profile['name']} durability={profile['durability'].upper()} package={report.subject['package_version']} commit={report.subject['commit_sha'] or 'unavailable'}"
     )
