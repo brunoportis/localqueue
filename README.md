@@ -260,6 +260,8 @@ queue = SimpleQueue(
 | `reclaim_expired_leases()` | Reclaim expired leases explicitly; `get()` also does this automatically. |
 | `stats()` | Return `ready`, `processing`, `acked`, and `failed` counts. |
 | `diagnostics()` | Return a typed, immutable, read-only operational snapshot. |
+| `check_integrity(*, mode="full", max_errors=100)` | Run a bounded, typed full or quick SQLite integrity check. |
+| `backup(destination_directory)` | Create a verified online backup in a new exclusive directory. |
 | `list_failed(limit=100, offset=0)` | Inspect dead-letter jobs. |
 | `retry_failed(message_id)` | Move a dead-letter job back to `ready`. |
 | `purge(older_than, include_failed=False)` | Delete old terminal records. |
@@ -291,6 +293,29 @@ integrity check. See the
 [runtime diagnostics reference](https://github.com/brunoportis/localqueue/blob/main/docs/diagnostics.md)
 for field types, snapshot semantics, clock limitations, and the boundary with
 integrity/backup maintenance.
+
+## Integrity checks and online backups
+
+Run explicit SQLite maintenance without reaching into the native connection:
+
+```python
+from localqueue import SimpleQueue
+
+
+queue = SimpleQueue("./data")
+integrity = queue.check_integrity()
+if integrity.ok:
+    backup = queue.backup("./backups/2026-07-22")
+    print(backup.to_dict())
+queue.close()
+```
+
+Backups use SQLite's Online Backup API and remain consistent while other
+connections produce and consume jobs. The destination directory is reserved
+exclusively and must not already exist. See the
+[maintenance reference](https://github.com/brunoportis/localqueue/blob/main/docs/maintenance.md)
+for result fields, locking and latency, filesystem requirements, error
+semantics, independent verification, and recovery steps.
 
 ## Architecture
 

@@ -53,9 +53,9 @@ recreated; arbitrary media corruption is not promised to be recoverable.
 Producer and maintenance termination use an explicit child synchronization
 line before `SIGKILL`, followed by fresh-process integrity validation. They
 prove transactional rollback for the selected boundary, not external side
-effects or exactly-once delivery. The internal backup/restore fixture uses
-`sqlite3.Connection.backup`; it validates a consistent SQLite copy only. It is
-not the public backup API planned for issue #22.
+effects or exactly-once delivery. The backup/restore scenario uses the public
+`SimpleQueue.backup()` API, removes the origin, and opens the verified snapshot
+with `SimpleQueue` in a fresh process before checking counts and payload.
 
 ## Report
 

@@ -49,6 +49,24 @@ class DiagnosticsSnapshot:
     expired_leases: int
     oldest_expired_lease_age_ms: Optional[int]
 
+class IntegrityCheckSnapshot:
+    schema_version: int
+    mode: str
+    max_errors: int
+    ok: bool
+    messages: list[str]
+    elapsed_ms: int
+
+class BackupSnapshot:
+    schema_version: int
+    elapsed_ms: int
+    pages_copied: int
+    page_count: int
+    database_size_bytes: int
+    verified: bool
+    verification_mode: str
+    verification_messages: list[str]
+
 class NativeQueue:
     def __init__(
         self,
@@ -82,6 +100,10 @@ class NativeQueue:
     def reclaim_expired(self, now: Optional[int] = None) -> int: ...
     def stats(self) -> Stats: ...
     def diagnostics(self) -> DiagnosticsSnapshot: ...
+    def check_integrity(
+        self, quick: bool = False, max_errors: int = 100
+    ) -> IntegrityCheckSnapshot: ...
+    def backup(self, destination: str) -> BackupSnapshot: ...
     def purge(self, older_than_ms: int, status: Optional[int] = None) -> int: ...
     def list_failed(self, limit: int = 100, offset: int = 0) -> list[FailedMessage]: ...
     def retry_failed(self, id: int) -> None: ...

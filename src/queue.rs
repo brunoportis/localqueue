@@ -2,8 +2,10 @@ use pyo3::prelude::*;
 use rusqlite::{params, Connection, TransactionBehavior};
 use std::sync::MutexGuard;
 
+use crate::backup::{create as create_backup, BackupSnapshot};
 use crate::diagnostics::{collect as collect_diagnostics, DiagnosticsSnapshot};
 use crate::error::QueueError;
+use crate::integrity::{check as check_integrity, IntegrityCheckSnapshot};
 use crate::storage::{now_ms, EnqueueEntry, Storage};
 
 pub const STATUS_READY: i64 = 0;
@@ -93,6 +95,19 @@ impl NativeQueue {
         conn.query_row("PRAGMA max_page_count", [], |row| row.get(0))
             .map_err(QueueError::from)
             .map_err(Into::into)
+    }
+
+    /// Limit the next backup's private destination database for disk-full tests.
+    #[cfg(feature = "__crash_test")]
+    #[doc(hidden)]
+    pub fn _test_set_backup_max_page_count(&self, pages: i64) -> PyResult<()> {
+        if pages < 1 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "pages must be at least 1",
+            ));
+        }
+        crate::backup::set_test_backup_max_page_count(pages);
+        Ok(())
     }
 
     /// Read the connection-local busy timeout for the operational chaos harness.
@@ -568,6 +583,23 @@ impl NativeQueue {
     /// Capture a bounded, read-only operational snapshot.
     pub fn diagnostics(&self, py: Python<'_>) -> PyResult<DiagnosticsSnapshot> {
         py.detach(move || collect_diagnostics(&self.storage, &self.queue).map_err(Into::into))
+    }
+
+    /// Run a read-only SQLite full or quick integrity check.
+    #[pyo3(signature = (quick = false, max_errors = 100))]
+    pub fn check_integrity(
+        &self,
+        py: Python<'_>,
+        quick: bool,
+        max_errors: u16,
+    ) -> PyResult<IntegrityCheckSnapshot> {
+        py.detach(move || check_integrity(&self.storage, quick, max_errors).map_err(Into::into))
+    }
+
+    /// Create a consistent SQLite online backup at `destination`.
+    pub fn backup(&self, py: Python<'_>, destination: &str) -> PyResult<BackupSnapshot> {
+        let destination = destination.to_owned();
+        py.detach(move || create_backup(&self.storage, &destination).map_err(Into::into))
     }
 
     /// Return the SQLite pragmas used by the active connection.

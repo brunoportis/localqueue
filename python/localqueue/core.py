@@ -4,15 +4,22 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time as _time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional, Protocol, Union
+from typing import Any, Literal, Optional, Protocol, Union
 
 from localqueue import localqueue as _native
 from localqueue.diagnostics import QueueDiagnostics, build_diagnostics
 from localqueue.exceptions import Empty, LocalQueueError
 from localqueue.job import Job
+from localqueue.maintenance import (
+    BackupResult,
+    IntegrityCheckResult,
+    build_backup_result,
+    build_integrity_result,
+)
 
 log = logging.getLogger(__name__)
 
@@ -233,6 +240,44 @@ class SimpleQueue:
             serializer_identity=serializer_identity,
             lease_seconds=self.lease_seconds,
             max_retries=self.max_retries,
+        )
+
+    def check_integrity(
+        self,
+        *,
+        mode: Literal["full", "quick"] = "full",
+        max_errors: int = 100,
+    ) -> IntegrityCheckResult:
+        """Run a read-only SQLite integrity check on the shared database."""
+        if mode not in ("full", "quick"):
+            raise ValueError("'mode' must be 'full' or 'quick'")
+        if not isinstance(max_errors, int) or isinstance(max_errors, bool):
+            raise TypeError("'max_errors' must be an integer")
+        if not 1 <= max_errors <= 1000:
+            raise ValueError("'max_errors' must be between 1 and 1000")
+        return build_integrity_result(
+            self._get_native().check_integrity(
+                quick=mode == "quick", max_errors=max_errors
+            )
+        )
+
+    def backup(
+        self,
+        destination_directory: Union[str, os.PathLike[str]],
+    ) -> BackupResult:
+        """Create a consistent online backup in a new destination directory.
+
+        The destination parent must already exist. The destination itself must
+        not exist and is reserved atomically by this operation.
+        """
+        destination_string = os.fspath(destination_directory)
+        database_path = os.path.join(destination_string, "localqueue.db")
+        stable_destination = os.path.abspath(destination_string)
+        snapshot = self._get_native().backup(stable_destination)
+        return build_backup_result(
+            snapshot,
+            destination=destination_string,
+            database_path=database_path,
         )
 
     def _to_job(self, lease: "_native.Lease") -> Job:

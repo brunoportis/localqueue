@@ -1,4 +1,5 @@
 use pyo3::prelude::*;
+use std::path::PathBuf;
 
 pyo3::create_exception!(
     localqueue,
@@ -35,6 +36,18 @@ pub enum QueueError {
     #[error("queue is closed")]
     Closed,
 
+    #[error("backup destination already exists: {0}")]
+    BackupDestinationExists(PathBuf),
+
+    #[error("invalid backup destination: {0}")]
+    InvalidBackupDestination(String),
+
+    #[error("backup integrity check failed: {0:?}")]
+    BackupIntegrity(Vec<String>),
+
+    #[error("max_errors must be between 1 and 1000")]
+    InvalidIntegrityMaxErrors,
+
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
 
@@ -51,7 +64,38 @@ impl From<QueueError> for PyErr {
             QueueError::LeaseExpired => PyErr::new::<LeaseExpired, _>("lease has expired"),
             QueueError::NotFound => PyErr::new::<LocalQueueError, _>("job not found"),
             QueueError::Closed => PyErr::new::<LocalQueueError, _>("queue is closed"),
-            QueueError::Sqlite(e) => PyErr::new::<LocalQueueError, _>(format!("{}", e)),
+            QueueError::BackupDestinationExists(path) => {
+                PyErr::new::<pyo3::exceptions::PyFileExistsError, _>(path)
+            }
+            QueueError::InvalidBackupDestination(message) => {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(message)
+            }
+            QueueError::BackupIntegrity(messages) => PyErr::new::<LocalQueueError, _>(format!(
+                "backup integrity check failed: {}",
+                messages.join("; ")
+            )),
+            QueueError::InvalidIntegrityMaxErrors => {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string())
+            }
+            QueueError::Sqlite(e) => {
+                let message = match &e {
+                    rusqlite::Error::SqliteFailure(failure, Some(message))
+                        if failure.code == rusqlite::ErrorCode::DiskFull
+                            && message == "not an error" =>
+                    {
+                        "database or disk is full".to_owned()
+                    }
+                    rusqlite::Error::SqliteFailure(_, Some(message)) => message.clone(),
+                    rusqlite::Error::SqliteFailure(failure, None) => match failure.code {
+                        rusqlite::ErrorCode::DiskFull => "database or disk is full".to_owned(),
+                        rusqlite::ErrorCode::DatabaseBusy => "database is busy".to_owned(),
+                        rusqlite::ErrorCode::DatabaseLocked => "database is locked".to_owned(),
+                        _ => e.to_string(),
+                    },
+                    _ => e.to_string(),
+                };
+                PyErr::new::<LocalQueueError, _>(message)
+            }
             QueueError::Io(e) => PyErr::new::<LocalQueueError, _>(format!("{}", e)),
         }
     }

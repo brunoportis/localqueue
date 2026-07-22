@@ -1,4 +1,5 @@
 use rusqlite::{params, Connection, ErrorCode, OpenFlags, TransactionBehavior};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::thread;
@@ -6,6 +7,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::error::{QueueError, Result};
 use crate::schema::SCHEMA_SQL;
+
+pub(crate) const BUSY_TIMEOUT_MS: u64 = 5_000;
 
 /// An item in a batch insertion. The payload is borrowed to avoid copying data
 /// across the PyO3 boundary.
@@ -30,7 +33,7 @@ impl Storage {
                 | OpenFlags::SQLITE_OPEN_URI,
         )?;
 
-        conn.pragma_update(None, "busy_timeout", 5000)?;
+        conn.pragma_update(None, "busy_timeout", BUSY_TIMEOUT_MS)?;
         enable_wal(&conn)?;
         conn.pragma_update(None, "synchronous", if fsync { "FULL" } else { "NORMAL" })?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
@@ -139,8 +142,14 @@ fn stable_database_path(path: &str) -> Result<PathBuf> {
     Ok(std::path::absolute(path)?)
 }
 
+pub(crate) fn sqlite_sidecar_path(database_path: &Path, suffix: &str) -> PathBuf {
+    let mut path = OsString::from(database_path.as_os_str());
+    path.push(suffix);
+    PathBuf::from(path)
+}
+
 fn enable_wal(conn: &Connection) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_millis(BUSY_TIMEOUT_MS);
 
     loop {
         match conn.pragma_update(None, "journal_mode", "WAL") {

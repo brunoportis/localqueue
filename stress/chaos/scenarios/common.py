@@ -13,13 +13,13 @@ from ..sqlite import database_path
 
 VALIDATOR_CODE = r"""
 import json
-import sqlite3
 import sys
-from localqueue import Empty, SimpleQueue
+from localqueue import SimpleQueue
 
 queue_dir = sys.argv[1]
 consume = sys.argv[2] == "consume"
 queue = SimpleQueue(queue_dir)
+integrity_result = queue.check_integrity(mode="full")
 stats_before = queue.stats()
 payload = None
 if consume and stats_before["ready"]:
@@ -28,13 +28,12 @@ if consume and stats_before["ready"]:
     queue.ack(job)
 stats_after = queue.stats()
 queue.close()
-with sqlite3.connect(queue_dir + "/localqueue.db") as connection:
-    integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
 print(json.dumps({
     "stats_before": stats_before,
     "stats_after": stats_after,
     "payload": payload,
-    "integrity_check": integrity,
+    "integrity_check": "; ".join(integrity_result.messages),
+    "integrity_result": integrity_result.to_dict(),
 }))
 """
 
