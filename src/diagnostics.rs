@@ -105,16 +105,6 @@ where
         active_leases,
         expired_leases,
         oldest_expired_lease_until,
-    ): (
-        i64,
-        i64,
-        i64,
-        i64,
-        Option<i64>,
-        Option<i64>,
-        i64,
-        i64,
-        Option<i64>,
     ) = tx.query_row(
         "SELECT
             COALESCE(SUM(status = ?2), 0),
@@ -138,14 +128,14 @@ where
         ],
         |row| {
             Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
                 row.get::<_, Option<i64>>(4)?,
                 row.get::<_, Option<i64>>(5)?,
-                row.get(6)?,
-                row.get(7)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
                 row.get::<_, Option<i64>>(8)?,
             ))
         },
