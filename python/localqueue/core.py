@@ -229,6 +229,25 @@ class SimpleQueue:
                 sleep_seconds = min(
                     sleep_seconds * 1.5, _BACKPRESSURE_MAX_SLEEP_SECONDS
                 )
+            except LocalQueueError as error:
+                if not self._is_retryable_sqlite_lock(error):
+                    raise
+                if deadline is not None:
+                    remaining = deadline - _time.monotonic()
+                    if remaining <= 0:
+                        raise
+                    wait_seconds = min(sleep_seconds, remaining)
+                else:
+                    wait_seconds = sleep_seconds
+                if self._closed.wait(wait_seconds):
+                    raise LocalQueueError("queue is closed") from None
+                sleep_seconds = min(
+                    sleep_seconds * 1.5, _BACKPRESSURE_MAX_SLEEP_SECONDS
+                )
+
+    @staticmethod
+    def _is_retryable_sqlite_lock(error: LocalQueueError) -> bool:
+        return str(error) in {"database is busy", "database is locked"}
 
     def _run_enqueue_attempt(
         self,
