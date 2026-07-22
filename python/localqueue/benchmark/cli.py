@@ -11,10 +11,9 @@ from pathlib import Path
 from typing import Any
 
 from localqueue.benchmark.config import BenchmarkConfig
-from localqueue.benchmark.environment import environment, subject
 from localqueue.benchmark.errors import sanitize_error_message
-from localqueue.benchmark.multiprocess import run_multiprocess_scenario
-from localqueue.benchmark.profiles import multiprocess_matrix
+from localqueue.benchmark.multiprocess import run_multiprocess_profile
+from localqueue.benchmark.multiprocess_models import MultiprocessConfig
 from localqueue.benchmark.render import render_file
 from localqueue.benchmark.runner import run_profile
 
@@ -39,7 +38,6 @@ def _atomic_json(path: Path, data: dict[str, Any]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    data: dict[str, Any] = {}
     if argv is None:
         argv = sys.argv[1:]
     if argv and argv[0] == "render":
@@ -71,44 +69,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.profile.startswith("multiprocess-"):
-            workdir = args.workdir or Path.cwd() / "localqueue-multiprocess"
-            workdir.mkdir(parents=True, exist_ok=True)
-            scenarios = []
-            for p, c, size in multiprocess_matrix(args.profile):
-                for durability in (
-                    (args.durability,) if args.durability else ("normal", "full")
-                ):
-                    scenarios.append(
-                        run_multiprocess_scenario(
-                            workdir,
-                            producers=p,
-                            consumers=c,
-                            messages=200 if args.profile.endswith("ci") else 5000,
-                            payload_bytes=size,
-                            durability=durability,
-                        )
-                    )
-            data = {
-                "schema_version": 1,
-                "subject": subject(),
-                "environment": environment(workdir),
-                "profile": {
-                    "profile_schema_version": 1,
-                    "name": args.profile,
-                    "canonical": args.profile.endswith("release")
-                    and args.large_db_rows == 1_000_000,
-                    "large_db_rows": args.large_db_rows,
-                    "matrix": multiprocess_matrix(args.profile),
-                },
-                "run": {
-                    "status": "passed"
-                    if all(s["status"] == "passed" for s in scenarios)
-                    else "failed"
-                },
-                "scenarios": scenarios,
-            }
-            _atomic_json(args.output, data)
-            report = None
+            report = run_multiprocess_profile(
+                MultiprocessConfig(
+                    profile=args.profile,
+                    messages=200 if args.profile.endswith("ci") else 5000,
+                    durability=args.durability,
+                    large_db_rows=args.large_db_rows,
+                ),
+                args.output,
+                args.workdir,
+            )
         else:
             report = run_profile(
                 BenchmarkConfig.from_profile(args.profile, args.durability),
@@ -131,11 +101,6 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"benchmark failed: {type(error).__name__}: {message}", file=sys.stderr)
         return 1
-    if args.profile.startswith("multiprocess-"):
-        print(f"profile={args.profile} canonical={args.profile.endswith('release')}")
-        for scenario in data["scenarios"]:
-            print(f"{scenario['scenario_id']} {scenario['status']}")
-        return 0 if data["run"]["status"] == "passed" else 1
     assert report is not None
     profile = report.profile
     print(

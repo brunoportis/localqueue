@@ -13,7 +13,13 @@ from pathlib import Path
 from typing import Any
 
 from localqueue import Empty, SimpleQueue
+from localqueue.benchmark.environment import environment, subject
+from localqueue.benchmark.errors import BenchmarkExecutionError
 from localqueue.benchmark.metrics import MetricSummary
+from localqueue.benchmark.models import BenchmarkReport, ScenarioResult
+from localqueue.benchmark.multiprocess_models import MultiprocessConfig
+from localqueue.benchmark.profiles import multiprocess_matrix
+from localqueue.benchmark.runner import _atomic_write
 
 try:  # resource is unavailable on Windows
     import resource as _resource
@@ -358,3 +364,64 @@ def run_multiprocess_scenario(
     }
     shutil.rmtree(run_path, ignore_errors=True)
     return result
+
+
+def run_multiprocess_profile(
+    config: MultiprocessConfig,
+    output: Path | None = None,
+    workdir: Path | None = None,
+) -> BenchmarkReport:
+    """Run a named multiprocess profile and atomically preserve partial reports."""
+    root = workdir or Path.cwd() / "localqueue-multiprocess"
+    root.mkdir(parents=True, exist_ok=True)
+    report = BenchmarkReport(
+        subject=subject(),
+        environment=environment(root),
+        profile={
+            "name": config.profile,
+            "canonical": config.profile == "multiprocess-release"
+            and config.large_db_rows == 1_000_000,
+            "large_db_rows": config.large_db_rows,
+            "matrix": multiprocess_matrix(config.profile),
+        },
+        run={"status": "running"},
+    )
+    durabilities = (config.durability,) if config.durability else ("normal", "full")
+    try:
+        for producers, consumers, payload_bytes in multiprocess_matrix(config.profile):
+            for durability in durabilities:
+                raw = run_multiprocess_scenario(
+                    root,
+                    producers=producers,
+                    consumers=consumers,
+                    messages=config.messages,
+                    payload_bytes=payload_bytes,
+                    durability=durability,
+                    timeout=config.timeout_seconds,
+                )
+                report.scenarios.append(
+                    ScenarioResult(
+                        scenario_id=raw["scenario_id"],
+                        operation=raw["operation"],
+                        parameters=raw["parameters"],
+                        work_units={"messages": config.messages},
+                        sqlite={},
+                        warmup={},
+                        measured_samples_ns=[],
+                        summary=None,
+                        correctness=raw["correctness"],
+                        status=raw["status"],
+                        multiprocess=raw,
+                    )
+                )
+                if output is not None:
+                    _atomic_write(output, report)
+        report.run["status"] = "passed"
+    except Exception as error:
+        report.run["status"] = "failed"
+        if output is not None:
+            _atomic_write(output, report)
+        raise BenchmarkExecutionError("multiprocess", error) from error
+    if output is not None:
+        _atomic_write(output, report)
+    return report

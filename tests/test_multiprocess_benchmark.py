@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from localqueue.benchmark.multiprocess import make_payload, run_multiprocess_scenario
+from localqueue.benchmark.multiprocess_models import MultiprocessConfig
 
 
 def test_payload_has_deterministic_identity_and_size_metadata() -> None:
@@ -46,3 +47,10 @@ def test_two_durabilities_do_not_reuse_workdir_state(tmp_path: Path) -> None:
     )
     assert first["throughput"]["messages_acked"] == 3
     assert second["throughput"]["messages_acked"] == 3
+
+
+def test_multiprocess_config_rejects_boolean_message_count() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="messages"):
+        MultiprocessConfig(profile="multiprocess-ci", messages=True)  # type: ignore[arg-type]
