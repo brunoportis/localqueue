@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -30,4 +32,20 @@ def render_markdown(report: dict[str, Any]) -> str:
 
 def render_file(source: Path, output: Path) -> None:
     data = json.loads(source.read_text(encoding="utf-8"))
-    output.write_text(render_markdown(data), encoding="utf-8")
+    if data.get("schema_version") != 1:
+        raise ValueError("unsupported benchmark schema_version")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{output.name}.", suffix=".tmp", dir=output.parent
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(render_markdown(data))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, output)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass

@@ -6,6 +6,8 @@ import hashlib
 import json
 import multiprocessing
 import platform
+import shutil
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -64,6 +66,7 @@ def producer_target(
         for identifier in range(start, start + count):
             value, actual = make_payload(identifier, index, requested)
             before = time.monotonic_ns()
+            value["created_ns"] = before
             queue.put(value, job_id=value["id"])
             puts.append(time.monotonic_ns() - before)
             produced += 1
@@ -201,10 +204,12 @@ def run_multiprocess_scenario(
     durability: str,
     timeout: float = 120.0,
 ) -> dict[str, Any]:
+    path.mkdir(parents=True, exist_ok=True)
+    run_path = Path(tempfile.mkdtemp(prefix="localqueue-mp-run-", dir=path))
     scenario_path = (
-        path / f"p{producers}c{consumers}-m{messages}-b{payload_bytes}-{durability}"
+        run_path / f"p{producers}c{consumers}-m{messages}-b{payload_bytes}-{durability}"
     )
-    scenario_path.mkdir(parents=True, exist_ok=False)
+    scenario_path.mkdir()
     name = "benchmark"
     ctx = multiprocessing.get_context("spawn")
     output = ctx.Queue()
@@ -306,7 +311,7 @@ def run_multiprocess_scenario(
         and integrity.get("ok", False)
         and all(p.exitcode == 0 for p in ps + cs)
     )
-    return {
+    result = {
         "scenario_id": f"mp-p{producers}-c{consumers}-payload{payload_bytes}-{durability}",
         "operation": "multiprocess_roundtrip",
         "parameters": {
@@ -330,5 +335,26 @@ def run_multiprocess_scenario(
         },
         "correctness": {"ok": ok, "stats": stats, "integrity": integrity},
         "status": "passed" if ok else "failed",
-        "files": {},
+        "files": {
+            "database": {
+                "exists": (scenario_path / "localqueue.db").exists(),
+                "size_bytes": (scenario_path / "localqueue.db").stat().st_size
+                if (scenario_path / "localqueue.db").exists()
+                else None,
+            },
+            "wal": {
+                "exists": (scenario_path / "localqueue.db-wal").exists(),
+                "size_bytes": (scenario_path / "localqueue.db-wal").stat().st_size
+                if (scenario_path / "localqueue.db-wal").exists()
+                else None,
+            },
+            "shm": {
+                "exists": (scenario_path / "localqueue.db-shm").exists(),
+                "size_bytes": (scenario_path / "localqueue.db-shm").stat().st_size
+                if (scenario_path / "localqueue.db-shm").exists()
+                else None,
+            },
+        },
     }
+    shutil.rmtree(run_path, ignore_errors=True)
+    return result

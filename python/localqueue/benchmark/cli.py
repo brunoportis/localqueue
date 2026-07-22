@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 from localqueue.benchmark.config import BenchmarkConfig
@@ -14,6 +16,25 @@ from localqueue.benchmark.multiprocess import run_multiprocess_scenario
 from localqueue.benchmark.profiles import multiprocess_matrix
 from localqueue.benchmark.render import render_file
 from localqueue.benchmark.runner import run_profile
+
+
+def _atomic_json(path: Path, data: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(data, stream, sort_keys=True, allow_nan=False, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -84,10 +105,7 @@ def main(argv: list[str] | None = None) -> int:
                 },
                 "scenarios": scenarios,
             }
-            args.output.write_text(
-                json.dumps(data, sort_keys=True, allow_nan=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
+            _atomic_json(args.output, data)
             report = None
         else:
             report = run_profile(
