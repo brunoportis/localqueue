@@ -1,4 +1,5 @@
 use rusqlite::{params, Connection, ErrorCode, OpenFlags, TransactionBehavior};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -16,12 +17,14 @@ pub struct EnqueueEntry<'a> {
 
 pub struct Storage {
     conn: Mutex<Option<Connection>>,
+    path: PathBuf,
 }
 
 impl Storage {
     pub fn new(path: &str, fsync: bool) -> Result<Self> {
+        let path = stable_database_path(path)?;
         let conn = Connection::open_with_flags(
-            path,
+            &path,
             OpenFlags::SQLITE_OPEN_READ_WRITE
                 | OpenFlags::SQLITE_OPEN_CREATE
                 | OpenFlags::SQLITE_OPEN_URI,
@@ -36,11 +39,16 @@ impl Storage {
 
         Ok(Self {
             conn: Mutex::new(Some(conn)),
+            path,
         })
     }
 
     pub fn connection(&self) -> std::sync::MutexGuard<'_, Option<Connection>> {
         self.conn.lock().expect("mutex poisoned")
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     pub fn close(&self) -> Result<()> {
@@ -120,6 +128,15 @@ impl Storage {
         tx.commit().map_err(QueueError::from)?;
         Ok(ids)
     }
+}
+
+fn stable_database_path(path: &str) -> Result<PathBuf> {
+    // SQLite URI filenames have their own path semantics. The public Python
+    // facade always passes filesystem paths, which are made absolute here.
+    if path.starts_with("file:") {
+        return Ok(PathBuf::from(path));
+    }
+    Ok(std::path::absolute(path)?)
 }
 
 fn enable_wal(conn: &Connection) -> Result<()> {

@@ -25,6 +25,30 @@ class FailedMessage:
     created_at: int
     updated_at: int
 
+class DiagnosticsSnapshot:
+    schema_version: int
+    sqlite_version: str
+    observed_at_ms: int
+    journal_mode: str
+    synchronous: int
+    durability_mode: str
+    busy_timeout_ms: int
+    database_size_bytes: Optional[int]
+    wal_size_bytes: Optional[int]
+    shm_size_bytes: Optional[int]
+    page_count: int
+    page_size: int
+    freelist_count: int
+    ready: int
+    processing: int
+    acked: int
+    failed: int
+    oldest_available_age_ms: Optional[int]
+    oldest_processing_updated_age_ms: Optional[int]
+    active_leases: int
+    expired_leases: int
+    oldest_expired_lease_age_ms: Optional[int]
+
 class NativeQueue:
     def __init__(
         self,
@@ -57,6 +81,7 @@ class NativeQueue:
     def extend_lease(self, id: int, receipt: str, extend_ms: int) -> int: ...
     def reclaim_expired(self, now: Optional[int] = None) -> int: ...
     def stats(self) -> Stats: ...
+    def diagnostics(self) -> DiagnosticsSnapshot: ...
     def purge(self, older_than_ms: int, status: Optional[int] = None) -> int: ...
     def list_failed(self, limit: int = 100, offset: int = 0) -> list[FailedMessage]: ...
     def retry_failed(self, id: int) -> None: ...

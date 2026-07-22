@@ -2,6 +2,7 @@ use pyo3::prelude::*;
 use rusqlite::{params, Connection, TransactionBehavior};
 use std::sync::MutexGuard;
 
+use crate::diagnostics::{collect as collect_diagnostics, DiagnosticsSnapshot};
 use crate::error::QueueError;
 use crate::storage::{now_ms, EnqueueEntry, Storage};
 
@@ -562,6 +563,11 @@ impl NativeQueue {
             }
             Ok(stats)
         })
+    }
+
+    /// Capture a bounded, read-only operational snapshot.
+    pub fn diagnostics(&self, py: Python<'_>) -> PyResult<DiagnosticsSnapshot> {
+        py.detach(move || collect_diagnostics(&self.storage, &self.queue).map_err(Into::into))
     }
 
     /// Return the SQLite pragmas used by the active connection.

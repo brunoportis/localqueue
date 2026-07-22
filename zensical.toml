@@ -10,6 +10,7 @@ nav = [
   {"Home" = "index.md"},
   {"Getting started" = "getting-started.md"},
   {"Delivery guarantees" = "guarantees.md"},
+  {"Runtime diagnostics" = "diagnostics.md"},
   {"Event bus" = "event-bus.md"},
   {"GitHub" = "https://github.com/brunoportis/localqueue"},
 ]
