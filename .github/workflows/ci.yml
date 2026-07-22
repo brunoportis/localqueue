@@ -329,3 +329,68 @@ jobs:
           assert os.environ["GITHUB_WORKSPACE"] not in localqueue.__file__
           assert os.environ["GITHUB_WORKSPACE"] not in native.__file__
           PY
+
+  multiprocess-benchmark:
+    name: Multiprocess benchmark correctness (Linux)
+    needs: [python-quality, rust-quality, python-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+
+      - name: Build and install wheel
+        shell: bash
+        run: |
+          python -m pip install --upgrade "maturin>=1.14,<2"
+          maturin build --release --locked -i python
+          python -m pip install --force-reinstall --no-index target/wheels/*.whl
+
+      - name: Run benchmark and preserve its exit code
+        id: benchmark
+        shell: bash
+        run: |
+          set +e
+          cd "$RUNNER_TEMP"
+          LOCALQUEUE_COMMIT_SHA="$GITHUB_SHA" python -m localqueue.benchmark \
+            --profile multiprocess-ci \
+            --output multiprocess-ci.json
+          benchmark_exit=$?
+          if [[ -f multiprocess-ci.json ]]; then
+            python -m localqueue.benchmark render \
+              multiprocess-ci.json \
+              --output multiprocess-ci.md
+            render_exit=$?
+          else
+            render_exit=0
+          fi
+          echo "benchmark_exit=$benchmark_exit" >> "$GITHUB_OUTPUT"
+          echo "render_exit=$render_exit" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload multiprocess reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: multiprocess-ci-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/multiprocess-ci.json
+            ${{ runner.temp }}/multiprocess-ci.md
+          if-no-files-found: warn
+
+      - name: Enforce benchmark correctness result
+        if: always()
+        shell: bash
+        env:
+          BENCHMARK_EXIT: ${{ steps.benchmark.outputs.benchmark_exit }}
+          RENDER_EXIT: ${{ steps.benchmark.outputs.render_exit }}
+        run: |
+          test "${BENCHMARK_EXIT:-1}" -eq 0
+          test "${RENDER_EXIT:-1}" -eq 0
