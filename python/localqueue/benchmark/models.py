@@ -13,7 +13,7 @@ class ScenarioResult:
     scenario_id: str
     operation: str
     parameters: dict[str, Any]
-    work_units: dict[str, int]
+    work_units: dict[str, Any]
     sqlite: dict[str, Any]
     warmup: dict[str, Any]
     measured_samples_ns: list[int]

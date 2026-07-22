@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -14,6 +15,7 @@ from uuid import UUID
 from localqueue import JsonSerializer, SimpleQueue
 from localqueue.benchmark.config import BenchmarkConfig
 from localqueue.benchmark.environment import environment, subject
+from localqueue.benchmark.errors import BenchmarkExecutionError
 from localqueue.benchmark.metrics import MetricSummary
 from localqueue.benchmark.models import BenchmarkReport, ScenarioResult
 
@@ -55,6 +57,29 @@ def _atomic_write(path: Path, report: BenchmarkReport) -> None:
             os.unlink(temporary)
         except FileNotFoundError:
             pass
+
+
+def _sanitize_error(error: BaseException) -> dict[str, str]:
+    message = str(error).replace("\n", " ")
+    temporary_root = str(Path(tempfile.gettempdir()))
+    message = message.replace(temporary_root, "<temporary-dir>")
+    message = re.sub(r"localqueue-benchmark-[^/\\\s:'\"]+", "<temporary>", message)
+    return {"type": type(error).__name__, "message": message[:500]}
+
+
+def _validate_paths(output: Path | None, workdir: Path | None) -> None:
+    if workdir is not None:
+        if workdir.exists() and not workdir.is_dir():
+            raise ValueError("workdir must be a directory")
+        workdir.mkdir(parents=True, exist_ok=True)
+        if not os.access(workdir, os.W_OK):
+            raise ValueError("workdir is not writable")
+    if output is not None:
+        if output.exists() and output.is_dir():
+            raise ValueError("output must be a file")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        if not os.access(output.parent, os.W_OK):
+            raise ValueError("output parent is not writable")
 
 
 def _scenario(
@@ -230,6 +255,23 @@ def _fanout(
             actual = len(bus.serialize_envelope(event))
             parameters["payload_serialized_bytes"] = actual
             parameters["serializer"] = "localqueue.bus.JsonSerializer"
+            native = bus._native_queue
+            if native is None:
+                raise RuntimeError("event bus closed before metadata collection")
+            diagnostics = native.diagnostics()
+            sqlite = {
+                "journal_mode": diagnostics.journal_mode,
+                "synchronous": diagnostics.synchronous,
+                "synchronous_name": "NORMAL"
+                if diagnostics.synchronous == 1
+                else "FULL"
+                if diagnostics.synchronous == 2
+                else "UNKNOWN",
+                "durability_mode": diagnostics.durability_mode,
+                "busy_timeout_ms": diagnostics.busy_timeout_ms,
+                "page_size": diagnostics.page_size,
+                "sqlite_version": diagnostics.sqlite_version,
+            }
             for index in range(config.warmups):
                 started = time.perf_counter_ns()
                 bus.dispatch(
@@ -281,27 +323,10 @@ def _fanout(
             }
             if not correctness["ok"]:
                 raise RuntimeError("fan-out correctness invariant failed")
-            native = bus._native_queue
-            if native is None:
-                raise RuntimeError("event bus closed before metadata collection")
-            diagnostics = native.diagnostics()
-            sqlite = {
-                "journal_mode": diagnostics.journal_mode,
-                "synchronous": diagnostics.synchronous,
-                "synchronous_name": "NORMAL"
-                if diagnostics.synchronous == 1
-                else "FULL"
-                if diagnostics.synchronous == 2
-                else "UNKNOWN",
-                "durability_mode": diagnostics.durability_mode,
-                "busy_timeout_ms": diagnostics.busy_timeout_ms,
-                "page_size": diagnostics.page_size,
-                "sqlite_version": diagnostics.sqlite_version,
-            }
             summary = MetricSummary.from_samples(
                 samples,
                 elapsed,
-                messages=config.samples * subscriptions,
+                messages=None,
                 dispatches=config.samples,
                 deliveries=config.samples * subscriptions,
             )
@@ -339,11 +364,8 @@ def run_profile(
     if not isinstance(config, BenchmarkConfig):
         raise TypeError("config must be BenchmarkConfig")
     root = Path(workdir) if workdir is not None else None
-    if root is not None:
-        root.mkdir(parents=True, exist_ok=True)
-        if not os.access(root, os.W_OK):
-            raise ValueError("workdir is not writable")
     output_path = Path(output) if output is not None else None
+    _validate_paths(output_path, root)
     subject_metadata = subject()
     if not subject_metadata["package_native_versions_consistent"]:
         raise RuntimeError(
@@ -427,9 +449,16 @@ def run_profile(
                 result = _fanout(config, int(scenario_id.split("-")[1]), root)
             else:
                 raise ValueError(f"unknown scenario: {scenario_id}")
-        except (
-            Exception
-        ) as error:  # report failure without traceback or sensitive paths
+            report = BenchmarkReport(
+                report.subject,
+                report.environment,
+                report.profile,
+                {**report.run, "status": "running"},
+                [*report.scenarios, result],
+            )
+            if output_path:
+                _atomic_write(output_path, report)
+        except Exception as error:
             result = ScenarioResult(
                 scenario_id,
                 scenario_id.split("-")[0],
@@ -441,10 +470,7 @@ def run_profile(
                 None,
                 {"ok": False},
                 "failed",
-                {
-                    "type": type(error).__name__,
-                    "message": str(error).replace("\n", " ")[:500],
-                },
+                _sanitize_error(error),
             )
             report = BenchmarkReport(
                 report.subject,
@@ -454,17 +480,13 @@ def run_profile(
                 [*report.scenarios, result],
             )
             if output_path:
-                _atomic_write(output_path, report)
-            raise
-        report = BenchmarkReport(
-            report.subject,
-            report.environment,
-            report.profile,
-            {**report.run, "status": "running"},
-            [*report.scenarios, result],
-        )
-        if output_path:
-            _atomic_write(output_path, report)
+                try:
+                    _atomic_write(output_path, report)
+                except Exception as write_error:
+                    raise BenchmarkExecutionError(
+                        scenario_id, write_error
+                    ) from write_error
+            raise BenchmarkExecutionError(scenario_id, error) from error
     report = BenchmarkReport(
         report.subject,
         report.environment,

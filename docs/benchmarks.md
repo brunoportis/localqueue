@@ -30,7 +30,9 @@ preloads the queue outside elapsed timing and measures `get_nowait()` plus
 EventBus fan-out measures one committed `dispatch()` per sample. Handlers are
 never run in the measured region. Deliveries/second is dispatches/second times
 the declared subscription count, and final queue counts validate expected
-deliveries.
+deliveries. In fan-out `messages` means dispatched events and equals
+`dispatches`; `deliveries` is a separate work unit. Therefore
+`messages_per_second` is null rather than being overloaded with deliveries.
 
 Warmups use the same functional path and are recorded separately from measured
 samples. Throughput uses one external `perf_counter_ns()` elapsed interval;

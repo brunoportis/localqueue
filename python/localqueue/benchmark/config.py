@@ -16,6 +16,14 @@ def _positive_int(value: int, field: str) -> int:
     return value
 
 
+def _nonnegative_int(value: int, field: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"{field} must be an integer")
+    if value < 0:
+        raise ValueError(f"{field} must be non-negative")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class BenchmarkConfig:
     name: str = "standard"
@@ -31,16 +39,11 @@ class BenchmarkConfig:
     scenario_order: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        _positive_int(self.version, "version")
         _positive_int(self.warmups, "warmups")
         _positive_int(self.samples, "samples")
         _positive_int(self.payload_bytes, "payload_bytes")
-        _positive_int(self.max_retries + 1, "max_retries")
-        if (
-            not isinstance(self.max_retries, int)
-            or isinstance(self.max_retries, bool)
-            or self.max_retries < 0
-        ):
-            raise ValueError("max_retries must be a non-negative integer")
+        _nonnegative_int(self.max_retries, "max_retries")
         if (
             not isinstance(self.lease_seconds, (int, float))
             or isinstance(self.lease_seconds, bool)
@@ -69,6 +72,5 @@ class BenchmarkConfig:
         from localqueue.benchmark.profiles import get_profile
 
         profile = get_profile(name)
-        return cls(
-            **{**asdict(profile), "durability": durability or profile.durability}
-        )
+        effective_durability = profile.durability if durability is None else durability
+        return cls(**{**asdict(profile), "durability": effective_durability})

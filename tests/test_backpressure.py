@@ -399,14 +399,13 @@ def test_short_timeout_caps_sqlite_busy_wait_without_turning_busy_into_full(
     try:
         with pytest.raises(LocalQueueError) as raised:
             queue.put({"blocked-by-writer": True}, timeout=0.08)
+        elapsed = time.monotonic() - started
     finally:
         release.set()
         blocker.join(timeout=2)
         if blocker.is_alive():
             blocker.terminate()
             blocker.join(timeout=2)
-    elapsed = time.monotonic() - started
-
     assert blocker.exitcode == 0
     assert not isinstance(raised.value, Full)
     assert "locked" in str(raised.value) or "busy" in str(raised.value)

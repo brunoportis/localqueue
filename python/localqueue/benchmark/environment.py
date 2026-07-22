@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import subprocess
 import sys
 import time
@@ -11,11 +12,19 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any
 
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+_REPOSITORY_URL = "github.com/brunoportis/localqueue"
 
-def _command(command: list[str]) -> str | None:
+
+def _command(command: list[str], *, cwd: Path | None = None) -> str | None:
     try:
         result = subprocess.run(
-            command, capture_output=True, text=True, timeout=2, check=True
+            command,
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=True,
+            cwd=cwd,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -29,26 +38,70 @@ def package_version() -> str:
         return "development"
 
 
+def _valid_environment_sha() -> str | None:
+    value = os.environ.get("LOCALQUEUE_COMMIT_SHA")
+    return value if value and _SHA_RE.fullmatch(value) else None
+
+
+def _source_checkout(module_path: str | None) -> Path | None:
+    if not module_path:
+        return None
+    module = Path(module_path).resolve()
+    for candidate in (module, *module.parents):
+        pyproject_path = candidate / "pyproject.toml"
+        cargo_path = candidate / "Cargo.toml"
+        if not pyproject_path.is_file() or not cargo_path.is_file():
+            continue
+        pyproject = pyproject_path.read_text(encoding="utf-8", errors="replace")
+        cargo = cargo_path.read_text(encoding="utf-8", errors="replace")
+        if 'name = "localqueue"' not in pyproject or 'name = "localqueue"' not in cargo:
+            continue
+        remote = _command(["git", "-C", str(candidate), "remote", "get-url", "origin"])
+        if remote is None or _REPOSITORY_URL not in remote:
+            continue
+        try:
+            module.relative_to(candidate)
+        except ValueError:
+            continue
+        top_level = _command(
+            ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"]
+        )
+        if top_level != str(candidate):
+            continue
+        return candidate
+    return None
+
+
 def subject() -> dict[str, Any]:
     from localqueue import localqueue as native
 
     package = package_version()
     native_version = getattr(native, "__version__", None)
-    commit = _command(["git", "rev-parse", "HEAD"])
-    dirty = _command(["git", "status", "--porcelain"])
-    origin = (
-        "environment"
-        if os.environ.get("LOCALQUEUE_COMMIT_SHA")
-        else ("git" if commit else "unavailable")
-    )
-    commit = os.environ.get("LOCALQUEUE_COMMIT_SHA") or commit
     module_path = getattr(native, "__file__", None)
+    environment_sha = _valid_environment_sha()
+    checkout = None if environment_sha else _source_checkout(module_path)
+    commit = environment_sha or (
+        _command(["git", "-C", str(checkout), "rev-parse", "HEAD"])
+        if checkout
+        else None
+    )
+    dirty = (
+        _command(["git", "-C", str(checkout), "status", "--porcelain"])
+        if checkout
+        else None
+    )
     return {
         "package_version": package,
         "rust_extension_version": native_version,
         "commit_sha": commit,
-        "commit_source": origin,
-        "dirty_worktree": None if dirty is None and commit is None else bool(dirty),
+        "commit_source": (
+            "environment"
+            if environment_sha
+            else "git"
+            if checkout and commit
+            else "unavailable"
+        ),
+        "dirty_worktree": None if checkout is None else bool(dirty),
         "installed_module_path": module_path,
         "package_native_versions_consistent": native_version == package
         if native_version is not None
