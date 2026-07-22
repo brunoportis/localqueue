@@ -460,6 +460,9 @@ source = { editable = "." }
 
 [package.optional-dependencies]
 benchmark = [
+    { name = "pydantic" },
+]
+benchmark-compare = [
     { name = "persist-queue" },
 ]
 bus = [
@@ -484,8 +487,9 @@ docs = [
 requires-dist = [
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6,<7" },
     { name = "maturin", marker = "extra == 'dev'", specifier = ">=1.14" },
-    { name = "persist-queue", marker = "extra == 'benchmark'", specifier = "==1.1.0" },
+    { name = "persist-queue", marker = "extra == 'benchmark-compare'", specifier = "==1.1.0" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4,<5" },
+    { name = "pydantic", marker = "extra == 'benchmark'", specifier = ">=2,<3" },
     { name = "pydantic", marker = "extra == 'bus'", specifier = ">=2,<3" },
     { name = "pydantic", marker = "extra == 'dev'", specifier = ">=2,<3" },
     { name = "pyrefly", marker = "extra == 'dev'", specifier = ">=1.1,<2" },
@@ -495,7 +499,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15,<1" },
     { name = "zensical", marker = "extra == 'docs'", specifier = ">=0.0.51,<0.1" },
 ]
-provides-extras = ["dev", "docs", "benchmark", "bus"]
+provides-extras = ["dev", "docs", "benchmark", "benchmark-compare", "bus"]
 
 [[package]]
 name = "markdown"

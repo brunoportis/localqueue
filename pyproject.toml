@@ -37,6 +37,9 @@ docs = [
     "zensical>=0.0.51,<0.1",
 ]
 benchmark = [
+    "pydantic>=2,<3",
+]
+benchmark-compare = [
     "persist-queue==1.1.0",
 ]
 bus = [

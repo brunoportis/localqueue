@@ -26,6 +26,7 @@ service.
 
 [Installation](#installation) · [Quick start](#quick-start) ·
 [Worker](#worker) · [Event bus](#event-bus) ·
+[Benchmarks](#benchmarks) ·
 [Guarantees](#delivery-guarantees) ·
 [Backpressure](#bounded-backlog-and-backpressure) ·
 [Diagnostics](#runtime-diagnostics) · [API](#api-overview) ·
@@ -379,6 +380,20 @@ All queue state lives in one SQLite table. Claims and multi-step transitions
 use immediate transactions so concurrent processes cannot reserve the same
 delivery. This is local infrastructure for a shared database on one machine,
 not a distributed message broker.
+
+## Benchmarks
+
+The canonical single-process benchmark is run with the optional benchmark
+extra:
+
+```bash
+uv sync --extra benchmark
+uv run python -m localqueue.benchmark --profile smoke --output smoke.json
+```
+
+See the [benchmark guide](docs/benchmarks.md) for NORMAL/FULL durability and
+report interpretation. Benchmark output is evidence about a particular host,
+filesystem, and run; it is not a product performance promise.
 
 ## Development
 
