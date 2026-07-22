@@ -2,7 +2,23 @@
 
 from __future__ import annotations
 
+import re
+import tempfile
+from pathlib import Path
 from typing import NoReturn
+
+
+def sanitize_error_message(
+    message: str, sensitive_paths: tuple[str | Path, ...] = ()
+) -> str:
+    """Return a short error message without benchmark-specific paths."""
+    sanitized = str(message).replace("\n", " ")
+    paths = [str(Path(path)) for path in sensitive_paths]
+    paths.append(str(Path(tempfile.gettempdir())))
+    for path in sorted(set(paths), key=len, reverse=True):
+        sanitized = sanitized.replace(path, "<path>")
+    sanitized = re.sub(r"localqueue-benchmark-[^/\\\s:'\"]+", "<temporary>", sanitized)
+    return sanitized[:500]
 
 
 class BenchmarkExecutionError(RuntimeError):
@@ -16,7 +32,8 @@ class BenchmarkExecutionError(RuntimeError):
         self.scenario_id = scenario_id
         self.cause = cause
         super().__init__(
-            f"scenario {scenario_id!r} failed: {type(cause).__name__}: {cause}"
+            f"scenario {scenario_id!r} failed: {type(cause).__name__}: "
+            f"{sanitize_error_message(str(cause))}"
         )
 
 

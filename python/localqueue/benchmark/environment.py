@@ -11,9 +11,10 @@ import time
 from importlib import metadata
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
-_REPOSITORY_URL = "github.com/brunoportis/localqueue"
+_REPOSITORY_PATH = "brunoportis/localqueue"
 
 
 def _command(command: list[str], *, cwd: Path | None = None) -> str | None:
@@ -43,6 +44,27 @@ def _valid_environment_sha() -> str | None:
     return value if value and _SHA_RE.fullmatch(value) else None
 
 
+def _normalize_remote(remote: str) -> str | None:
+    """Normalize only the supported canonical GitHub origins."""
+    value = remote.strip()
+    path: str | None = None
+    if value.startswith("git@github.com:"):
+        path = value.removeprefix("git@github.com:")
+    elif value.startswith(("https://", "ssh://")):
+        parsed = urlsplit(value)
+        if parsed.query or parsed.fragment or parsed.path.endswith("/"):
+            return None
+        if parsed.scheme == "https" and parsed.netloc == "github.com":
+            path = parsed.path.removeprefix("/")
+        elif parsed.scheme == "ssh" and parsed.netloc == "git@github.com":
+            path = parsed.path.removeprefix("/")
+    if path is None:
+        return None
+    if path.endswith(".git"):
+        path = path[:-4]
+    return path if path == _REPOSITORY_PATH else None
+
+
 def _source_checkout(module_path: str | None) -> Path | None:
     if not module_path:
         return None
@@ -57,7 +79,7 @@ def _source_checkout(module_path: str | None) -> Path | None:
         if 'name = "localqueue"' not in pyproject or 'name = "localqueue"' not in cargo:
             continue
         remote = _command(["git", "-C", str(candidate), "remote", "get-url", "origin"])
-        if remote is None or _REPOSITORY_URL not in remote:
+        if remote is None or _normalize_remote(remote) != _REPOSITORY_PATH:
             continue
         try:
             module.relative_to(candidate)

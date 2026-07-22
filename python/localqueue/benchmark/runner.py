@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -15,7 +14,7 @@ from uuid import UUID
 from localqueue import JsonSerializer, SimpleQueue
 from localqueue.benchmark.config import BenchmarkConfig
 from localqueue.benchmark.environment import environment, subject
-from localqueue.benchmark.errors import BenchmarkExecutionError
+from localqueue.benchmark.errors import BenchmarkExecutionError, sanitize_error_message
 from localqueue.benchmark.metrics import MetricSummary
 from localqueue.benchmark.models import BenchmarkReport, ScenarioResult
 
@@ -59,12 +58,13 @@ def _atomic_write(path: Path, report: BenchmarkReport) -> None:
             pass
 
 
-def _sanitize_error(error: BaseException) -> dict[str, str]:
-    message = str(error).replace("\n", " ")
-    temporary_root = str(Path(tempfile.gettempdir()))
-    message = message.replace(temporary_root, "<temporary-dir>")
-    message = re.sub(r"localqueue-benchmark-[^/\\\s:'\"]+", "<temporary>", message)
-    return {"type": type(error).__name__, "message": message[:500]}
+def _sanitize_error(
+    error: BaseException, sensitive_paths: tuple[str | Path, ...] = ()
+) -> dict[str, str]:
+    return {
+        "type": type(error).__name__,
+        "message": sanitize_error_message(str(error), sensitive_paths),
+    }
 
 
 def _validate_paths(output: Path | None, workdir: Path | None) -> None:
@@ -470,7 +470,18 @@ def run_profile(
                 None,
                 {"ok": False},
                 "failed",
-                _sanitize_error(error),
+                _sanitize_error(
+                    error,
+                    tuple(
+                        path
+                        for path in (
+                            root,
+                            output_path,
+                            output_path.parent if output_path else None,
+                        )
+                        if path is not None
+                    ),
+                ),
             )
             report = BenchmarkReport(
                 report.subject,
@@ -495,5 +506,8 @@ def run_profile(
         report.scenarios,
     )
     if output_path:
-        _atomic_write(output_path, report)
+        try:
+            _atomic_write(output_path, report)
+        except Exception as error:
+            raise BenchmarkExecutionError("report-finalize", error) from error
     return report

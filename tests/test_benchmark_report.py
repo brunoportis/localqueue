@@ -231,6 +231,70 @@ def test_report_write_failure_during_execution_is_not_usage_error(
     assert isinstance(raised.value.__cause__, OSError)
 
 
+def test_final_report_write_failure_is_execution_error_and_preserves_last_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "final.json"
+    real_write = benchmark_runner._atomic_write
+    calls = 0
+
+    def fail_only_final(path: Path, report: BenchmarkReport) -> None:
+        nonlocal calls
+        calls += 1
+        if report.run["status"] == "passed":
+            raise OSError(f"cannot write {path}")
+        real_write(path, report)
+
+    monkeypatch.setattr(benchmark_runner, "_atomic_write", fail_only_final)
+    config = BenchmarkConfig(samples=1, warmups=1, scenario_order=("put",))
+    with pytest.raises(BenchmarkExecutionError) as raised:
+        run_profile(config, output=output, workdir=tmp_path)
+    assert calls == 3
+    assert isinstance(raised.value.__cause__, OSError)
+    assert json.loads(output.read_text(encoding="utf-8"))["run"]["status"] == "running"
+    assert not list(tmp_path.glob(".final.json.*.tmp"))
+
+
+def test_cli_final_report_write_failure_is_exit_one_without_traceback(
+    tmp_path: Path,
+) -> None:
+    sitecustomize = tmp_path / "sitecustomize.py"
+    sitecustomize.write_text(
+        "import localqueue.benchmark.runner as runner\n"
+        "real_write = runner._atomic_write\n"
+        "def fail_only_final(path, report):\n"
+        "    if report.run['status'] == 'passed':\n"
+        "        raise OSError(f'cannot write {path}')\n"
+        "    return real_write(path, report)\n"
+        "runner._atomic_write = fail_only_final\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "custom" / "output" / "report.json"
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(tmp_path) + os.pathsep + env.get("PYTHONPATH", "")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "localqueue.benchmark",
+            "--profile",
+            "smoke",
+            "--output",
+            str(output),
+            "--workdir",
+            str(tmp_path / "work dir"),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    assert str(output) not in result.stderr
+    assert json.loads(output.read_text(encoding="utf-8"))["run"]["status"] == "running"
+
+
 def test_package_native_mismatch_refuses_to_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -408,6 +472,35 @@ def test_checkout_with_localqueue_name_but_wrong_remote_is_rejected(
         benchmark_environment._source_checkout(str(package_dir / "localqueue.so"))
         is None
     )
+
+
+@pytest.mark.parametrize(
+    "remote",
+    [
+        "https://github.com/brunoportis/localqueue",
+        "https://github.com/brunoportis/localqueue.git",
+        "git@github.com:brunoportis/localqueue.git",
+        "ssh://git@github.com/brunoportis/localqueue.git",
+    ],
+)
+def test_normalize_remote_accepts_only_supported_canonical_origins(remote: str) -> None:
+    assert benchmark_environment._normalize_remote(remote) == "brunoportis/localqueue"
+
+
+@pytest.mark.parametrize(
+    "remote",
+    [
+        "https://github.com/brunoportis/localqueue-malicious.git",
+        "https://github.com/brunoportis/localqueue/fork.git",
+        "https://evil.example/github.com/brunoportis/localqueue.git",
+        "https://github.com/other/localqueue.git",
+        "https://github.com/brunoportis/localqueue.git?redirect=evil",
+    ],
+)
+def test_normalize_remote_rejects_prefix_collisions_and_other_origins(
+    remote: str,
+) -> None:
+    assert benchmark_environment._normalize_remote(remote) is None
 
 
 def test_subject_is_unavailable_when_git_is_absent(

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import argparse
 import sys
-import tempfile
 from pathlib import Path
 
 from localqueue.benchmark.config import BenchmarkConfig
+from localqueue.benchmark.errors import sanitize_error_message
 from localqueue.benchmark.runner import run_profile
 
 
@@ -32,7 +32,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     except RuntimeError as error:
-        message = str(error).replace(str(tempfile.gettempdir()), "<temporary-dir>")
+        message = sanitize_error_message(
+            str(error),
+            tuple(
+                path
+                for path in (args.workdir, args.output, args.output.parent)
+                if path is not None
+            ),
+        )
         print(f"benchmark failed: {type(error).__name__}: {message}", file=sys.stderr)
         return 1
     profile = report.profile
