@@ -194,11 +194,21 @@ class EventBus:
         """Serialize the persistent envelope once per dispatch."""
         envelope = {
             "event_id": str(event.event_id),
+            "correlation_id": str(event.correlation_id),
+            "causation_id": (
+                None if event.causation_id is None else str(event.causation_id)
+            ),
             "event_type": event.event_type,
             "event_schema": event.event_schema,
             "event_created_at": event.event_created_at.isoformat(),
             "payload": event.model_dump(
-                mode="json", exclude={"event_id", "event_created_at"}
+                mode="json",
+                exclude={
+                    "event_id",
+                    "correlation_id",
+                    "causation_id",
+                    "event_created_at",
+                },
             ),
         }
         serializer = self.serializer or JsonSerializer()

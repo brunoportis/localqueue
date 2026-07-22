@@ -7,7 +7,6 @@ import contextlib
 import inspect
 import logging
 from typing import TYPE_CHECKING, Any, Optional
-from uuid import UUID
 
 from pydantic import ValidationError
 
@@ -112,11 +111,15 @@ async def _process_delivery(
         return
 
     try:
-        event = cls(
-            event_id=UUID(envelope["event_id"]),
-            event_created_at=envelope["event_created_at"],
+        event_data = {
             **envelope["payload"],
-        )
+            "event_id": envelope["event_id"],
+            "event_created_at": envelope["event_created_at"],
+        }
+        for field in ("correlation_id", "causation_id"):
+            if field in envelope:
+                event_data[field] = envelope[field]
+        event = cls(**event_data)
     except (ValidationError, KeyError, TypeError, ValueError) as exc:
         # An invalid payload is a permanent failure; retrying cannot fix it.
         await _transition(
