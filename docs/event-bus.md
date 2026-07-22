@@ -232,6 +232,52 @@ acked; transient exceptions are retried up to `max_retries`; exceptions listed
 in `permanent_errors`, unknown event types, and invalid payloads go directly to
 dead letter.
 
+## Async handler timeouts
+
+Set a positive, finite timeout in seconds on an individual `async def` handler:
+
+```python
+@email.handler(UserCreated, timeout=30.0)
+async def send_welcome_email(event: UserCreated) -> None:
+    await email_provider.send(event.user_id)
+```
+
+The timer is local, in-memory handler configuration. It is neither persisted
+nor shared with other processes, and it does not change subscription
+concurrency, the delivery envelope, topology, or any other handler.
+
+For every timed handler, EventBus creates a handler task and a timer task, then
+waits for the first to finish. A completed handler wins a simultaneous finish.
+If the timer wins, the deadline is recorded explicitly, the handler task is
+cancelled, and EventBus awaits any cooperative cleanup before proceeding. A
+handler that suppresses `CancelledError` and returns is still a timeout.
+Likewise, a cleanup exception is observed and logged without replacing the
+timeout result or creating another transition.
+
+An internal timeout NACKs the delivery with a `last_error` beginning `handler
+timeout after ... seconds`; normal retry and dead-letter policy then applies.
+This is distinct from a handler-raised `TimeoutError`: that is an ordinary
+handler exception, so it follows `permanent_errors` when configured or the
+normal transient NACK path otherwise.
+
+The heartbeat remains active through cooperative cleanup. After cleanup,
+EventBus cancels and awaits the heartbeat, checks for lease loss, and only then
+NACKs the internal timeout when the lease remains valid. A registered
+`permanent_errors` exception raised before the deadline is still a permanent
+failure.
+
+External cancellation of `run()` or `run_subscription()` takes precedence over
+the handler timeout and is propagated as `CancelledError`, without being
+reported as a timeout, including while a timed-out handler is performing
+cooperative cleanup. Lease loss takes precedence over a successful handler
+result: EventBus never ACKs a result after it knows the lease is lost, and the
+receipt-fenced queue transition also rejects any lease lost concurrently.
+
+Timeouts intentionally do not apply to synchronous handlers. Registering a
+timeout for a non-`async def` handler raises `TypeError`; Python cannot safely
+stop arbitrary code running in a thread. Use a process-isolated worker if hard
+execution limits are required.
+
 ## Per-subscription concurrency
 
 Each process can bound simultaneous deliveries for a subscription when creating

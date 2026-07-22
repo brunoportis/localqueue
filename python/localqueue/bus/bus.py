@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -40,6 +42,14 @@ class DispatchReceipt:
 class _HandlerRegistration:
     handler: Callable[[Any], Any]
     permanent_errors: tuple[type[BaseException], ...]
+    timeout: float | None
+
+
+def _is_async_callable(handler: Callable[[Any], Any]) -> bool:
+    """Return whether ``handler`` can be invoked as an async callable."""
+    return inspect.iscoroutinefunction(handler) or inspect.iscoroutinefunction(
+        getattr(handler, "__call__", None)
+    )
 
 
 class EventBus:
@@ -119,12 +129,14 @@ class EventBus:
         *,
         subscription: str,
         permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
     ) -> Callable[[Any], Any]:
         """Register a handler through a declared subscription."""
         return self.subscription(subscription).handler(
             pattern,
             handler,
             permanent_errors=permanent_errors,
+            timeout=timeout,
         )
 
     def subscription(
@@ -175,6 +187,7 @@ class EventBus:
         handler: Optional[Callable[[Any], Any]] = None,
         *,
         permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
     ) -> Callable[[Any], Any]:
         """Register a process-local handler without changing bus topology."""
         if not self.topology.has_subscription(subscription):
@@ -193,10 +206,17 @@ class EventBus:
             raise TypeError(
                 "'permanent_errors' must be a tuple or list of exception classes"
             )
+        if timeout is not None:
+            if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+                raise TypeError("'timeout' must be a positive number or None")
+            if not math.isfinite(timeout) or timeout <= 0:
+                raise ValueError("'timeout' must be a positive finite number")
 
         def decorator(fn: Callable[[Any], Any]) -> Callable[[Any], Any]:
             if not callable(fn):
                 raise TypeError("'handler' must be callable")
+            if timeout is not None and not _is_async_callable(fn):
+                raise TypeError("'timeout' is only supported for async handlers")
             combo = (subscription, key)
             if combo in self._handlers:
                 raise ValueError(
@@ -205,7 +225,9 @@ class EventBus:
             if isinstance(pattern, type) and issubclass(pattern, BaseEvent):
                 self.registry.register(pattern)
             self._handlers[combo] = _HandlerRegistration(
-                handler=fn, permanent_errors=tuple(permanent_errors)
+                handler=fn,
+                permanent_errors=tuple(permanent_errors),
+                timeout=float(timeout) if timeout is not None else None,
             )
             return fn
 

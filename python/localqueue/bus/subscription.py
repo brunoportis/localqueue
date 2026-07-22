@@ -28,6 +28,7 @@ class Subscription:
         handler: Callable[[Any], Any] | None = None,
         *,
         permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
     ) -> Callable[[Any], Any]:
         """Register a direct handler or return a handler decorator."""
         return self._bus._register_handler(
@@ -35,4 +36,5 @@ class Subscription:
             pattern,
             handler,
             permanent_errors=permanent_errors,
+            timeout=timeout,
         )
