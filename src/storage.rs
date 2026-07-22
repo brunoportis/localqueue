@@ -1,4 +1,5 @@
 use rusqlite::{params, Connection, ErrorCode, OpenFlags, TransactionBehavior};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -16,6 +17,7 @@ pub struct EnqueueEntry<'a> {
 
 pub struct Storage {
     conn: Mutex<Option<Connection>>,
+    path: PathBuf,
 }
 
 impl Storage {
@@ -36,11 +38,16 @@ impl Storage {
 
         Ok(Self {
             conn: Mutex::new(Some(conn)),
+            path: PathBuf::from(path),
         })
     }
 
     pub fn connection(&self) -> std::sync::MutexGuard<'_, Option<Connection>> {
         self.conn.lock().expect("mutex poisoned")
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     pub fn close(&self) -> Result<()> {

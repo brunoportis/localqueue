@@ -1,3 +1,4 @@
+mod diagnostics;
 mod error;
 #[cfg(feature = "__crash_test")]
 mod failpoints;
@@ -7,6 +8,7 @@ mod storage;
 
 use pyo3::prelude::*;
 
+use diagnostics::DiagnosticsSnapshot;
 use error::{Empty, LeaseExpired, LocalQueueError};
 use queue::{FailedMessage, Lease, NativeQueue, Stats};
 
@@ -17,6 +19,7 @@ fn localqueue(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Lease>()?;
     m.add_class::<Stats>()?;
     m.add_class::<FailedMessage>()?;
+    m.add_class::<DiagnosticsSnapshot>()?;
     m.add("LocalQueueError", _py.get_type::<LocalQueueError>())?;
     m.add("Empty", _py.get_type::<Empty>())?;
     m.add("LeaseExpired", _py.get_type::<LeaseExpired>())?;
