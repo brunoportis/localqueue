@@ -6,6 +6,16 @@ The canonical command is:
 uv run python stress/run_chaos.py --profile ci --output chaos-report.json
 ```
 
+To preserve all child logs, databases, and WAL/SHM snapshots in a stable
+location, use:
+
+```bash
+uv run python stress/run_chaos.py \
+  --profile ci \
+  --output artifacts/chaos-report.json \
+  --artifacts-dir artifacts/scenarios
+```
+
 Use `--scenario NAME` to run one entry from the versioned catalog. The `ci`
 profile runs ten isolated scenarios; `smoke` runs a short subset. The command
 does not rely on the current working directory and always attempts to write a
@@ -13,8 +23,13 @@ JSON report. A non-zero exit means that the report is not fully passing.
 
 ## Evidence and limits
 
-The campaign tests SQLite behavior with real temporary databases. Disk-full is
-an SQLite page limit, not an attempt to fill the runner. Read-only uses actual
+The campaign creates canonical databases and performs product operations through
+`SimpleQueue`; direct SQL is limited to inducing conditions, locks, PRAGMAs,
+integrity/evidence inspection, and the internal backup fixture. Disk-full uses
+an SQLite connection-local page limit applied by a `__crash_test`-only native
+hook, not an attempt to fill the runner. The hook exists because
+`max_page_count` set by an external connection does not constrain the product's
+separate connection. Read-only uses actual
 POSIX permissions and is skipped with a reason when the runner cannot enforce
 them (for example, root). Lock contention uses a separate SQLite connection
 and a configured `busy_timeout`; it does not infer lock ownership from sleep.
@@ -47,6 +62,7 @@ PIDs, and absolute paths are intentionally not used for comparisons. A skip
 always contains a reason, and a missing or failed scenario makes `passed`
 false.
 
-The scheduled Linux workflow builds a separate `__crash_test` extension and
-preserves the report with `if: always()`. The normal extension is checked first
-to ensure test-only failpoint hooks are absent from ordinary builds.
+The scheduled and campaign-path pull-request Linux workflow builds a separate
+`__crash_test` extension and preserves the report plus scenario directory with
+`if: always()`. The normal extension is checked first to ensure test-only hooks
+are absent from ordinary builds.

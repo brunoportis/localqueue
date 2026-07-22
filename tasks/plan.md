@@ -1,40 +1,5 @@
 # Plano de evolução: documentação, qualidade, CI e releases
 
-## Plano de implementação #19 — campanha operacional SQLite
-
-### Fases
-
-1. Infraestrutura: modelo/schema, normalização de erros, subprocessos com
-   timeout/cleanup e CLI independente do cwd.
-2. Cenários SQLite: disk-full lógico, read-only, lock timeout, WAL, corrupção,
-   NORMAL/FULL, produtor/manutenção e fixture interna de backup/restore.
-3. Testes: contrato do relatório, seleção/profile, timeouts, execução fora da
-   raiz e invariantes com SQLite real.
-4. Documentação e CI Linux semanal, com build separado `__crash_test`, wheel
-   normal isolado e artefatos preservados.
-5. Revisão, validação completa local, push e draft PR único para #19.
-
-### Critérios de aceite
-
-- CLI canônica exige `--profile` e `--output`, seleciona cenários conhecidos e
-  sempre tenta persistir um relatório versionado.
-- Os dez cenários obrigatórios existem e são selecionáveis; skips têm motivo.
-- Resultados distinguem confirmação ao chamador, erro original, contagens,
-  pragmas, integridade, retry e limitações.
-- Filhos têm timeout defensivo e cleanup em todos os caminhos de falha.
-- CI Linux agendado preserva relatório e diagnósticos com `if: always()`.
-- Biblioteca normal, wheels e matriz multiplataforma não recebem hooks de
-  teste.
-
-### Riscos
-
-| Risco | Mitigação |
-| --- | --- |
-| SQLite/FS varia por runner | invariantes explícitas, erros normalizados e skip honesto |
-| campanha longa ou travada | timeout por subprocesso e global, cleanup e perfil CI |
-| filesystem read-only sob permissões do runner | detectar incapacidade e registrar skip, nunca sucesso falso |
-| failpoints não compilarem no wheel | job separado e teste de isolamento do wheel normal |
-
 Status: **implementado em `main`; publicação `v1.1.1` concluída**
 
 Data do baseline: 2026-07-21

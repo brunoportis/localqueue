@@ -1,13 +1,5 @@
 # Checklist de execução
 
-## Issue #19 — campanha operacional SQLite
-
-- [ ] Infraestrutura de modelo, relatório, subprocessos e CLI
-- [ ] Dez cenários obrigatórios e seleção individual
-- [ ] Testes de contrato, falhas e execução fora da raiz
-- [ ] Documentação interna e workflow Linux semanal
-- [ ] Validação local completa, Actions e draft PR
-
 Este checklist acompanha `tasks/plan.md`. Estado atual: **implementação e
 publicação `v1.1.1` concluídas; aguardando propagação externa de Pages e
 configuração do token Codecov**.
