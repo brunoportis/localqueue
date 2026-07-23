@@ -111,8 +111,9 @@ jobs:
           update-environment: false
 
       - name: Validate explicit CPython interpreter paths
+        shell: pwsh
         run: >-
-          "${{ steps.cp314.outputs.python-path }}" scripts/validate_cpython_paths.py
+          & "${{ steps.cp314.outputs.python-path }}" scripts/validate_cpython_paths.py
           --interpreter "cp310=${{ steps.cp310.outputs.python-path }}"
           --interpreter "cp311=${{ steps.cp311.outputs.python-path }}"
           --interpreter "cp312=${{ steps.cp312.outputs.python-path }}"

@@ -95,9 +95,11 @@ def test_release_artifact_commands_have_explicit_packaging_bootstrap() -> None:
         assert f"steps.{tag}.outputs.python-path" in candidate
         assert f"id: {tag}" in candidate
     assert "validate_cpython_paths.py" in candidate
+    assert "shell: pwsh" in candidate
     assert "Explicit CPython paths (${{ matrix.os }})" in ci
     assert "macos-15-intel" in ci and "windows-latest" in ci
     assert "validate_cpython_paths.py" in ci
+    assert "shell: pwsh" in ci
     assert candidate.index("wheel-job-diagnostics") < candidate.index(
         "validate-wheel-job"
     )
