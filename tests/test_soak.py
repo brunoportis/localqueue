@@ -80,8 +80,9 @@ def soak_args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
         "transition_delay_seconds": 0.0,
         "sqlite_retry_initial_delay": 0.01,
         "sqlite_retry_max_delay": 0.1,
-        "sqlite_retry_attempts": 8,
+        "sqlite_retry_attempts": 2,
         "sqlite_native_call_budget": 5.0,
+        "sqlite_contention_mode": None,
         "path": tmp_path / "database",
         "output": None,
         "markdown_output": None,
@@ -216,6 +217,7 @@ def test_supervisor_failure_always_writes_reports(
         sqlite_retry_max_delay=0.1,
         sqlite_retry_attempts=8,
         sqlite_native_call_budget=5.0,
+        sqlite_contention_mode=None,
         path=tmp_path / "database",
         output=output,
         markdown_output=markdown,
@@ -292,7 +294,7 @@ def test_many_spawn_consumers_preserve_operation_counters(tmp_path: Path) -> Non
     result = run_soak.execute(
         soak_args(
             tmp_path,
-            messages=180,
+            messages=1_000,
             producers=4,
             consumers=8,
             seed=456,
@@ -579,3 +581,47 @@ def test_busy_retry_exhaustion_is_reported_with_operation_and_attempts() -> None
     assert event["message"] == "database is locked"
     assert event["elapsed_seconds"] >= 0
     assert event["backoff_seconds"] == 0
+
+
+def test_spawn_busy_success_writes_a_passed_report(tmp_path: Path) -> None:
+    result = run_soak.execute(
+        soak_args(
+            tmp_path,
+            messages=1,
+            producers=1,
+            consumers=1,
+            sqlite_contention_mode="get-success",
+        )
+    )
+
+    assert result["status"] == "passed"
+    assert result["counters"]["sqlite_busy_get"] == 1
+    assert result["counters"]["sqlite_busy_retries_total"] == 1
+    assert result["counters"]["sqlite_busy_exhausted"] == 0
+
+
+def test_spawn_busy_exhaustion_reaches_json_markdown_and_exit(tmp_path: Path) -> None:
+    output = tmp_path / "exhausted.json"
+    markdown = tmp_path / "exhausted.md"
+    result = run_soak.execute(
+        soak_args(
+            tmp_path,
+            messages=1,
+            producers=1,
+            consumers=1,
+            sqlite_contention_mode="get-exhausted",
+            output=output,
+            markdown_output=markdown,
+        )
+    )
+
+    assert result["status"] == "failed"
+    assert "sqlite contention exhausted:" in str(result["failure_reason"])
+    diagnostic = result["sqlite_contention_diagnostics"][0]
+    assert diagnostic["operation"] == "get"
+    assert diagnostic["attempts"] == diagnostic["calls"] == 2
+    assert diagnostic["elapsed_seconds"] >= 0
+    assert diagnostic["message"] == "database is locked"
+    assert result["exits"][1]["exit_code"] != 0
+    assert output.is_file() and markdown.is_file()
+    assert "database is locked" in markdown.read_text(encoding="utf-8")

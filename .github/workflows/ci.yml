@@ -337,6 +337,51 @@ jobs:
             and .counters.unexpected_consumer_exits == 0
           ' lease-loss-report.json
 
+      - name: Prove deterministic SQLite busy retry succeeds
+        if: matrix.name == 'linux-x86_64'
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          python "$GITHUB_WORKSPACE/stress/run_soak.py" \
+            --messages 1 --duration 30 --producers 1 --consumers 1 \
+            --nack-rate 0 --fail-rate 0 --crash-rate 0 --lease-seconds 5 \
+            --sqlite-contention-mode get-success \
+            --output sqlite-busy-success.json --markdown-output sqlite-busy-success.md
+          jq -e '
+            .status == "passed"
+            and (.counters.sqlite_busy_get > 0 or .counters.sqlite_busy_ack > 0)
+            and .counters.sqlite_busy_retries_total > 0
+            and .counters.sqlite_busy_exhausted == 0
+            and .counters.unexpected_consumer_exits == 0
+          ' sqlite-busy-success.json
+
+      - name: Prove deterministic SQLite busy exhaustion reports failure
+        if: matrix.name == 'linux-x86_64'
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          set +e
+          python "$GITHUB_WORKSPACE/stress/run_soak.py" \
+            --messages 1 --duration 30 --producers 1 --consumers 1 \
+            --nack-rate 0 --fail-rate 0 --crash-rate 0 --lease-seconds 5 \
+            --sqlite-contention-mode get-exhausted \
+            --output sqlite-busy-exhausted.json --markdown-output sqlite-busy-exhausted.md
+          soak_exit=$?
+          set -e
+          test "$soak_exit" -ne 0
+          jq -e '
+            .status == "failed"
+            and .counters.sqlite_busy_exhausted == 1
+            and .sqlite_contention_diagnostics[0].consumer_id == 0
+            and .sqlite_contention_diagnostics[0].operation == "get"
+            and .sqlite_contention_diagnostics[0].attempts > 0
+            and .sqlite_contention_diagnostics[0].calls > 0
+            and .sqlite_contention_diagnostics[0].elapsed_seconds >= 0
+            and .sqlite_contention_diagnostics[0].message == "database is locked"
+            and ([.exits[] | select(.sqlite_contention != null) | .exit_code != 0] | all)
+          ' sqlite-busy-exhausted.json
+          grep -q 'database is locked' sqlite-busy-exhausted.md
+
       - name: Upload CPython 3.13 soak reports
         if: always() && matrix.name == 'linux-x86_64'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -347,6 +392,10 @@ jobs:
             ${{ runner.temp }}/stress-report.md
             ${{ runner.temp }}/lease-loss-report.json
             ${{ runner.temp }}/lease-loss-report.md
+            ${{ runner.temp }}/sqlite-busy-success.json
+            ${{ runner.temp }}/sqlite-busy-success.md
+            ${{ runner.temp }}/sqlite-busy-exhausted.json
+            ${{ runner.temp }}/sqlite-busy-exhausted.md
           if-no-files-found: error
           retention-days: 30
 

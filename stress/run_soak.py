@@ -84,7 +84,8 @@ def diagnostic_event(
         event = {"kind": kind, "consumer_id": consumer_id, **details}
         send = getattr(events, "send", None)
         if callable(send):
-            send(event)
+            if kind == "sqlite_busy_exhausted":
+                send(event)
         else:
             events.put(event)
 
@@ -249,17 +250,28 @@ def consume(
     transition_delay_seconds: float = 0.0,
     deadline: float | None = None,
     retry_policy: SQLiteRetryPolicy = DEFAULT_SQLITE_RETRY_POLICY,
+    sqlite_contention_mode: str | None = None,
 ) -> None:
     queue = SimpleQueue(
         path, name=queue_name, lease_seconds=lease_seconds, max_retries=3
     )
     rng = random.Random(seed)
+    injected_get_calls = 0
+
+    def get_job() -> Any:
+        nonlocal injected_get_calls
+        if sqlite_contention_mode is not None:
+            injected_get_calls += 1
+            if sqlite_contention_mode == "get-exhausted" or injected_get_calls == 1:
+                raise LocalQueueError("database is locked")
+        return queue.get(block=False)
+
     try:
         while not stop.is_set():
             try:
                 job = retry_transient_sqlite_contention(
                     "get",
-                    lambda: queue.get(block=False),
+                    get_job,
                     stop=stop,
                     deadline=deadline,
                     policy=retry_policy,
@@ -512,7 +524,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         path.mkdir(parents=True, exist_ok=True)
 
     stop = context.Event()
-    diagnostics_recv, diagnostics_send = context.Pipe(duplex=False)
+    diagnostic_receivers: list[Any] = []
     retry_policy = SQLiteRetryPolicy(
         args.sqlite_retry_initial_delay,
         args.sqlite_retry_max_delay,
@@ -534,8 +546,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     diagnostics: list[dict[str, object]] = []
 
     def collect_diagnostics() -> None:
-        while diagnostics_recv.poll():
-            diagnostics.append(diagnostics_recv.recv())
+        for receiver in diagnostic_receivers:
+            while receiver.poll():
+                try:
+                    diagnostics.append(receiver.recv())
+                except EOFError:
+                    break
 
     def record_exit(
         role: str, identity: int, process: mp.Process, classification: str
@@ -558,6 +574,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         exits.append(item)
 
     def start_consumer(consumer_id: int, restart: int = 0) -> mp.Process:
+        diagnostics_recv, diagnostics_send = context.Pipe(duplex=False)
         process = context.Process(
             target=consume,
             args=(
@@ -575,10 +592,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 args.transition_delay_seconds,
                 started_at + args.duration,
                 retry_policy,
+                args.sqlite_contention_mode,
             ),
             name=f"localqueue-consumer-{consumer_id}-{restart}",
         )
         process.start()
+        diagnostics_send.close()
+        diagnostic_receivers.append(diagnostics_recv)
         return process
 
     try:
@@ -703,6 +723,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             queue.close()
 
     collect_diagnostics()
+    for receiver in diagnostic_receivers:
+        receiver.close()
 
     try:
         state = database_state(path, queue_name)
@@ -818,6 +840,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         "sqlite_retry_max_delay": args.sqlite_retry_max_delay,
         "sqlite_retry_attempts": args.sqlite_retry_attempts,
         "sqlite_native_call_budget": args.sqlite_native_call_budget,
+        "sqlite_contention_mode": args.sqlite_contention_mode,
         "seed": args.seed,
     }
     result["summary"] = {
@@ -831,6 +854,22 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
             "sqlite_busy_exhausted",
         )
     }
+    diagnostics = result.get("sqlite_contention_diagnostics", [])
+    if diagnostics:
+        diagnostic = diagnostics[0]
+        result["summary"].update(
+            {
+                f"sqlite_contention_{name}": diagnostic[name]
+                for name in (
+                    "consumer_id",
+                    "operation",
+                    "attempts",
+                    "calls",
+                    "elapsed_seconds",
+                    "message",
+                )
+            }
+        )
     result["status"] = "passed" if result["success"] else "failed"
     rendered = json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     if args.output:
@@ -863,6 +902,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sqlite-retry-max-delay", type=float, default=0.1)
     parser.add_argument("--sqlite-retry-attempts", type=int, default=2)
     parser.add_argument("--sqlite-native-call-budget", type=float, default=5.0)
+    parser.add_argument(
+        "--sqlite-contention-mode",
+        choices=("get-success", "get-exhausted"),
+    )
     parser.add_argument("--path", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--markdown-output", type=Path)
