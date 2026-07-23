@@ -133,6 +133,36 @@ def test_release_artifact_commands_have_explicit_packaging_bootstrap() -> None:
     assert promotion_bootstrap < promotion_validation
 
 
+def test_candidate_wheel_benchmarks_install_extra_and_run_outside_checkout() -> None:
+    candidate = (ROOT / ".github/workflows/release-candidate.yml").read_text(
+        encoding="utf-8"
+    )
+    benchmarks = candidate.split("  release-benchmarks:", 1)[1].split(
+        "\n  documentation:", 1
+    )[0]
+
+    assert 'python -m pip install --upgrade "pydantic>=2,<3"' in benchmarks
+    assert '--force-reinstall --no-index --no-deps "$candidate_wheel"' in benchmarks
+    assert benchmarks.index('"pydantic>=2,<3"') < benchmarks.index(
+        "--force-reinstall --no-index --no-deps"
+    )
+    assert "import importlib.metadata" in benchmarks
+    assert "candidate wheel metadata validation failed" in benchmarks
+    assert "Provides-Extra" in benchmarks
+    assert "pydantic>=2,<3" in benchmarks
+    assert 'cd "$RUNNER_TEMP"' in benchmarks
+    assert "from localqueue.bus import BaseEvent, BusTopology, EventBus" in benchmarks
+    assert benchmarks.index(
+        "candidate wheel metadata validation failed"
+    ) < benchmarks.index("--profile standard")
+    assert benchmarks.index('cd "$RUNNER_TEMP"') < benchmarks.index(
+        "--profile standard"
+    )
+    assert "localqueue[dev]" not in benchmarks
+    assert "pip install -e" not in benchmarks
+    assert "pip install --editable" not in benchmarks
+
+
 def test_release_gate_runbook_documents_go_no_go_and_recovery() -> None:
     text = (ROOT / "docs/internal/release-gate.md").read_text(encoding="utf-8")
     for phrase in (

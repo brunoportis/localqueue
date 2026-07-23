@@ -367,7 +367,74 @@ jobs:
         run: |
           candidate_wheel=$(find "$RUNNER_TEMP/candidate-distributions" -name '*cp313*manylinux*x86_64.whl' -print -quit)
           test -n "$candidate_wheel"
-          python -m pip install --force-reinstall --no-index "$candidate_wheel"
+          python -m pip install --upgrade "pydantic>=2,<3"
+          python -m pip install --force-reinstall --no-index --no-deps "$candidate_wheel"
+      - name: Validate candidate wheel benchmark metadata
+        shell: bash
+        run: |
+          python - <<'PY'
+          import importlib.metadata
+          import os
+
+          expected_version = os.environ["CANDIDATE_VERSION"]
+          metadata = importlib.metadata.metadata("localqueue")
+          name = metadata.get("Name", "")
+          if name.casefold() != "localqueue":
+              raise SystemExit(
+                  "candidate wheel metadata validation failed: expected Name localqueue, "
+                  f"got {name!r}"
+              )
+          version = importlib.metadata.version("localqueue")
+          if version != expected_version:
+              raise SystemExit(
+                  "candidate wheel metadata validation failed: expected version "
+                  f"{expected_version!r}, got {version!r}"
+              )
+          extras = {extra.casefold() for extra in metadata.get_all("Provides-Extra") or []}
+          for extra in ("benchmark", "bus"):
+              if extra not in extras:
+                  raise SystemExit(
+                      "candidate wheel metadata validation failed: missing "
+                      f"Provides-Extra {extra!r}"
+                  )
+          requirements = metadata.get_all("Requires-Dist") or []
+          benchmark_requirement_found = any(
+              "pydantic" in requirement.casefold()
+              and ">=2" in requirement
+              and "<3" in requirement
+              and "extra=='benchmark'" in requirement.replace(" ", "").replace('"', "'")
+              for requirement in requirements
+          )
+          if not benchmark_requirement_found:
+              raise SystemExit(
+                  "candidate wheel metadata validation failed: missing "
+                  "pydantic>=2,<3 requirement conditioned on extra benchmark"
+              )
+          PY
+      - name: Preflight candidate wheel benchmark imports outside checkout
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          python - <<'PY'
+          import os
+          import importlib.metadata
+          import localqueue
+          import pydantic
+          from localqueue import localqueue as native
+          from localqueue.bus import BaseEvent, BusTopology, EventBus
+
+          expected_version = os.environ["CANDIDATE_VERSION"]
+          if native.__version__ != expected_version:
+              raise SystemExit(
+                  f"candidate wheel preflight failed: expected localqueue {expected_version!r}, "
+                  f"got {native.__version__!r}"
+              )
+          if importlib.metadata.version("localqueue") != expected_version:
+              raise SystemExit("candidate wheel preflight failed: installed metadata version differs")
+          if os.environ["GITHUB_WORKSPACE"] in os.path.realpath(localqueue.__file__):
+              raise SystemExit("candidate wheel preflight failed: localqueue loaded from checkout")
+          print(f"localqueue={native.__version__} pydantic={pydantic.__version__}")
+          PY
       - name: Run standard and canonical multiprocess profiles outside checkout
         shell: bash
         run: |
