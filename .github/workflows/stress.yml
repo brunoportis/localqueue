@@ -94,6 +94,10 @@ jobs:
             --consumers 8 \
             --crash-rate 0.01 \
             --lease-seconds 5 \
+            --sqlite-retry-initial-delay 0.01 \
+            --sqlite-retry-max-delay 0.1 \
+            --sqlite-retry-attempts 2 \
+            --sqlite-native-call-budget 5 \
             --output stress-report.json \
             --markdown-output stress-report.md \
             "${candidate_args[@]}"
