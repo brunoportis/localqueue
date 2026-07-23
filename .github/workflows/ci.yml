@@ -277,12 +277,15 @@ jobs:
         run: |
           cd "$RUNNER_TEMP"
           python "$GITHUB_WORKSPACE/stress/run_soak.py" \
-            --messages 2000 \
-            --duration 120 \
+            --messages 5000 \
+            --duration 180 \
             --producers 4 \
             --consumers 8 \
             --crash-rate 0.01 \
             --lease-seconds 5 \
+            --sqlite-retry-initial-delay 0.01 \
+            --sqlite-retry-max-delay 0.1 \
+            --sqlite-retry-attempts 8 \
             --output stress-report.json \
             --markdown-output stress-report.md
           jq -e '

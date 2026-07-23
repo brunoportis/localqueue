@@ -239,6 +239,8 @@ def test_supervisor_failure_always_writes_reports(
     assert "counters" in report
     assert "exits" in report
     assert "database" in report
+    assert report["counters"]["sqlite_busy_get"] == 0
+    assert "sqlite_busy_get" in markdown.read_text(encoding="utf-8")
 
 
 def test_real_spawn_soak_drains_with_integrity(tmp_path: Path) -> None:
