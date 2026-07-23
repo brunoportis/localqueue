@@ -399,7 +399,7 @@ jobs:
             --messages 1 --duration 30 --producers 1 --consumers 1 \
             --nack-rate 0 --fail-rate 0 --crash-rate 0 --lease-seconds 5 \
             --sqlite-native-call-budget 5 --sqlite-retry-attempts 2 \
-            --sqlite-contention-mode ack-lease-expired \
+            --sqlite-contention-mode ack-delayed-lease-expired \
             --output sqlite-busy-ack-lease.json --markdown-output sqlite-busy-ack-lease.md
           jq -e '.status == "passed" and .counters.sqlite_busy_ack == 1 and .counters.lease_losses_ack == 1 and .counters.unexpected_consumer_exits == 0' sqlite-busy-ack-lease.json
 

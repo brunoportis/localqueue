@@ -200,9 +200,10 @@ def retry_transient_sqlite_contention(
             last_message = " ".join(str(error).split())
             increment(counters[f"sqlite_busy_{operation}"])
             now = time.monotonic()
-            if attempts >= policy.max_attempts or (
-                deadline is not None and now >= deadline
-            ):
+            exhausted = attempts >= policy.max_attempts
+            if operation == "get":
+                exhausted = exhausted or (deadline is not None and now >= deadline)
+            if exhausted:
                 elapsed_seconds = now - started_at
                 increment(counters["sqlite_busy_exhausted"])
                 diagnostic_event(
@@ -275,8 +276,13 @@ def consume(
         injected_transition_calls[operation] = calls
         if sqlite_contention_mode == f"{operation}-success" and calls == 1:
             raise LocalQueueError("database is locked")
-        if sqlite_contention_mode == "ack-lease-expired":
+        if sqlite_contention_mode in {
+            "ack-lease-expired",
+            "ack-delayed-lease-expired",
+        }:
             if calls == 1:
+                if sqlite_contention_mode == "ack-delayed-lease-expired":
+                    time.sleep(5.1)
                 raise LocalQueueError("database is locked")
             if calls == 2:
                 raise LeaseExpired("lease has expired")
@@ -951,6 +957,7 @@ def parse_args() -> argparse.Namespace:
             "get-exhausted",
             "ack-success",
             "ack-lease-expired",
+            "ack-delayed-lease-expired",
             "nack-success",
             "fail-success",
         ),

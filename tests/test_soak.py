@@ -496,6 +496,32 @@ def test_busy_ack_followed_by_lease_expired_is_not_retried() -> None:
     assert run_soak.counter_snapshot(counters)["sqlite_busy_ack"] == 1
 
 
+def test_expired_transition_still_starts_one_controlled_second_call() -> None:
+    stop = _StopAfterTransition()
+    counters = run_soak.shared_counters(mp.get_context("spawn"))
+    calls = 0
+
+    def ack() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise LocalQueueError("database is locked")
+        raise LeaseExpired("lease has expired")
+
+    with pytest.raises(LeaseExpired):
+        run_soak.retry_transient_sqlite_contention(
+            "ack",
+            ack,
+            stop=stop,
+            deadline=0.0,
+            policy=run_soak.SQLiteRetryPolicy(0.0, 0.0, 2, 5.0),
+            counters=counters,
+            consumer_id=0,
+            events=None,
+        )
+    assert calls == 2
+
+
 def test_busy_retry_respects_stop_event() -> None:
     stop = _StopAfterTransition()
     stop.set()
@@ -666,7 +692,7 @@ def test_spawn_ack_busy_then_lease_expired_preserves_lease_loss(tmp_path: Path) 
             messages=1,
             producers=1,
             consumers=1,
-            sqlite_contention_mode="ack-lease-expired",
+            sqlite_contention_mode="ack-delayed-lease-expired",
             lease_seconds=5.0,
             sqlite_native_call_budget=5.0,
             sqlite_retry_attempts=2,
