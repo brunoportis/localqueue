@@ -175,13 +175,11 @@ billing = bus.subscription("billing", concurrency=1)
 
 
 @email.handler(UserCreated)
-async def send_welcome_email(event: UserCreated) -> None:
-    ...
+async def send_welcome_email(event: UserCreated) -> None: ...
 
 
 @billing.handler(OrderPlaced)
-async def charge(event: OrderPlaced) -> None:
-    ...
+async def charge(event: OrderPlaced) -> None: ...
 
 
 asyncio.run(bus.run())
@@ -212,7 +210,7 @@ wildcard handler.
 ## Consumption and consumer groups
 
 ```python
-await bus.run()                       # subscriptions with local handlers only
+await bus.run()  # subscriptions with local handlers only
 await bus.run_subscription("email")  # one locally handled subscription
 ```
 

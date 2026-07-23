@@ -177,8 +177,7 @@ email = bus.subscription("email")
 
 
 @email.handler(UserCreated)
-async def send_welcome(event: UserCreated) -> None:
-    ...
+async def send_welcome(event: UserCreated) -> None: ...
 
 
 asyncio.run(bus.run())  # consume subscriptions handled by this process
