@@ -41,19 +41,42 @@ class TestContract:
     def test_reopen_with_processing_jobs(self, tmp_path):
         """Reabertura com jobs em processamento: não deve duplicar."""
         path = tmp_path / "reopen"
-        q1 = SimpleQueue(str(path), lease_seconds=0.3, max_retries=3)
-        q1.put({"task": "one"})
-        q1.get(block=False)
-        q1.close()
+        q1 = SimpleQueue(str(path), lease_seconds=0.2, max_retries=3)
+        try:
+            q1.put({"task": "one"})
+            first_job = q1.get(block=False)
+        finally:
+            q1.close()
 
-        # Reabre sem ter dado ack/nack.
-        q2 = SimpleQueue(str(path), lease_seconds=0.3, max_retries=3)
-        time.sleep(0.4)
-        job2 = q2.get(block=False)
-        assert job2.data == {"task": "one"}
-        assert job2.attempts == 1
-        q2.ack(job2)
-        q2.close()
+        # Reabre sem ter dado ack/nack. O lease do claim recuperado é longo
+        # para que o ACK abaixo não dependa da velocidade do runner.
+        q2 = SimpleQueue(str(path), lease_seconds=5.0, max_retries=3)
+        try:
+            deadline = time.monotonic() + 2.0
+            while True:
+                try:
+                    job2 = q2.get(block=False)
+                    break
+                except Empty:
+                    if time.monotonic() >= deadline:
+                        pytest.fail(
+                            "o primeiro claim não expirou a tempo de ser reclamado"
+                        )
+                    time.sleep(0.02)
+
+            assert job2.data == {"task": "one"}
+            assert job2.attempts == 1
+            assert job2.receipt != first_job.receipt
+
+            # O receipt do claim expirado permanece inválido após o reclaim.
+            with pytest.raises(LeaseExpired):
+                q2.ack(first_job)
+
+            q2.ack(job2)
+            with pytest.raises(Empty):
+                q2.get(block=False)
+        finally:
+            q2.close()
 
     def test_crash_between_get_and_ack(self, tmp_path):
         """Processo morre imediatamente depois da reserva."""
