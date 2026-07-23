@@ -93,6 +93,7 @@ jobs:
             --producers 4 \
             --consumers 8 \
             --crash-rate 0.01 \
+            --lease-seconds 5 \
             --output stress-report.json \
             --markdown-output stress-report.md \
             "${candidate_args[@]}"
@@ -105,5 +106,5 @@ jobs:
           path: |
             stress-report.json
             stress-report.md
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 30
