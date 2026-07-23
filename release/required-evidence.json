@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "jobs": [
+    "ci", "wheels", "soak", "crash", "chaos", "storage-compatibility",
+    "standard-benchmark", "canonical-benchmark", "documentation", "open-issue-audit",
+    "security-audit"
+  ],
+  "reports": [
+    "ci-summary.json", "wheel-inventory.json", "wheel-smoke-summary.json",
+    "multiprocess-soak.json", "multiprocess-soak.md", "deterministic-crash.json",
+    "deterministic-crash.md", "chaos.json", "chaos.md",
+    "compatibility-online.json", "compatibility-offline.json", "compatibility.md",
+    "benchmark-standard.json", "benchmark-standard.md",
+    "benchmark-multiprocess-release.json", "benchmark-multiprocess-release.md",
+    "documentation-summary.json", "open-issue-audit.json", "security-audit.json"
+  ],
+  "identity_reports": [
+    "ci-summary.json", "wheel-smoke-summary.json", "multiprocess-soak.json",
+    "deterministic-crash.json", "chaos.json", "compatibility-online.json",
+    "compatibility-offline.json", "benchmark-standard.json",
+    "benchmark-multiprocess-release.json", "documentation-summary.json",
+    "open-issue-audit.json", "security-audit.json"
+  ],
+  "wheel_import_reports": [
+    "wheel-smoke-summary.json", "multiprocess-soak.json", "compatibility-online.json",
+    "compatibility-offline.json", "benchmark-standard.json",
+    "benchmark-multiprocess-release.json"
+  ]
+}

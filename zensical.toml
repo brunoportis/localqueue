@@ -17,6 +17,7 @@ nav = [
   {"Operational envelope" = "operational-envelope.md"},
   {"Event bus" = "event-bus.md"},
   {"Benchmarks" = "benchmarks.md"},
+  {"Internal release gate" = "internal/release-gate.md"},
   {"GitHub" = "https://github.com/brunoportis/localqueue"},
 ]
 

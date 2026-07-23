@@ -3,418 +3,492 @@ name: Wheels
 on:
   workflow_dispatch:
     inputs:
-      release_ref:
-        description: Existing v* tag to publish; leave empty for a build-only run
-        required: false
+      candidate_run_id:
+        description: Successful Release candidate evidence workflow run ID
+        required: true
         type: string
-  push:
-    tags: ['v*']
+      candidate_sha:
+        description: Exact approved candidate SHA
+        required: true
+        type: string
+      candidate_version:
+        description: Exact approved candidate version
+        required: true
+        type: string
+      candidate_ref:
+        description: Immutable release-candidate/* branch
+        required: true
+        type: string
+      public_claim:
+        description: Exact maintainer-selected claim from the versioned policy
+        required: true
+        type: string
+      private_vulnerability_reporting_confirmed:
+        description: Human confirmation when the evidence token could not read this setting
+        required: true
+        type: boolean
+      confirmation:
+        description: Must be exactly 'publish v1.2.0'
+        required: true
+        type: string
 
 permissions:
   contents: read
+  actions: read
+  issues: read
+
+concurrency:
+  group: promote-v1.2.0
+  cancel-in-progress: false
+
+env:
+  CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+  CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+  CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+  CANDIDATE_REF: ${{ inputs.candidate_ref }}
+  PUBLIC_CLAIM: ${{ inputs.public_claim }}
+  PRIVATE_REPORTING_CONFIRMED: ${{ inputs.private_vulnerability_reporting_confirmed }}
+  PROMOTION_CONFIRMATION: ${{ inputs.confirmation }}
 
 jobs:
-  prepare-release:
-    name: Prepare release
+  validate-candidate:
+    name: Validate approved evidence without publication credentials
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     outputs:
-      release_mode: ${{ steps.release.outputs.release_mode }}
-      release_ref: ${{ steps.release.outputs.release_ref }}
+      parent_sha: ${{ steps.identity.outputs.parent_sha }}
+      pypi_state: ${{ steps.external.outputs.pypi_state }}
+      release_state: ${{ steps.external.outputs.release_state }}
     steps:
-      - name: Resolve release mode
-        id: release
-        env:
-          INPUT_RELEASE_REF: ${{ inputs.release_ref }}
-          REF_NAME: ${{ github.ref_name }}
-          REF_TYPE: ${{ github.ref_type }}
-        shell: bash
-        run: |
-          if [[ -n "$INPUT_RELEASE_REF" ]]; then
-            release_ref="$INPUT_RELEASE_REF"
-            release_mode=true
-          elif [[ "$REF_TYPE" == "tag" && "$REF_NAME" == v* ]]; then
-            release_ref="$REF_NAME"
-            release_mode=true
-          else
-            release_ref="$REF_NAME"
-            release_mode=false
-          fi
-
-          if [[ "$release_mode" == true && "$release_ref" != v* ]]; then
-            echo "release_ref must start with v" >&2
-            exit 1
-          fi
-
-          echo "release_mode=$release_mode" >> "$GITHUB_OUTPUT"
-          echo "release_ref=$release_ref" >> "$GITHUB_OUTPUT"
-
-      - name: Create draft GitHub release
-        if: steps.release.outputs.release_mode == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_REF: ${{ steps.release.outputs.release_ref }}
-        run: |
-          gh release view "$RELEASE_REF" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
-          gh release create "$RELEASE_REF" \
-              --repo "$GITHUB_REPOSITORY" \
-              --verify-tag \
-              --draft \
-              --generate-notes \
-              --title "$RELEASE_REF"
-
-      - name: Refuse to rebuild an already published release
-        if: steps.release.outputs.release_mode == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_REF: ${{ steps.release.outputs.release_ref }}
-        run: |
-          if gh release view "$RELEASE_REF" --repo "$GITHUB_REPOSITORY" \
-            --json isDraft --jq '.isDraft == false' | grep -qx true; then
-            echo "release $RELEASE_REF is already published" >&2
-            exit 1
-          fi
-
-  validate-release:
-    name: Validate release version
-    needs: prepare-release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out release source
+      - name: Check out trusted gate tooling from main
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ needs.prepare-release.outputs.release_ref }}
-
-      - name: Validate tag and package metadata
-        if: needs.prepare-release.outputs.release_mode == 'true'
-        run: python scripts/check_release_version.py --tag "${{ needs.prepare-release.outputs.release_ref }}"
-
-  build:
-    name: ${{ matrix.name }}
-    needs: [prepare-release, validate-release]
-    permissions:
-      contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: linux-x86_64
-            os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            manylinux: '2_17'
-          - name: linux-aarch64
-            os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            manylinux: '2_17'
-          - name: macos-x86_64
-            os: macos-15-intel
-            target: x86_64-apple-darwin
-            manylinux: off
-          - name: macos-arm64
-            os: macos-15
-            target: aarch64-apple-darwin
-            manylinux: off
-          - name: windows-x86_64
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
-            manylinux: off
-    runs-on: ${{ matrix.os }}
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          ref: ${{ needs.prepare-release.outputs.release_ref }}
-
-      - name: Set up QEMU for Linux ARM64
-        if: matrix.name == 'linux-aarch64'
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
-
-      - name: Set up Python interpreters
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: |
-            3.10
-            3.11
-            3.12
-            3.13
-            3.14
-
-      - name: Build wheels with maturin
-        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
-        with:
-          command: build
-          target: ${{ matrix.target }}
-          manylinux: ${{ matrix.manylinux }}
-          args: --release --locked --find-interpreter --compatibility pypi
-          maturin-version: v1.14.1
-
-      - name: Set up smoke-test Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: '3.13'
-
-      - name: Install one wheel for smoke testing
-        if: matrix.name != 'linux-aarch64'
-        shell: bash
-        run: |
-          python -m pip install --upgrade "pydantic>=2,<3"
-          python -m pip install --force-reinstall --no-index target/wheels/*cp313*.whl
-
-      - name: Smoke-test installed wheel outside the checkout
-        if: matrix.name != 'linux-aarch64'
-        shell: bash
-        run: |
-          cd "$RUNNER_TEMP"
-          python - <<'PY'
-          import tempfile
-
-          from localqueue import EnqueueItem, SimpleQueue
-          from localqueue.bus import BaseEvent, BusTopology, EventBus
-
-          class WheelEvent(BaseEvent):
-              value: int
-
-          with tempfile.TemporaryDirectory() as path:
-              queue = SimpleQueue(path)
-              queue.put_many([
-                  {"platform": "wheel"},
-                  EnqueueItem({"platform": "batch"}, job_id="batch-1"),
-              ])
-              job = queue.get(block=False)
-              queue.ack(job)
-              job = queue.get(block=False)
-              queue.ack(job)
-              assert queue.stats()["acked"] == 2
-              queue.close()
-
-              topology = BusTopology({"smoke": [WheelEvent]})
-              bus = EventBus(path, topology=topology)
-              smoke = bus.subscription("smoke")
-
-              @smoke.handler(WheelEvent)
-              def handle(event: WheelEvent) -> None:
-                  assert event.value == 1
-
-              receipt = bus.dispatch(WheelEvent(value=1))
-              assert receipt.subscriptions == ("smoke",)
-              bus.close()
-          PY
-
-      - name: Validate Linux ARM64 wheel artifact
-        if: matrix.name == 'linux-aarch64'
-        shell: bash
-        run: test -n "$(find target/wheels -name '*cp313*.whl' -print -quit)"
-
-      - name: Build source distribution
-        if: matrix.name == 'linux-x86_64'
-        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
-        with:
-          command: sdist
-          args: --out target/dist
-          maturin-version: v1.14.1
-
-      - name: Upload wheels
-        if: needs.prepare-release.outputs.release_mode != 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: wheels-${{ matrix.name }}
-          path: target/wheels/*.whl
-          if-no-files-found: error
-
-      - name: Upload source distribution
-        if: matrix.name == 'linux-x86_64' && needs.prepare-release.outputs.release_mode != 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: source-distribution
-          path: target/dist/*.tar.gz
-          if-no-files-found: error
-
-      - name: Upload distributions to draft GitHub release
-        if: needs.prepare-release.outputs.release_mode == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_REF: ${{ needs.prepare-release.outputs.release_ref }}
-        run: |
-          gh release upload "$RELEASE_REF" target/wheels/*.whl \
-            --repo "$GITHUB_REPOSITORY" \
-            --clobber
-
-          if [[ "${{ matrix.name }}" == "linux-x86_64" ]]; then
-            gh release upload "$RELEASE_REF" target/dist/*.tar.gz \
-              --repo "$GITHUB_REPOSITORY" \
-              --clobber
-          fi
-
-  benchmark-release:
-    name: Canonical multiprocess release benchmark
-    if: needs.prepare-release.outputs.release_mode == 'true'
-    needs: [prepare-release, build]
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    permissions:
-      contents: write
-    steps:
-      - name: Check out release source
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          ref: ${{ needs.prepare-release.outputs.release_ref }}
+          ref: main
           fetch-depth: 0
 
-      - name: Set up Python
+      - name: Set up Python for evidence artifact validation
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: '3.13'
+          python-version: '3.14'
 
-      - name: Download the release-candidate Linux x86_64 wheel
-        shell: bash
+      - name: Bootstrap packaging for evidence artifact validation
+        run: python -m pip install --upgrade "packaging>=24,<26"
+
+      - name: Validate explicit human inputs
+        run: |
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$GITHUB_WORKFLOW_REF" = "$GITHUB_REPOSITORY/.github/workflows/wheels.yml@refs/heads/main"
+          test "$CANDIDATE_VERSION" = "1.2.0"
+          test "$CANDIDATE_REF" = "release-candidate/v1.2.0"
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$CANDIDATE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          test "$PROMOTION_CONFIRMATION" = "publish v1.2.0"
+
+      - name: Confirm evidence workflow identity and successful conclusion
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_REF: ${{ needs.prepare-release.outputs.release_ref }}
         run: |
-          python scripts/check_release_version.py --tag "$RELEASE_REF"
-          mkdir -p "$RUNNER_TEMP/wheels"
-          gh release download "$RELEASE_REF" \
+          gh run view "$CANDIDATE_RUN_ID" \
             --repo "$GITHUB_REPOSITORY" \
-            --dir "$RUNNER_TEMP/wheels" \
-            --pattern '*cp313*manylinux*x86_64.whl'
-          test "$(find "$RUNNER_TEMP/wheels" -name '*.whl' | wc -l)" -eq 1
+            --json workflowName,headSha,status,conclusion,url,event,headBranch,databaseId \
+            > evidence-run.json
+          python -m release_gate.cli validate-run \
+            --run evidence-run.json \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --workflow "Release candidate evidence"
+          test "$(jq -r .event evidence-run.json)" = workflow_dispatch
+          test "$(jq -r .headBranch evidence-run.json)" = "$CANDIDATE_REF"
 
-      - name: Install and prove release wheel isolation
+      - name: Download the approved evidence bundle only
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: release-evidence-v${{ inputs.candidate_version }}
+          path: candidate-bundle
+          run-id: ${{ inputs.candidate_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Validate manifest, reports, hashes and source identity
+        run: |
+          python -m release_gate.cli validate-manifest \
+            --manifest candidate-bundle/evidence-manifest.json \
+            --bundle candidate-bundle \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --candidate-ref "$CANDIDATE_REF" \
+            --version "$CANDIDATE_VERSION"
+
+      - name: Confirm candidate is exactly one commit above current main
+        id: identity
         shell: bash
         run: |
-          python -m venv "$RUNNER_TEMP/benchmark-venv"
-          source "$RUNNER_TEMP/benchmark-venv/bin/activate"
-          python -m pip install --force-reinstall --no-index "$RUNNER_TEMP"/wheels/*.whl
-          cd "$RUNNER_TEMP"
-          python - <<'PY'
-          import importlib.metadata
-          import os
-          import localqueue
-          from localqueue import localqueue as native
-
-          assert "site-packages" in localqueue.__file__
-          assert "site-packages" in native.__file__
-          assert os.environ["GITHUB_WORKSPACE"] not in localqueue.__file__
-          assert native.__version__ == importlib.metadata.version("localqueue")
-          assert not any(name.startswith("_test_") for name in dir(native.NativeQueue))
-          PY
-
-      - name: Run canonical release profile and render partial report
-        id: benchmark
-        shell: bash
-        env:
-          RELEASE_REF: ${{ needs.prepare-release.outputs.release_ref }}
-        run: |
-          source "$RUNNER_TEMP/benchmark-venv/bin/activate"
-          commit_sha=$(git rev-list -n 1 "$RELEASE_REF")
-          asset_base="localqueue-${RELEASE_REF}-benchmark"
-          set +e
-          cd "$RUNNER_TEMP"
-          LOCALQUEUE_COMMIT_SHA="$commit_sha" python -m localqueue.benchmark \
-            --profile multiprocess-release \
-            --output "${asset_base}.json"
-          benchmark_exit=$?
-          if [[ -f "${asset_base}.json" ]]; then
-            python -m localqueue.benchmark render \
-              "${asset_base}.json" \
-              --output "${asset_base}.md"
-            render_exit=$?
-          else
-            render_exit=0
+          git fetch origin main \
+            "+refs/heads/$CANDIDATE_REF:refs/remotes/origin/$CANDIDATE_REF" \
+            --tags
+          test "$(git rev-parse "origin/$CANDIDATE_REF")" = "$CANDIDATE_SHA"
+          parents=$(git rev-list --parents -n 1 "$CANDIDATE_SHA")
+          test "$(wc -w <<<"$parents")" -eq 2
+          parent_sha=$(awk '{print $2}' <<<"$parents")
+          current_main=$(git rev-parse origin/main)
+          if [[ "$current_main" != "$parent_sha" && "$current_main" != "$CANDIDATE_SHA" ]]; then
+            echo "main advanced beyond the candidate; prepare a new candidate" >&2
+            exit 1
           fi
-          echo "asset_base=$asset_base" >> "$GITHUB_OUTPUT"
-          echo "benchmark_exit=$benchmark_exit" >> "$GITHUB_OUTPUT"
-          echo "render_exit=$render_exit" >> "$GITHUB_OUTPUT"
-          exit 0
+          git diff-tree --no-commit-id --name-only -r "$CANDIDATE_SHA" | sort > candidate-files.txt
+          python -m release_gate.cli validate-candidate-files --files candidate-files.txt
+          git checkout --detach "$CANDIDATE_SHA"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          python -m release_gate.cli versions --expected "$CANDIDATE_VERSION"
+          python scripts/check_release_version.py --tag "v$CANDIDATE_VERSION"
+          python -m pip install --upgrade "uv==0.11.6"
+          uv lock --check
+          python -m release_gate.cli validate-sources \
+            --manifest candidate-bundle/evidence-manifest.json
+          echo "parent_sha=$parent_sha" >> "$GITHUB_OUTPUT"
 
-      - name: Upload reports to Actions
-        if: always()
+      - name: Repeat open-issue and security audits immediately before approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 1000 \
+            --json number,title,body,labels,url > current-open-issues.json
+          owner=${GITHUB_REPOSITORY%/*}
+          repository=${GITHUB_REPOSITORY#*/}
+          gh api graphql -F owner="$owner" -F repository="$repository" -f query='
+            query($owner: String!, $repository: String!) {
+              repository(owner: $owner, name: $repository) {
+                issues(first: 100, states: [OPEN, CLOSED]) {
+                  nodes { number state title closedByPullRequestsReferences(first: 10) {
+                    nodes { number merged mergeCommit { oid } }
+                  } }
+                }
+              }
+            }' --jq '.data.repository.issues.nodes' > dependency-issues.json
+          python -m release_gate.cli issue-audit \
+            --issues current-open-issues.json \
+            --dependency-issues dependency-issues.json \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --candidate-ref "$CANDIDATE_REF" \
+            --version "$CANDIDATE_VERSION" \
+            --output current-open-issue-audit.json
+
+          private_status=unknown
+          if response=$(gh api "repos/$GITHUB_REPOSITORY/private-vulnerability-reporting" 2>/dev/null); then
+            [[ "$(jq -r .enabled <<<"$response")" == true ]] && private_status=enabled || private_status=disabled
+          fi
+          test "$private_status" != disabled
+          if [[ "$private_status" == unknown ]]; then
+            test "$PRIVATE_REPORTING_CONFIRMED" = true
+          fi
+
+      - name: Validate human claim against approved evidence
+        shell: bash
+        run: |
+          confirmation_flag=()
+          if [[ "$PRIVATE_REPORTING_CONFIRMED" == true ]]; then
+            confirmation_flag+=(--private-vulnerability-reporting-confirmed)
+          fi
+          python -m release_gate.cli validate-claim \
+            --manifest candidate-bundle/evidence-manifest.json \
+            --claim "$PUBLIC_CLAIM" \
+            --confirmation "$PROMOTION_CONFIRMATION" \
+            --version "$CANDIDATE_VERSION" \
+            "${confirmation_flag[@]}"
+          notes=release-notes/v1.2.0.md
+          for phrase in "NFS" "SMB" "multi-host" "exactly-once" "physical ARM64" "physical power-loss"; do
+            grep -Fqi "$phrase" "$notes"
+          done
+
+      - name: Check PyPI, tag and GitHub Release state
+        id: external
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          pypi_state=publish
+          if curl --fail --silent --show-error \
+            "https://pypi.org/pypi/localqueue/$CANDIDATE_VERSION/json" \
+            --output pypi-metadata.json; then
+            pypi_state=$(python -m release_gate.cli pypi-state \
+              --inventory candidate-bundle/wheel-inventory.json \
+              --metadata pypi-metadata.json)
+          fi
+
+          remote_tag=$(git ls-remote --tags origin "refs/tags/v$CANDIDATE_VERSION" | awk '{print $1}')
+          if [[ -n "$remote_tag" && "$remote_tag" != "$CANDIDATE_SHA" ]]; then
+            echo "existing final tag points to a different SHA" >&2
+            exit 1
+          fi
+
+          release_state=absent
+          if gh release view "v$CANDIDATE_VERSION" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft,tagName,body > release.json 2>/dev/null; then
+            test "$(jq -r .tagName release.json)" = "v$CANDIDATE_VERSION"
+            if [[ "$(jq -r .isDraft release.json)" == true ]]; then
+              release_state=draft
+            else
+              release_state=published
+              test "$pypi_state" = already-published
+            fi
+          fi
+          echo "pypi_state=$pypi_state" >> "$GITHUB_OUTPUT"
+          echo "release_state=$release_state" >> "$GITHUB_OUTPUT"
+
+      - name: Reject divergent existing release assets
+        if: steps.external.outputs.release_state != 'absent'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          mkdir -p existing-assets
+          gh release download "v$CANDIDATE_VERSION" \
+            --repo "$GITHUB_REPOSITORY" --dir existing-assets || true
+          for asset in existing-assets/*; do
+            [[ -e "$asset" ]] || continue
+            expected="candidate-bundle/$(basename "$asset")"
+            test -f "$expected"
+            test "$(sha256sum "$asset" | awk '{print $1}')" = "$(sha256sum "$expected" | awk '{print $1}')"
+          done
+          if [[ "${{ steps.external.outputs.release_state }}" == published ]]; then
+            test "$(find existing-assets -type f | wc -l)" -eq "$(find candidate-bundle -maxdepth 1 -type f | wc -l)"
+          fi
+
+      - name: Preserve the validated bytes for the environment-gated job
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: release-benchmark-${{ github.run_id }}
-          path: |
-            ${{ runner.temp }}/localqueue-*-benchmark.json
-            ${{ runner.temp }}/localqueue-*-benchmark.md
-          if-no-files-found: warn
+          name: validated-promotion-bundle
+          path: candidate-bundle/
+          if-no-files-found: error
+          retention-days: 3
 
-      - name: Attach reports to draft GitHub release
-        if: always()
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_REF: ${{ needs.prepare-release.outputs.release_ref }}
-          ASSET_BASE: ${{ steps.benchmark.outputs.asset_base }}
-        run: |
-          if [[ -n "$ASSET_BASE" && -f "$RUNNER_TEMP/${ASSET_BASE}.json" ]]; then
-            gh release upload "$RELEASE_REF" "$RUNNER_TEMP/${ASSET_BASE}.json" \
-              --repo "$GITHUB_REPOSITORY" \
-              --clobber
-          fi
-          if [[ -n "$ASSET_BASE" && -f "$RUNNER_TEMP/${ASSET_BASE}.md" ]]; then
-            gh release upload "$RELEASE_REF" "$RUNNER_TEMP/${ASSET_BASE}.md" \
-              --repo "$GITHUB_REPOSITORY" \
-              --clobber
-          fi
-
-      - name: Enforce benchmark correctness result
-        if: always()
-        shell: bash
-        env:
-          BENCHMARK_EXIT: ${{ steps.benchmark.outputs.benchmark_exit }}
-          RENDER_EXIT: ${{ steps.benchmark.outputs.render_exit }}
-        run: |
-          test "${BENCHMARK_EXIT:-1}" -eq 0
-          test "${RENDER_EXIT:-1}" -eq 0
-
-  publish:
-    name: Publish complete release to PyPI
-    if: needs.prepare-release.outputs.release_mode == 'true'
-    needs: [prepare-release, build, benchmark-release]
+  promote-and-publish:
+    name: Human-approved promotion and trusted publication
+    needs: validate-candidate
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
       contents: write
+      actions: read
+      issues: read
       id-token: write
     steps:
-      - name: Download distributions from draft GitHub release
+      - name: Check out trusted gate tooling from main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Set up Python for promotion artifact validation
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+
+      - name: Bootstrap packaging for promotion artifact validation
+        run: python -m pip install --upgrade "packaging>=24,<26"
+
+      - name: Download only the previously validated bytes
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: validated-promotion-bundle
+          path: candidate-bundle
+
+      - name: Repeat critical manifest, SHA, ref and version checks
+        shell: bash
+        run: |
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$GITHUB_WORKFLOW_REF" = "$GITHUB_REPOSITORY/.github/workflows/wheels.yml@refs/heads/main"
+          python -m release_gate.cli validate-manifest \
+            --manifest candidate-bundle/evidence-manifest.json \
+            --bundle candidate-bundle \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --candidate-ref "$CANDIDATE_REF" \
+            --version "$CANDIDATE_VERSION"
+          git fetch origin main \
+            "+refs/heads/$CANDIDATE_REF:refs/remotes/origin/$CANDIDATE_REF" \
+            --tags
+          test "$(git rev-parse "origin/$CANDIDATE_REF")" = "$CANDIDATE_SHA"
+          test "$(git rev-parse "$CANDIDATE_SHA^")" = "${{ needs.validate-candidate.outputs.parent_sha }}"
+
+      - name: Repeat mutable issue and security checks after environment approval
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_REF: ${{ needs.prepare-release.outputs.release_ref }}
+        shell: bash
         run: |
-          mkdir -p target/dist
-          gh release download "$RELEASE_REF" \
-            --repo "$GITHUB_REPOSITORY" \
-            --dir target/dist
+          gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 1000 \
+            --json number,title,body,labels,url > current-open-issues.json
+          owner=${GITHUB_REPOSITORY%/*}
+          repository=${GITHUB_REPOSITORY#*/}
+          gh api graphql -F owner="$owner" -F repository="$repository" -f query='
+            query($owner: String!, $repository: String!) {
+              repository(owner: $owner, name: $repository) {
+                issues(first: 100, states: [OPEN, CLOSED]) {
+                  nodes { number state title closedByPullRequestsReferences(first: 10) {
+                    nodes { number merged mergeCommit { oid } }
+                  } }
+                }
+              }
+            }' --jq '.data.repository.issues.nodes' > dependency-issues.json
+          git show "$CANDIDATE_SHA:CHANGELOG.md" > candidate-CHANGELOG.md
+          python -m release_gate.cli issue-audit \
+            --issues current-open-issues.json \
+            --dependency-issues dependency-issues.json \
+            --changelog candidate-CHANGELOG.md \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --candidate-ref "$CANDIDATE_REF" \
+            --version "$CANDIDATE_VERSION" \
+            --output current-open-issue-audit.json
+          if response=$(gh api "repos/$GITHUB_REPOSITORY/private-vulnerability-reporting" 2>/dev/null); then
+            test "$(jq -r .enabled <<<"$response)" = true
+          else
+            test "$PRIVATE_REPORTING_CONFIRMED" = true
+          fi
 
-          for python_tag in cp310 cp311 cp312 cp313 cp314; do
-            wheel_count=$(find target/dist -name "*-${python_tag}-${python_tag}-*.whl" | wc -l)
-            if [[ "$wheel_count" -ne 5 ]]; then
-              echo "expected 5 wheels for $python_tag, found $wheel_count" >&2
-              exit 1
+      - name: Promote candidate SHA to main and final tag without force
+        shell: bash
+        run: |
+          main_sha=$(git rev-parse origin/main)
+          tag_sha=$(git ls-remote --tags origin "refs/tags/v$CANDIDATE_VERSION" | awk '{print $1}')
+          parent_sha="${{ needs.validate-candidate.outputs.parent_sha }}"
+          candidate_sha="$CANDIDATE_SHA"
+          if [[ "$main_sha" == "$parent_sha" && -z "$tag_sha" ]]; then
+            git push --atomic origin \
+              "$candidate_sha:refs/heads/main" \
+              "$candidate_sha:refs/tags/v$CANDIDATE_VERSION"
+          elif [[ "$main_sha" == "$parent_sha" && "$tag_sha" == "$candidate_sha" ]]; then
+            git push origin "$candidate_sha:refs/heads/main"
+          elif [[ "$main_sha" == "$candidate_sha" && -z "$tag_sha" ]]; then
+            git push origin "$candidate_sha:refs/tags/v$CANDIDATE_VERSION"
+          elif [[ "$main_sha" == "$candidate_sha" && "$tag_sha" == "$candidate_sha" ]]; then
+            echo "main and tag already point to the approved candidate"
+          else
+            echo "main or tag diverged; refusing promotion" >&2
+            exit 1
+          fi
+          git fetch origin main --tags
+          test "$(git rev-parse origin/main)" = "$candidate_sha"
+          test "$(git rev-parse "v$CANDIDATE_VERSION^{commit}")" = "$candidate_sha"
+
+      - name: Create or validate the draft GitHub Release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          git show "$CANDIDATE_SHA:release-notes/v$CANDIDATE_VERSION.md" > release-notes.md
+          python -m release_gate.cli render-release-body \
+            --notes release-notes.md \
+            --claim "$PUBLIC_CLAIM" \
+            --version "$CANDIDATE_VERSION" \
+            --output release-body.md
+          if gh release view "v$CANDIDATE_VERSION" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft,body > existing-release.json 2>/dev/null; then
+            if [[ "$(jq -r .isDraft existing-release.json)" == false ]]; then
+              python -m release_gate.cli validate-release-body \
+                --release existing-release.json --expected release-body.md
+              echo "state=published" >> "$GITHUB_OUTPUT"
+            else
+              python -m release_gate.cli validate-release-body \
+                --release existing-release.json --expected release-body.md
+              echo "state=draft" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            gh release create "v$CANDIDATE_VERSION" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --draft \
+              --title "v$CANDIDATE_VERSION" \
+              --notes-file release-body.md
+            echo "state=draft" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload only absent assets after hash-checking existing assets
+        if: steps.release.outputs.state == 'draft'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          mkdir -p existing-assets
+          gh release download "v$CANDIDATE_VERSION" \
+            --repo "$GITHUB_REPOSITORY" --dir existing-assets || true
+          for asset in candidate-bundle/*; do
+            name=$(basename "$asset")
+            if [[ -f "existing-assets/$name" ]]; then
+              test "$(sha256sum "$asset" | awk '{print $1}')" = "$(sha256sum "existing-assets/$name" | awk '{print $1}')"
+            else
+              gh release upload "v$CANDIDATE_VERSION" "$asset" \
+                --repo "$GITHUB_REPOSITORY"
             fi
           done
 
-          test "$(find target/dist -name '*.tar.gz' | wc -l)" -eq 1
+      - name: Download and revalidate every release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          mkdir -p verified-release-assets
+          gh release download "v$CANDIDATE_VERSION" \
+            --repo "$GITHUB_REPOSITORY" --dir verified-release-assets
+          test "$(find verified-release-assets -type f | wc -l)" -eq "$(find candidate-bundle -maxdepth 1 -type f | wc -l)"
+          for expected in candidate-bundle/*; do
+            actual="verified-release-assets/$(basename "$expected")"
+            test -f "$actual"
+            test "$(sha256sum "$expected" | awk '{print $1}')" = "$(sha256sum "$actual" | awk '{print $1}')"
+          done
 
       - name: Install uv
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: '0.11.6'
 
-      - name: Publish distributions only
+      - name: Recheck PyPI and publish approved bytes through Trusted Publisher
+        id: pypi
+        shell: bash
         run: |
-          uv publish \
-            --trusted-publishing always \
-            --check-url https://pypi.org/simple/ \
-            target/dist/*.whl \
-            target/dist/*.tar.gz
+          pypi_state=publish
+          if curl --fail --silent --show-error \
+            "https://pypi.org/pypi/localqueue/$CANDIDATE_VERSION/json" \
+            --output pypi-before.json; then
+            pypi_state=$(python -m release_gate.cli pypi-state \
+              --inventory candidate-bundle/wheel-inventory.json \
+              --metadata pypi-before.json)
+          fi
+          if [[ "$pypi_state" == publish ]]; then
+            uv publish \
+              --trusted-publishing always \
+              --check-url https://pypi.org/simple/ \
+              candidate-bundle/*.whl \
+              candidate-bundle/*.tar.gz
+          fi
+          echo "state=$pypi_state" >> "$GITHUB_OUTPUT"
 
-      - name: Publish GitHub release
+      - name: Verify exact filenames and hashes on PyPI
+        shell: bash
+        run: |
+          for attempt in {1..20}; do
+            if curl --fail --silent --show-error \
+              "https://pypi.org/pypi/localqueue/$CANDIDATE_VERSION/json" \
+              --output pypi-after.json && \
+              [[ "$(python -m release_gate.cli pypi-state \
+                --inventory candidate-bundle/wheel-inventory.json \
+                --metadata pypi-after.json)" == already-published ]]; then
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "PyPI did not expose the exact approved files and hashes" >&2
+          exit 1
+
+      - name: Publish GitHub Release only after PyPI verification
+        if: steps.release.outputs.state == 'draft'
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_REF: ${{ needs.prepare-release.outputs.release_ref }}
         run: |
-          gh release edit "$RELEASE_REF" \
+          gh release edit "v$CANDIDATE_VERSION" \
             --repo "$GITHUB_REPOSITORY" \
             --draft=false \
             --latest
+
+      - name: Verify completed public release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(gh release view "v$CANDIDATE_VERSION" \
+            --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = false

@@ -211,8 +211,8 @@ def run_child(
     return payload
 
 
-def prove_isolation(python: Path, checkout: Path) -> dict[str, str]:
-    script = "import importlib.metadata, json, pathlib, localqueue; from localqueue import localqueue as n; print(json.dumps({'version': importlib.metadata.version('localqueue'), 'localqueue': str(pathlib.Path(localqueue.__file__).resolve()), 'native': str(pathlib.Path(n.__file__).resolve())}))"
+def prove_isolation(python: Path, checkout: Path) -> dict[str, str | None]:
+    script = "import importlib.metadata, json, pathlib, localqueue; from localqueue import localqueue as n; print(json.dumps({'version': importlib.metadata.version('localqueue'), 'native_version': getattr(n, '__version__', None), 'localqueue': str(pathlib.Path(localqueue.__file__).resolve()), 'native': str(pathlib.Path(n.__file__).resolve())}))"
     completed = subprocess.run(
         [str(python), "-I", "-c", script],
         cwd=tempfile.gettempdir(),
@@ -321,6 +321,8 @@ def main() -> int:
     parser.add_argument("--work-dir", type=Path)
     parser.add_argument("--keep-work-dir", action="store_true")
     parser.add_argument("--offline", action="store_true")
+    parser.add_argument("--candidate-ref")
+    parser.add_argument("--candidate-version")
     args = parser.parse_args()
     report: dict[str, Any] = {
         "report_schema_version": REPORT_VERSION,
@@ -370,6 +372,31 @@ def main() -> int:
             "package_version": current_proof["version"],
             "import_paths": current_proof,
         }
+        if args.candidate_ref or args.candidate_version:
+            if (
+                not args.current_commit_sha
+                or not args.candidate_ref
+                or not args.candidate_version
+            ):
+                raise MatrixError(
+                    "candidate SHA, ref and version must be provided together"
+                )
+            native_version = current_proof["native_version"]
+            if (
+                current_proof["version"] != args.candidate_version
+                or not isinstance(native_version, str)
+                or native_version != args.candidate_version
+            ):
+                raise MatrixError(
+                    "candidate wheel version differs from expected version"
+                )
+            report["subject"] = {
+                "candidate_sha": args.current_commit_sha,
+                "package_version": current_proof["version"],
+                "native_version": native_version,
+                "candidate_ref": args.candidate_ref,
+                "installed_module_path": current_proof["localqueue"],
+            }
         before = schema_fingerprint(current_venv, work)
         policy = load_toml(POLICY)
         if policy["schema_fingerprint"] != before:

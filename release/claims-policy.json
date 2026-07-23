@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "claims": {
+    "production-grade transactional core": {
+      "required_jobs": ["ci", "wheels", "crash"]
+    },
+    "production-ready for documented single-host workloads": {
+      "required_jobs": ["ci", "wheels", "storage-compatibility", "canonical-benchmark", "soak", "crash", "chaos"],
+      "required_limitations": ["NFS", "SMB", "multi-host", "exactly-once", "physical ARM64", "physical power loss"]
+    },
+    "validated for documented single-host workloads": {
+      "required_jobs": ["ci", "wheels"]
+    }
+  }
+}

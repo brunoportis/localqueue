@@ -1,26 +1,32 @@
-name: Create release tag
+name: Prepare release candidate
 
 on:
   workflow_dispatch:
     inputs:
-      dry_run:
-        description: Calculate the next version without writing, tagging, or pushing
+      action:
+        description: Safe release preparation action
         required: true
-        default: true
-        type: boolean
+        default: dry-run
+        type: choice
+        options:
+          - dry-run
+          - prepare-candidate
 
 permissions:
-  actions: write
-  contents: write
+  contents: read
 
 concurrency:
-  group: release
+  group: prepare-release-candidate-v1.2.0
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Calculate and tag release
+  calculate:
+    name: Calculate candidate version without writes
     runs-on: ubuntu-latest
+    outputs:
+      base_sha: ${{ steps.version.outputs.base_sha }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - name: Check out main with full history
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -28,10 +34,11 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Confirm main is current
+      - name: Confirm exact clean origin/main
         run: |
           git fetch origin main --tags
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          test -z "$(git status --porcelain --untracked-files=normal)"
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -43,72 +50,204 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Install release and test tooling
+      - name: Install release tooling
+        run: |
+          python -m pip install --upgrade \
+            "python-semantic-release>=10.6,<11" \
+            "maturin>=1.14,<2" \
+            "uv==0.11.6"
+
+      - name: Confirm declared version is the latest public release
+        shell: bash
+        run: |
+          declared=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          tagged=$(semantic-release version --print-last-released)
+          published=$(python - <<'PY'
+          import json
+          from urllib.request import urlopen
+          with urlopen("https://pypi.org/pypi/localqueue/json", timeout=30) as response:
+              print(json.load(response)["info"]["version"])
+          PY
+          )
+          test "$declared" = "$tagged"
+          test "$declared" = "$published"
+          python -m release_gate.cli versions --expected "$declared"
+
+      - name: Calculate next version with Python Semantic Release
+        id: version
+        shell: bash
+        run: |
+          version=$(semantic-release version --print)
+          python -m release_gate.cli require-version --calculated "$version"
+          echo "base_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Dry-run summary
+        if: inputs.action == 'dry-run'
+        run: |
+          {
+            echo "## v1.2.0 preparation dry run"
+            echo ""
+            echo "- Base main SHA: \`${{ steps.version.outputs.base_sha }}\`"
+            echo "- Calculated next version: \`${{ steps.version.outputs.version }}\`"
+            echo "- No commit, branch, tag, release, or publication was created."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  prepare-candidate:
+    name: Create immutable candidate branch only
+    if: inputs.action == 'prepare-candidate'
+    needs: calculate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - name: Check out main with full history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Repeat main and worktree safety checks
+        run: |
+          git fetch origin main --tags
+          test "$(git rev-parse HEAD)" = "${{ needs.calculate.outputs.base_sha }}"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          test -z "$(git status --porcelain --untracked-files=normal)"
+          test "${{ needs.calculate.outputs.version }}" = "1.2.0"
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # master
+        with:
+          toolchain: stable
+
+      - name: Install release and validation tooling
         run: |
           python -m pip install --upgrade \
             "python-semantic-release>=10.6,<11" \
             "maturin>=1.14,<2" \
             "pytest>=8,<10" \
-            "pydantic>=2,<3"
+            "pydantic>=2,<3" \
+            "uv==0.11.6"
 
-      - name: Validate release history
-        run: |
-          current_version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
-          last_released=$(semantic-release version --print-last-released)
-          test "$current_version" = "$last_released" || {
-            echo "pyproject.toml is $current_version but Semantic Release sees $last_released." >&2
-            echo "Reconcile the published release tag with main before automating the next release." >&2
-            exit 1
-          }
-
-      - name: Calculate next version
-        id: version
-        run: |
-          current_version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
-          version=$(semantic-release version --print)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
-          if [[ "$version" == "$current_version" ]]; then
-            echo "release_needed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "release_needed=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Report dry run
-        if: inputs.dry_run
-        run: |
-          if [[ "${{ steps.version.outputs.release_needed }}" == true ]]; then
-            echo "Next release would be ${{ steps.version.outputs.tag }}"
-          else
-            echo "No release is needed. ${{ steps.version.outputs.tag }} is current."
-          fi
-
-      - name: Create local release commit and tag
-        if: inputs.dry_run == false && steps.version.outputs.release_needed == 'true'
+      - name: Create one local release commit
         env:
           GH_TOKEN: ${{ github.token }}
-        run: semantic-release version --no-push --no-vcs-release
-
-      - name: Validate versioned tree
-        if: inputs.dry_run == false && steps.version.outputs.release_needed == 'true'
         run: |
-          python scripts/check_release_version.py --tag "${{ steps.version.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          semantic-release version --no-push --no-vcs-release
+          test "$(git log -1 --format=%s)" = "chore(release): v1.2.0"
+
+      - name: Update only the editable local uv.lock entry
+        shell: bash
+        run: |
+          cp uv.lock uv.lock.before
+          uv lock
+          python -m release_gate.cli validate-uv-lock-update \
+            --before uv.lock.before \
+            --after uv.lock \
+            --version "${{ needs.calculate.outputs.version }}"
+          rm uv.lock.before
+          uv lock --check
+          git add uv.lock
+          git commit --amend --no-edit
+
+      - name: Generate versioned notes and amend the same candidate commit
+        run: |
+          python -m release_gate.cli generate-notes \
+            --version "${{ needs.calculate.outputs.version }}" \
+            --output "release-notes/v${{ needs.calculate.outputs.version }}.md"
+          git add "release-notes/v${{ needs.calculate.outputs.version }}.md"
+          git commit --amend --no-edit
+
+      - name: Validate exact candidate tree and remove local release tag
+        id: candidate
+        shell: bash
+        run: |
+          python scripts/check_release_version.py --tag "${{ needs.calculate.outputs.tag }}"
+          python -m release_gate.cli versions --expected "${{ needs.calculate.outputs.version }}"
+          uv lock --check
+          test "$(git rev-list --count "${{ needs.calculate.outputs.base_sha }}"..HEAD)" -eq 1
+          test "$(git rev-parse HEAD^)" = "${{ needs.calculate.outputs.base_sha }}"
+          git diff-tree --no-commit-id --name-only -r HEAD | sort > candidate-files.txt
+          python -m release_gate.cli validate-candidate-files --files candidate-files.txt
+          git tag -d "${{ needs.calculate.outputs.tag }}" >/dev/null 2>&1 || true
+          test -z "$(git tag --points-at HEAD)"
           cargo fmt --all --check
           cargo check --locked
-          maturin build --release --locked -i python
-          python -m pip install --force-reinstall target/wheels/*.whl
-          pytest -ra
+          candidate_sha=$(git rev-parse HEAD)
+          echo "candidate_sha=$candidate_sha" >> "$GITHUB_OUTPUT"
 
-      - name: Push release commit and tag atomically
-        if: inputs.dry_run == false && steps.version.outputs.release_needed == 'true'
+      - name: Push only the immutable candidate branch
+        id: push
+        env:
+          CANDIDATE_BRANCH: release-candidate/v1.2.0
+        shell: bash
         run: |
-          git push --atomic origin HEAD:main "${{ steps.version.outputs.tag }}"
+          existing_sha=$(git ls-remote --heads origin "refs/heads/$CANDIDATE_BRANCH" | awk '{print $1}')
+          action=$(python -m release_gate.cli branch-action \
+            --existing-sha "$existing_sha" \
+            --candidate-sha "${{ steps.candidate.outputs.candidate_sha }}")
+          if [[ "$action" == push ]]; then
+            git push origin "HEAD:refs/heads/$CANDIDATE_BRANCH"
+          fi
+          test "$(git rev-parse origin/main)" = "${{ needs.calculate.outputs.base_sha }}"
+          test -z "$(git ls-remote --tags origin "refs/tags/${{ needs.calculate.outputs.tag }}")"
+          echo "branch=$CANDIDATE_BRANCH" >> "$GITHUB_OUTPUT"
 
-      - name: Trigger distribution publication
-        if: inputs.dry_run == false && steps.version.outputs.release_needed == 'true'
+      - name: Dispatch evidence collection against the candidate SHA
+        id: evidence
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
-          gh workflow run wheels.yml \
+          gh workflow run release-candidate.yml \
             --repo "$GITHUB_REPOSITORY" \
-            -f release_ref="${{ steps.version.outputs.tag }}"
+            --ref "${{ steps.push.outputs.branch }}" \
+            -f candidate_ref="${{ steps.push.outputs.branch }}" \
+            -f expected_sha="${{ steps.candidate.outputs.candidate_sha }}" \
+            -f expected_version="${{ needs.calculate.outputs.version }}"
+          run_url=""
+          for attempt in {1..20}; do
+            run_url=$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow release-candidate.yml \
+              --branch "${{ steps.push.outputs.branch }}" \
+              --event workflow_dispatch \
+              --limit 20 \
+              --json headSha,url \
+              --jq '.[] | select(.headSha == "${{ steps.candidate.outputs.candidate_sha }}") | .url' \
+              | head -n 1)
+            [[ -n "$run_url" ]] && break
+            sleep 3
+          done
+          test -n "$run_url"
+          echo "run_url=$run_url" >> "$GITHUB_OUTPUT"
+
+      - name: Candidate preparation summary
+        shell: bash
+        run: |
+          {
+            echo "## Prepared v1.2.0 candidate"
+            echo ""
+            echo "- Base main SHA: \`${{ needs.calculate.outputs.base_sha }}\`"
+            echo "- Candidate SHA: \`${{ steps.candidate.outputs.candidate_sha }}\`"
+            echo "- Candidate version: \`${{ needs.calculate.outputs.version }}\`"
+            echo "- Candidate branch: \`${{ steps.push.outputs.branch }}\`"
+            echo "- Release notes: \`release-notes/v1.2.0.md\`"
+            echo "- Evidence run: ${{ steps.evidence.outputs.run_url }}"
+            echo ""
+            echo "### Changelog section"
+            echo '```markdown'
+            awk '/^## v1\.2\.0 /{show=1} show && /^## / && !/^## v1\.2\.0 /{exit} show' CHANGELOG.md
+            echo '```'
+            echo ""
+            echo "main was not changed; no final tag, GitHub Release, or PyPI publication was created."
+          } >> "$GITHUB_STEP_SUMMARY"

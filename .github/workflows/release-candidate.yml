@@ -1,0 +1,550 @@
+name: Release candidate evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_ref:
+        description: Immutable release-candidate/* branch
+        required: true
+        type: string
+      expected_sha:
+        description: Exact candidate commit SHA
+        required: true
+        type: string
+      expected_version:
+        description: Exact candidate package version
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      candidate_ref:
+        required: true
+        type: string
+      expected_sha:
+        required: true
+        type: string
+      expected_version:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  issues: read
+
+concurrency:
+  group: release-candidate-${{ inputs.candidate_ref }}
+  cancel-in-progress: false
+
+env:
+  CANDIDATE_REF: ${{ inputs.candidate_ref }}
+  CANDIDATE_SHA: ${{ inputs.expected_sha }}
+  CANDIDATE_VERSION: ${{ inputs.expected_version }}
+
+jobs:
+  validate-candidate:
+    name: Validate immutable candidate identity
+    runs-on: ubuntu-latest
+    outputs:
+      parent_sha: ${{ steps.identity.outputs.parent_sha }}
+    steps:
+      - name: Refuse a non-candidate branch
+        shell: bash
+        run: |
+          [[ "$CANDIDATE_REF" =~ ^release-candidate/v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$CANDIDATE_REF" = "release-candidate/v$CANDIDATE_VERSION"
+          test "$CANDIDATE_VERSION" = "1.2.0"
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+
+      - name: Check out candidate branch with full history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.candidate_ref }}
+          fetch-depth: 0
+
+      - name: Verify SHA, parent, main and version metadata
+        id: identity
+        shell: bash
+        run: |
+          git fetch origin main "$CANDIDATE_REF"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test "$(git rev-parse "origin/$CANDIDATE_REF")" = "$CANDIDATE_SHA"
+          parent_sha=$(git rev-parse HEAD^)
+          test "$parent_sha" = "$(git rev-parse origin/main)"
+          python -m release_gate.cli validate-candidate \
+            --candidate-ref "$CANDIDATE_REF" \
+            --expected-sha "$CANDIDATE_SHA" \
+            --expected-version "$CANDIDATE_VERSION" \
+            --expected-parent "$parent_sha" \
+            --output candidate-identity.json
+          echo "parent_sha=$parent_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Upload candidate identity
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: candidate-identity
+          path: candidate-identity.json
+          if-no-files-found: error
+          retention-days: 30
+
+  build-distributions:
+    name: Build ${{ matrix.name }} wheels
+    needs: validate-candidate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            manylinux: '2_17'
+            default_smoke: built-not-smoke-tested
+          - name: linux-aarch64
+            os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            manylinux: '2_17'
+            default_smoke: artifact-validated-not-physical-smoke
+          - name: macos-x86_64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            manylinux: off
+            default_smoke: built-not-smoke-tested
+          - name: macos-arm64
+            os: macos-15
+            target: aarch64-apple-darwin
+            manylinux: off
+            default_smoke: built-not-smoke-tested
+          - name: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            manylinux: off
+            default_smoke: built-not-smoke-tested
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out exact candidate SHA
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.expected_sha }}
+
+      - name: Set up QEMU for Linux ARM64 artifact validation
+        if: matrix.name == 'linux-aarch64'
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Set up all supported Python interpreters
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: |
+            3.10
+            3.11
+            3.12
+            3.13
+            3.14
+
+      - name: Build candidate wheels once
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --locked --find-interpreter --compatibility pypi
+          maturin-version: v1.14.1
+
+      - name: Set up smoke-test Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+
+      - name: Install exact CPython 3.13 wheel
+        if: matrix.name != 'linux-aarch64'
+        shell: bash
+        run: |
+          candidate_wheel=$(find target/wheels -name '*cp313*.whl' -print -quit)
+          test -n "$candidate_wheel"
+          echo "SMOKED_WHEEL=$(basename "$candidate_wheel")" >> "$GITHUB_ENV"
+          python -m pip install --upgrade "pydantic>=2,<3"
+          python -m pip install --force-reinstall --no-index "$candidate_wheel"
+
+      - name: Smoke-test installed bytes outside checkout
+        if: matrix.name != 'linux-aarch64'
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          python "$GITHUB_WORKSPACE/tests/test_wheel_isolation.py"
+          EXPECTED_LOCALQUEUE_VERSION="$CANDIDATE_VERSION" \
+            python "$GITHUB_WORKSPACE/scripts/smoke_installed_wheel.py"
+
+      - name: Validate Linux ARM64 artifacts without claiming physical smoke
+        if: matrix.name == 'linux-aarch64'
+        shell: bash
+        run: |
+          for tag in cp310 cp311 cp312 cp313 cp314; do
+            test "$(find target/wheels -name "*${tag}*aarch64.whl" | wc -l)" -eq 1
+          done
+          echo "Linux ARM64 wheels were validated under the cross-build/QEMU path; this is not physical ARM64 evidence." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build the single source distribution
+        if: matrix.name == 'linux-x86_64'
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
+        with:
+          command: sdist
+          args: --out target/dist
+          maturin-version: v1.14.1
+
+      - name: Bootstrap packaging for artifact inventory
+        run: python -m pip install --upgrade "packaging>=24,<26"
+
+      - name: Create distribution inventory fragment
+        shell: bash
+        run: |
+          patterns=(--pattern '*.whl')
+          smoke_args=()
+          if [[ -n "${SMOKED_WHEEL:-}" ]]; then
+            smoke_args=(--smoke-passed-filename "$SMOKED_WHEEL")
+          fi
+          if [[ "${{ matrix.name }}" == linux-x86_64 ]]; then
+            cp target/dist/*.tar.gz target/wheels/
+            patterns+=(--pattern '*.tar.gz')
+          fi
+          python -m release_gate.cli inventory \
+            --directory target/wheels \
+            "${patterns[@]}" \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --version "$CANDIDATE_VERSION" \
+            --build-job "${{ matrix.name }}" \
+            --smoke-status "${{ matrix.default_smoke }}" \
+            "${smoke_args[@]}" \
+            --output "target/wheels/inventory-${{ matrix.name }}.json"
+
+      - name: Upload immutable candidate distributions
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: candidate-distributions-${{ matrix.name }}
+          path: |
+            target/wheels/*.whl
+            target/wheels/*.tar.gz
+            target/wheels/inventory-*.json
+          if-no-files-found: error
+          retention-days: 30
+
+  complete-ci:
+    name: Complete CI
+    needs: validate-candidate
+    uses: ./.github/workflows/ci.yml
+    with:
+      candidate_ref: ${{ inputs.candidate_ref }}
+      expected_sha: ${{ inputs.expected_sha }}
+      expected_version: ${{ inputs.expected_version }}
+
+  soak:
+    name: Scheduled multiprocess soak profile
+    needs: [validate-candidate, build-distributions]
+    uses: ./.github/workflows/stress.yml
+    with:
+      candidate_ref: ${{ inputs.candidate_ref }}
+      expected_sha: ${{ inputs.expected_sha }}
+      expected_version: ${{ inputs.expected_version }}
+      wheel_artifact: candidate-distributions-linux-x86_64
+
+  chaos:
+    name: Complete operational chaos campaign
+    needs: validate-candidate
+    uses: ./.github/workflows/chaos.yml
+    with:
+      candidate_ref: ${{ inputs.candidate_ref }}
+      expected_sha: ${{ inputs.expected_sha }}
+      expected_version: ${{ inputs.expected_version }}
+
+  storage-compatibility:
+    name: Online and offline storage compatibility
+    needs: [validate-candidate, build-distributions]
+    uses: ./.github/workflows/storage-compatibility.yml
+    with:
+      candidate_ref: ${{ inputs.candidate_ref }}
+      expected_sha: ${{ inputs.expected_sha }}
+      expected_version: ${{ inputs.expected_version }}
+      wheel_artifact: candidate-distributions-linux-x86_64
+
+  release-benchmarks:
+    name: Candidate wheel benchmarks
+    needs: [validate-candidate, build-distributions]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out exact candidate SHA
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.expected_sha }}
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Download exact candidate wheels
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: candidate-distributions-linux-x86_64
+          path: ${{ runner.temp }}/candidate-distributions
+      - name: Install exact CPython 3.13 wheel
+        shell: bash
+        run: |
+          candidate_wheel=$(find "$RUNNER_TEMP/candidate-distributions" -name '*cp313*manylinux*x86_64.whl' -print -quit)
+          test -n "$candidate_wheel"
+          python -m pip install --force-reinstall --no-index "$candidate_wheel"
+      - name: Run standard and canonical multiprocess profiles outside checkout
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          LOCALQUEUE_COMMIT_SHA="$CANDIDATE_SHA" python -m localqueue.benchmark \
+            --profile standard --output benchmark-standard.json
+          python -m localqueue.benchmark render benchmark-standard.json --output benchmark-standard.md
+          LOCALQUEUE_COMMIT_SHA="$CANDIDATE_SHA" python -m localqueue.benchmark \
+            --profile multiprocess-release --output benchmark-multiprocess-release.json
+          python -m localqueue.benchmark render benchmark-multiprocess-release.json \
+            --output benchmark-multiprocess-release.md
+      - name: Stamp and validate candidate identity
+        shell: bash
+        run: |
+          module_path=$(cd "$RUNNER_TEMP" && python -c 'import localqueue; print(localqueue.__file__)')
+          for report in benchmark-standard benchmark-multiprocess-release; do
+            python -m release_gate.cli stamp-report \
+              --report "$RUNNER_TEMP/${report}.json" \
+              --candidate-sha "$CANDIDATE_SHA" \
+              --candidate-ref "$CANDIDATE_REF" \
+              --version "$CANDIDATE_VERSION" \
+              --installed-module-path "$module_path" \
+              --require-wheel \
+              --output "$RUNNER_TEMP/${report}.json"
+            {
+              echo
+              echo "## Release candidate identity"
+              echo
+              echo "- Candidate SHA: \`$CANDIDATE_SHA\`"
+              echo "- Package/native version: \`$CANDIDATE_VERSION\`"
+              echo "- Candidate ref: \`$CANDIDATE_REF\`"
+            } >> "$RUNNER_TEMP/${report}.md"
+          done
+      - name: Upload benchmark evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-benchmarks
+          path: |
+            ${{ runner.temp }}/benchmark-standard.json
+            ${{ runner.temp }}/benchmark-standard.md
+            ${{ runner.temp }}/benchmark-multiprocess-release.json
+            ${{ runner.temp }}/benchmark-multiprocess-release.md
+          if-no-files-found: error
+          retention-days: 30
+
+  documentation:
+    name: Release documentation consistency
+    needs: validate-candidate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact candidate SHA
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.expected_sha }}
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+      - name: Install documentation tooling
+        run: python -m pip install --upgrade "zensical>=0.0.51,<0.1" "pytest>=8,<10"
+      - name: Build and validate release documentation
+        run: |
+          zensical build --clean
+          pytest -q tests/test_operational_envelope_docs.py tests/test_release_documentation.py
+          python -m release_gate.cli summary-report \
+            --name documentation \
+            --status passed \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --candidate-ref "$CANDIDATE_REF" \
+            --version "$CANDIDATE_VERSION" \
+            --output documentation-summary.json
+      - name: Upload documentation summary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-documentation
+          path: documentation-summary.json
+          if-no-files-found: error
+          retention-days: 30
+
+  audits:
+    name: Open-issue and security audit
+    needs: [validate-candidate, complete-ci]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact candidate SHA
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.expected_sha }}
+      - name: Read every open issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 1000 \
+            --json number,title,body,labels,url > open-issues.json
+          owner=${GITHUB_REPOSITORY%/*}
+          repository=${GITHUB_REPOSITORY#*/}
+          gh api graphql -F owner="$owner" -F repository="$repository" -f query='
+            query($owner: String!, $repository: String!) {
+              repository(owner: $owner, name: $repository) {
+                issues(first: 100, states: [OPEN, CLOSED]) {
+                  nodes {
+                    number
+                    state
+                    title
+                    closedByPullRequestsReferences(first: 10) {
+                      nodes { number merged mergeCommit { oid } }
+                    }
+                  }
+                }
+              }
+            }' --jq '.data.repository.issues.nodes' > dependency-issues.json
+          python -m release_gate.cli issue-audit \
+            --issues open-issues.json \
+            --dependency-issues dependency-issues.json \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --candidate-ref "$CANDIDATE_REF" \
+            --version "$CANDIDATE_VERSION" \
+            --output open-issue-audit.json
+      - name: Check security policy and private reporting status
+        id: security
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          private_status=unknown
+          if response=$(gh api "repos/$GITHUB_REPOSITORY/private-vulnerability-reporting" 2>/dev/null); then
+            if [[ "$(jq -r '.enabled' <<<"$response")" == true ]]; then
+              private_status=enabled
+            else
+              private_status=disabled
+            fi
+          fi
+          while read -r url; do curl --fail --silent --show-error --location --head "$url" >/dev/null; done < <(
+            grep -oE 'https://github.com/[^)]+' .github/SECURITY.md
+          )
+          python -m release_gate.cli security-audit \
+            --private-reporting "$private_status" \
+            --gitleaks passed \
+            --cargo-deny passed \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --candidate-ref "$CANDIDATE_REF" \
+            --version "$CANDIDATE_VERSION" \
+            --output security-audit.json
+      - name: Upload audits
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-audits
+          path: |
+            open-issue-audit.json
+            security-audit.json
+          if-no-files-found: error
+          retention-days: 30
+
+  assemble-evidence:
+    name: Validate and assemble evidence manifest
+    needs:
+      - validate-candidate
+      - build-distributions
+      - complete-ci
+      - soak
+      - chaos
+      - storage-compatibility
+      - release-benchmarks
+      - documentation
+      - audits
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact candidate SHA
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.expected_sha }}
+      - name: Set up Python for artifact manifest validation
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+      - name: Bootstrap packaging for artifact manifest validation
+        run: python -m pip install --upgrade "packaging>=24,<26"
+      - name: Download candidate distributions
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          pattern: candidate-distributions-*
+          path: evidence/distributions
+          merge-multiple: true
+      - name: Download all report artifacts
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          pattern: '*'
+          path: evidence/downloads
+      - name: Normalize evidence bundle filenames
+        shell: bash
+        run: |
+          mkdir -p evidence/bundle
+          cp evidence/distributions/*.whl evidence/bundle/
+          cp evidence/distributions/*.tar.gz evidence/bundle/
+          cp evidence/downloads/ci-summary/ci-summary.json evidence/bundle/ci-summary.json
+          cp evidence/downloads/ci-wheel-smoke-summary/wheel-smoke-summary.json evidence/bundle/wheel-smoke-summary.json
+          cp evidence/downloads/deterministic-crash/deterministic-crash.{json,md} evidence/bundle/
+          cp evidence/downloads/stress-report-${{ github.run_id }}/stress-report.json evidence/bundle/multiprocess-soak.json
+          cp evidence/downloads/stress-report-${{ github.run_id }}/stress-report.md evidence/bundle/multiprocess-soak.md
+          cp evidence/downloads/chaos-report-${{ github.run_id }}/chaos-report.json evidence/bundle/chaos.json
+          cp evidence/downloads/chaos-report-${{ github.run_id }}/chaos.md evidence/bundle/chaos.md
+          cp evidence/downloads/storage-compatibility-${{ github.run_id }}/compatibility-report.json evidence/bundle/compatibility-online.json
+          cp evidence/downloads/storage-compatibility-${{ github.run_id }}/compatibility-report-offline.json evidence/bundle/compatibility-offline.json
+          cp evidence/downloads/storage-compatibility-${{ github.run_id }}/compatibility.md evidence/bundle/compatibility.md
+          cp evidence/downloads/release-benchmarks/* evidence/bundle/
+          cp evidence/downloads/release-documentation/documentation-summary.json evidence/bundle/
+          cp evidence/downloads/release-audits/*.json evidence/bundle/
+      - name: Merge and verify exact distribution inventory
+        shell: bash
+        run: |
+          python -m release_gate.cli merge-inventory \
+            evidence/distributions/inventory-*.json \
+            --distributions evidence/bundle \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --version "$CANDIDATE_VERSION" \
+            --output evidence/bundle/wheel-inventory.json
+      - name: Record actual required workflow conclusions
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        shell: bash
+        run: |
+          jq '{
+            "ci": .["complete-ci"].result,
+            "wheels": .["build-distributions"].result,
+            "soak": .soak.result,
+            "crash": .["complete-ci"].result,
+            "chaos": .chaos.result,
+            "storage-compatibility": .["storage-compatibility"].result,
+            "standard-benchmark": .["release-benchmarks"].result,
+            "canonical-benchmark": .["release-benchmarks"].result,
+            "documentation": .documentation.result,
+            "open-issue-audit": .audits.result,
+            "security-audit": .audits.result
+          }' <<<"$NEEDS_JSON" > evidence/job-results.json
+      - name: Generate and validate immutable evidence manifest
+        run: |
+          python -m release_gate.cli generate-manifest \
+            --bundle evidence/bundle \
+            --inventory evidence/bundle/wheel-inventory.json \
+            --job-results evidence/job-results.json \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --parent-sha "${{ needs.validate-candidate.outputs.parent_sha }}" \
+            --candidate-ref "$CANDIDATE_REF" \
+            --version "$CANDIDATE_VERSION" \
+            --run-id "${{ github.run_id }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --actor "${{ github.actor }}" \
+            --output evidence/bundle/evidence-manifest.json \
+            --summary evidence/bundle/release-evidence-summary.md
+      - name: Upload complete evidence bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-evidence-v${{ inputs.expected_version }}
+          path: evidence/bundle/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Publish human-readable run summary
+        run: cat evidence/bundle/release-evidence-summary.md >> "$GITHUB_STEP_SUMMARY"
