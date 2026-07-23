@@ -336,7 +336,7 @@ jobs:
             --version "$CANDIDATE_VERSION" \
             --output current-open-issue-audit.json
           if response=$(gh api "repos/$GITHUB_REPOSITORY/private-vulnerability-reporting" 2>/dev/null); then
-            test "$(jq -r .enabled <<<"$response)" = true
+            test "$(jq -r .enabled <<<"$response")" = true
           else
             test "$PRIVATE_REPORTING_CONFIRMED" = true
           fi
