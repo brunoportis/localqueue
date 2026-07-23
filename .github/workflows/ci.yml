@@ -196,6 +196,48 @@ jobs:
             --build-job "${{ matrix.name }}" \
             --version "$version"
 
+      - name: Set up CPython 3.13 benchmark smoke environment
+        if: matrix.name == 'linux-x86_64'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+
+      - name: Install and preflight CPython 3.13 wheel benchmark smoke
+        if: matrix.name == 'linux-x86_64'
+        shell: bash
+        run: |
+          candidate_wheel=$(find target/wheels -name '*cp313*manylinux*x86_64.whl' -print -quit)
+          test -n "$candidate_wheel"
+          python -m pip install --upgrade "pydantic>=2,<3"
+          python -m pip install --force-reinstall --no-index --no-deps "$candidate_wheel"
+          expected_version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          export EXPECTED_LOCALQUEUE_VERSION="$expected_version"
+          cd "$RUNNER_TEMP"
+          python - <<'PY'
+          import importlib.metadata
+          import os
+          import localqueue
+          import pydantic
+          from localqueue import localqueue as native
+          from localqueue.bus import BaseEvent, BusTopology, EventBus
+
+          expected_version = os.environ["EXPECTED_LOCALQUEUE_VERSION"]
+          if native.__version__ != expected_version:
+              raise SystemExit("wheel benchmark smoke preflight failed: localqueue version mismatch")
+          if importlib.metadata.version("localqueue") != expected_version:
+              raise SystemExit("wheel benchmark smoke preflight failed: metadata version mismatch")
+          if os.environ["GITHUB_WORKSPACE"] in os.path.realpath(localqueue.__file__):
+              raise SystemExit("wheel benchmark smoke preflight failed: localqueue loaded from checkout")
+          print(f"localqueue={native.__version__} pydantic={pydantic.__version__}")
+          PY
+
+      - name: Run CPython 3.13 wheel benchmark smoke outside checkout
+        if: matrix.name == 'linux-x86_64'
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          python -m localqueue.benchmark --profile smoke --output benchmark-smoke.json
+
   secrets:
     name: Secret scan
     runs-on: ubuntu-latest
