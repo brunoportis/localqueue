@@ -375,7 +375,7 @@ jobs:
             and .counters.sqlite_busy_exhausted == 0
             and .counters.unexpected_consumer_exits == 0
           ' sqlite-busy-put-success.json
-          test "$(sqlite3 sqlite-busy-put-success-db/localqueue.db \"SELECT COUNT(*) FROM messages WHERE job_id = 'stress-0';\")" -eq 1
+          test "$(sqlite3 sqlite-busy-put-success-db/localqueue.db "SELECT COUNT(*) FROM messages WHERE job_id = 'stress-0';")" -eq 1
 
       - name: Prove deterministic SQLite busy exhaustion reports failure
         if: matrix.name == 'linux-x86_64'
