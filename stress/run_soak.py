@@ -34,17 +34,55 @@ from release_gate.subject import installed_subject  # noqa: E402
 
 
 def produce(
-    path: str, queue_name: str, first: int, count: int, lease_seconds: float
+    path: str,
+    queue_name: str,
+    first: int,
+    count: int,
+    lease_seconds: float,
+    producer_id: int,
+    stop: Any,
+    counters: dict[str, Any],
+    events: Any | None = None,
+    deadline: float | None = None,
+    retry_policy: Any = None,
+    sqlite_contention_mode: str | None = None,
 ) -> None:
+    retry_policy = retry_policy or DEFAULT_SQLITE_RETRY_POLICY
     queue = SimpleQueue(
         path, name=queue_name, lease_seconds=lease_seconds, max_retries=3
     )
     try:
         for index in range(first, first + count):
             job_id = f"stress-{index}"
-            queue.put({"id": job_id, "producer": os.getpid()}, job_id=job_id)
+            injected_calls = 0
+
+            def put() -> Any:
+                nonlocal injected_calls
+                if producer_id == 0 and job_id == "stress-0":
+                    injected_calls += 1
+                    if sqlite_contention_mode == "put-exhausted" or (
+                        sqlite_contention_mode == "put-success" and injected_calls == 1
+                    ):
+                        raise LocalQueueError("database is locked")
+                return queue.put({"id": job_id, "producer": os.getpid()}, job_id=job_id)
+
+            retry_transient_sqlite_contention(
+                "put",
+                put,
+                stop=stop,
+                deadline=deadline,
+                policy=retry_policy,
+                counters=counters,
+                consumer_id=producer_id,
+                events=events,
+                role="producer",
+                job_id=job_id,
+            )
     finally:
         queue.close()
+        close_events = getattr(events, "close", None)
+        if callable(close_events):
+            close_events()
 
 
 CHILD_COUNTERS = (
@@ -59,6 +97,7 @@ CHILD_COUNTERS = (
     "sqlite_busy_ack",
     "sqlite_busy_nack",
     "sqlite_busy_fail",
+    "sqlite_busy_put",
     "sqlite_busy_retries_total",
     "sqlite_busy_exhausted",
 )
@@ -78,10 +117,21 @@ def counter_snapshot(counters: dict[str, Any]) -> dict[str, int]:
 
 
 def diagnostic_event(
-    events: Any | None, kind: str, consumer_id: int, **details: object
+    events: Any | None,
+    kind: str,
+    consumer_id: int,
+    *,
+    role: str = "consumer",
+    job_id: str | None = None,
+    **details: object,
 ) -> None:
     if events is not None:
-        event = {"kind": kind, "consumer_id": consumer_id, **details}
+        identity = "producer_id" if role == "producer" else "consumer_id"
+        event = {"kind": kind, identity: consumer_id, **details}
+        if role != "consumer":
+            event["role"] = role
+        if job_id is not None:
+            event["job_id"] = job_id
         send = getattr(events, "send", None)
         if callable(send):
             if kind == "sqlite_busy_exhausted":
@@ -152,6 +202,8 @@ def retry_transient_sqlite_contention(
     counters: dict[str, Any],
     consumer_id: int,
     events: Any | None,
+    role: str = "consumer",
+    job_id: str | None = None,
 ) -> Any:
     """Retry only known transient SQLite contention with bounded backoff."""
     attempts = 0
@@ -164,7 +216,7 @@ def retry_transient_sqlite_contention(
             raise SQLiteRetryStopped
         now = time.monotonic()
         if (
-            operation == "get"
+            operation in {"get", "put"}
             and calls > 0
             and deadline is not None
             and now + policy.native_call_budget_seconds > deadline
@@ -175,6 +227,8 @@ def retry_transient_sqlite_contention(
                 events,
                 "sqlite_busy_exhausted",
                 consumer_id,
+                role=role,
+                job_id=job_id,
                 operation=operation,
                 attempts=attempts,
                 calls=calls,
@@ -201,7 +255,7 @@ def retry_transient_sqlite_contention(
             increment(counters[f"sqlite_busy_{operation}"])
             now = time.monotonic()
             exhausted = attempts >= policy.max_attempts
-            if operation == "get":
+            if operation in {"get", "put"}:
                 exhausted = exhausted or (deadline is not None and now >= deadline)
             if exhausted:
                 elapsed_seconds = now - started_at
@@ -210,6 +264,8 @@ def retry_transient_sqlite_contention(
                     events,
                     "sqlite_busy_exhausted",
                     consumer_id,
+                    role=role,
+                    job_id=job_id,
                     operation=operation,
                     attempts=attempts,
                     calls=calls,
@@ -401,6 +457,9 @@ def consume(
                     diagnostic_event(events, operation, consumer_id)
     finally:
         queue.close()
+        close_events = getattr(events, "close", None)
+        if callable(close_events):
+            close_events()
 
 
 def classify_consumer_exit(exit_code: int | None, *, stopping: bool) -> str:
@@ -451,6 +510,7 @@ def empty_counters() -> dict[str, int]:
         "sqlite_busy_ack": 0,
         "sqlite_busy_nack": 0,
         "sqlite_busy_fail": 0,
+        "sqlite_busy_put": 0,
         "sqlite_busy_retries_total": 0,
         "sqlite_busy_exhausted": 0,
         "intentional_crashes": 0,
@@ -531,8 +591,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("os atrasos de retry SQLite devem ser positivos")
     if args.sqlite_retry_initial_delay > args.sqlite_retry_max_delay:
         raise ValueError("o atraso inicial SQLite não pode exceder o máximo")
-    if args.sqlite_retry_attempts < 1:
-        raise ValueError("--sqlite-retry-attempts deve ser positivo")
+    if not 1 <= args.sqlite_retry_attempts <= 2:
+        raise ValueError("--sqlite-retry-attempts deve estar entre 1 e 2")
     if args.sqlite_native_call_budget <= 0:
         raise ValueError("--sqlite-native-call-budget deve ser positivo")
     if args.consumers < 1 or args.producers < 1:
@@ -604,7 +664,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         }
         for diagnostic in reversed(diagnostics):
             if (
-                diagnostic.get("consumer_id") == identity
+                diagnostic.get(f"{role}_id") == identity
                 and diagnostic.get("kind") == "sqlite_busy_exhausted"
             ):
                 item["sqlite_contention"] = diagnostic
@@ -644,12 +704,28 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         first = 0
         for producer_id in range(args.producers):
             count = messages_per_producer + (producer_id < remainder)
+            diagnostics_recv, diagnostics_send = context.Pipe(duplex=False)
             process = context.Process(
                 target=produce,
-                args=(str(path), queue_name, first, count, args.lease_seconds),
+                args=(
+                    str(path),
+                    queue_name,
+                    first,
+                    count,
+                    args.lease_seconds,
+                    producer_id,
+                    stop,
+                    child_counters,
+                    diagnostics_send,
+                    started_at + args.duration,
+                    retry_policy,
+                    args.sqlite_contention_mode,
+                ),
                 name=f"localqueue-producer-{producer_id}",
             )
             process.start()
+            diagnostics_send.close()
+            diagnostic_receivers.append(diagnostics_recv)
             producers.append(process)
             first += count
         consumers = [
@@ -665,6 +741,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 if producer_id not in observed_producers and not process.is_alive():
                     process.join()
                     observed_producers.add(producer_id)
+                    collect_diagnostics()
                     classification = (
                         "normal_shutdown"
                         if process.exitcode == 0
@@ -782,9 +859,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     ]
     if exhausted:
         detail = exhausted[0]
+        role = detail.get("role", "consumer")
+        identity = detail[f"{role}_id"]
         failure_reason = (
-            "sqlite contention exhausted: consumer "
-            f"{detail['consumer_id']}, operation {detail['operation']}, "
+            f"sqlite contention exhausted: {role} "
+            f"{identity}, operation {detail['operation']}, "
             f"{detail['attempts']} attempts, {detail['elapsed_seconds']:.2f} seconds"
         )
     invariant_errors = report_invariant_errors(counters, last_state, exits, restarts)
@@ -888,6 +967,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
             "sqlite_busy_ack",
             "sqlite_busy_nack",
             "sqlite_busy_fail",
+            "sqlite_busy_put",
             "sqlite_busy_retries_total",
             "sqlite_busy_exhausted",
         )
@@ -899,7 +979,9 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
             {
                 f"sqlite_contention_{name}": diagnostic[name]
                 for name in (
-                    "consumer_id",
+                    "consumer_id"
+                    if diagnostic.get("role", "consumer") == "consumer"
+                    else "producer_id",
                     "operation",
                     "attempts",
                     "calls",
@@ -909,6 +991,9 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                 )
             }
         )
+        if diagnostic.get("role") == "producer":
+            result["summary"]["sqlite_contention_role"] = "producer"
+            result["summary"]["sqlite_contention_job_id"] = diagnostic["job_id"]
         diagnostic_exit = next(
             (
                 item["exit_code"]
@@ -955,6 +1040,8 @@ def parse_args() -> argparse.Namespace:
         choices=(
             "get-success",
             "get-exhausted",
+            "put-success",
+            "put-exhausted",
             "ack-success",
             "ack-lease-expired",
             "ack-delayed-lease-expired",
