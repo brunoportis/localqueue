@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import multiprocessing as mp
+import time
 from pathlib import Path
 
 import pytest
@@ -80,6 +81,7 @@ def soak_args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
         "sqlite_retry_initial_delay": 0.01,
         "sqlite_retry_max_delay": 0.1,
         "sqlite_retry_attempts": 8,
+        "sqlite_native_call_budget": 5.0,
         "path": tmp_path / "database",
         "output": None,
         "markdown_output": None,
@@ -213,6 +215,7 @@ def test_supervisor_failure_always_writes_reports(
         sqlite_retry_initial_delay=0.01,
         sqlite_retry_max_delay=0.1,
         sqlite_retry_attempts=8,
+        sqlite_native_call_budget=5.0,
         path=tmp_path / "database",
         output=output,
         markdown_output=markdown,
@@ -526,6 +529,31 @@ def test_busy_retry_respects_deadline() -> None:
         )
 
 
+def test_busy_retry_does_not_start_another_slow_native_call_without_budget() -> None:
+    stop = _StopAfterTransition()
+    counters = run_soak.shared_counters(mp.get_context("spawn"))
+    calls = 0
+
+    def slow_busy() -> None:
+        nonlocal calls
+        calls += 1
+        time.sleep(0.01)
+        raise LocalQueueError("database is locked")
+
+    with pytest.raises(run_soak.SQLiteContentionExhausted) as raised:
+        run_soak.retry_transient_sqlite_contention(
+            "get",
+            slow_busy,
+            stop=stop,
+            deadline=time.monotonic() + 0.02,
+            policy=run_soak.SQLiteRetryPolicy(0.0, 0.0, 2, 0.05),
+            counters=counters,
+            consumer_id=0,
+            events=None,
+        )
+    assert calls == raised.value.calls == 1
+
+
 def test_busy_retry_exhaustion_is_reported_with_operation_and_attempts() -> None:
     stop = _StopAfterTransition()
     counters = run_soak.shared_counters(mp.get_context("spawn"))
@@ -543,9 +571,11 @@ def test_busy_retry_exhaustion_is_reported_with_operation_and_attempts() -> None
             events=events,
         )
     assert run_soak.counter_snapshot(counters)["sqlite_busy_exhausted"] == 1
-    assert events.items[-1] == {
-        "kind": "sqlite_busy_exhausted",
-        "consumer_id": 7,
-        "operation": "ack",
-        "attempts": 2,
-    }
+    event = events.items[-1]
+    assert event["kind"] == "sqlite_busy_exhausted"
+    assert event["consumer_id"] == 7
+    assert event["operation"] == "ack"
+    assert event["attempts"] == event["calls"] == 2
+    assert event["message"] == "database is locked"
+    assert event["elapsed_seconds"] >= 0
+    assert event["backoff_seconds"] == 0

@@ -81,7 +81,12 @@ def diagnostic_event(
     events: Any | None, kind: str, consumer_id: int, **details: object
 ) -> None:
     if events is not None:
-        events.put({"kind": kind, "consumer_id": consumer_id, **details})
+        event = {"kind": kind, "consumer_id": consumer_id, **details}
+        send = getattr(events, "send", None)
+        if callable(send):
+            send(event)
+        else:
+            events.put(event)
 
 
 def is_transient_sqlite_contention(error: LocalQueueError) -> bool:
@@ -94,16 +99,29 @@ def is_transient_sqlite_contention(error: LocalQueueError) -> bool:
 class SQLiteRetryPolicy:
     initial_delay_seconds: float = 0.01
     max_delay_seconds: float = 0.1
-    max_attempts: int = 8
+    max_attempts: int = 2
+    native_call_budget_seconds: float = 5.0
 
 
 DEFAULT_SQLITE_RETRY_POLICY = SQLiteRetryPolicy()
 
 
 class SQLiteContentionExhausted(LocalQueueError):
-    def __init__(self, operation: str, attempts: int) -> None:
+    def __init__(
+        self,
+        operation: str,
+        attempts: int,
+        calls: int,
+        backoff_seconds: float,
+        elapsed_seconds: float,
+        message: str,
+    ) -> None:
         self.operation = operation
         self.attempts = attempts
+        self.calls = calls
+        self.backoff_seconds = backoff_seconds
+        self.elapsed_seconds = elapsed_seconds
+        self.message = message
         super().__init__(
             f"sqlite busy retry exhausted during {operation} after {attempts} attempts"
         )
@@ -136,20 +154,54 @@ def retry_transient_sqlite_contention(
 ) -> Any:
     """Retry only known transient SQLite contention with bounded backoff."""
     attempts = 0
+    calls = 0
+    backoff_seconds = 0.0
+    started_at = time.monotonic()
+    last_message = "database is locked"
     while True:
         if stop.is_set():
             raise SQLiteRetryStopped
+        now = time.monotonic()
+        if (
+            calls > 0
+            and deadline is not None
+            and now + policy.native_call_budget_seconds > deadline
+        ):
+            elapsed_seconds = now - started_at
+            increment(counters["sqlite_busy_exhausted"])
+            diagnostic_event(
+                events,
+                "sqlite_busy_exhausted",
+                consumer_id,
+                operation=operation,
+                attempts=attempts,
+                calls=calls,
+                backoff_seconds=backoff_seconds,
+                elapsed_seconds=elapsed_seconds,
+                message=last_message,
+            )
+            raise SQLiteContentionExhausted(
+                operation,
+                attempts,
+                calls,
+                backoff_seconds,
+                elapsed_seconds,
+                last_message,
+            )
         try:
+            calls += 1
             return action()
         except LocalQueueError as error:
             if not is_transient_sqlite_contention(error):
                 raise
             attempts += 1
+            last_message = " ".join(str(error).split())
             increment(counters[f"sqlite_busy_{operation}"])
             now = time.monotonic()
             if attempts >= policy.max_attempts or (
                 deadline is not None and now >= deadline
             ):
+                elapsed_seconds = now - started_at
                 increment(counters["sqlite_busy_exhausted"])
                 diagnostic_event(
                     events,
@@ -157,8 +209,19 @@ def retry_transient_sqlite_contention(
                     consumer_id,
                     operation=operation,
                     attempts=attempts,
+                    calls=calls,
+                    backoff_seconds=backoff_seconds,
+                    elapsed_seconds=elapsed_seconds,
+                    message=last_message,
                 )
-                raise SQLiteContentionExhausted(operation, attempts) from error
+                raise SQLiteContentionExhausted(
+                    operation,
+                    attempts,
+                    calls,
+                    backoff_seconds,
+                    elapsed_seconds,
+                    last_message,
+                ) from error
             delay = min(
                 policy.initial_delay_seconds * (2 ** (attempts - 1)),
                 policy.max_delay_seconds,
@@ -167,6 +230,7 @@ def retry_transient_sqlite_contention(
                 delay = min(delay, max(0.0, deadline - now))
             if delay > 0 and _wait_for_stop(stop, delay):
                 raise SQLiteRetryStopped
+            backoff_seconds += delay
             increment(counters["sqlite_busy_retries_total"])
 
 
@@ -212,6 +276,10 @@ def consume(
             # This synchronous shared-memory write must precede os._exit(17).
             increment(counters["claims"])
             diagnostic_event(events, "claim", consumer_id)
+            transition_deadline = min(
+                deadline if deadline is not None else float("inf"),
+                time.monotonic() + lease_seconds,
+            )
             choice = rng.random()
             if choice < crash_rate:
                 # Deliberately bypass cleanup to simulate a crash after claiming.
@@ -227,7 +295,7 @@ def consume(
                             job, delay=0.01, last_error="stress transient error"
                         ),
                         stop=stop,
-                        deadline=deadline,
+                        deadline=transition_deadline,
                         policy=retry_policy,
                         counters=counters,
                         consumer_id=consumer_id,
@@ -250,7 +318,7 @@ def consume(
                         operation,
                         lambda: queue.fail(job, last_error="stress permanent error"),
                         stop=stop,
-                        deadline=deadline,
+                        deadline=transition_deadline,
                         policy=retry_policy,
                         counters=counters,
                         consumer_id=consumer_id,
@@ -273,7 +341,7 @@ def consume(
                         operation,
                         lambda: queue.ack(job),
                         stop=stop,
-                        deadline=deadline,
+                        deadline=transition_deadline,
                         policy=retry_policy,
                         counters=counters,
                         consumer_id=consumer_id,
@@ -423,6 +491,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("o atraso inicial SQLite não pode exceder o máximo")
     if args.sqlite_retry_attempts < 1:
         raise ValueError("--sqlite-retry-attempts deve ser positivo")
+    if args.sqlite_native_call_budget <= 0:
+        raise ValueError("--sqlite-native-call-budget deve ser positivo")
     if args.consumers < 1 or args.producers < 1:
         raise ValueError("--producers e --consumers devem ser positivos")
     if args.nack_rate + args.fail_rate + args.crash_rate > 1:
@@ -442,10 +512,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         path.mkdir(parents=True, exist_ok=True)
 
     stop = context.Event()
+    diagnostics_recv, diagnostics_send = context.Pipe(duplex=False)
     retry_policy = SQLiteRetryPolicy(
         args.sqlite_retry_initial_delay,
         args.sqlite_retry_max_delay,
         args.sqlite_retry_attempts,
+        args.sqlite_native_call_budget,
     )
     child_counters = shared_counters(context)
     producers: list[mp.Process] = []
@@ -459,20 +531,31 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     restarts = [0] * args.consumers
     drained = False
     queue: SimpleQueue | None = None
+    diagnostics: list[dict[str, object]] = []
+
+    def collect_diagnostics() -> None:
+        while diagnostics_recv.poll():
+            diagnostics.append(diagnostics_recv.recv())
 
     def record_exit(
         role: str, identity: int, process: mp.Process, classification: str
     ) -> None:
         recorded_pids.add(process.pid)
-        exits.append(
-            {
-                "role": role,
-                "id": identity,
-                "pid": process.pid,
-                "exit_code": process.exitcode,
-                "classification": classification,
-            }
-        )
+        item: dict[str, object] = {
+            "role": role,
+            "id": identity,
+            "pid": process.pid,
+            "exit_code": process.exitcode,
+            "classification": classification,
+        }
+        for diagnostic in reversed(diagnostics):
+            if (
+                diagnostic.get("consumer_id") == identity
+                and diagnostic.get("kind") == "sqlite_busy_exhausted"
+            ):
+                item["sqlite_contention"] = diagnostic
+                break
+        exits.append(item)
 
     def start_consumer(consumer_id: int, restart: int = 0) -> mp.Process:
         process = context.Process(
@@ -488,7 +571,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 args.lease_seconds,
                 consumer_id,
                 child_counters,
-                None,
+                diagnostics_send,
                 args.transition_delay_seconds,
                 started_at + args.duration,
                 retry_policy,
@@ -537,6 +620,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 if process is None or process.is_alive() or stop.is_set():
                     continue
                 process.join()
+                collect_diagnostics()
                 classification, should_restart, error = handle_consumer_exit(
                     process.exitcode,
                     consumer_id,
@@ -618,6 +702,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         if queue is not None:
             queue.close()
 
+    collect_diagnostics()
+
     try:
         state = database_state(path, queue_name)
     except (sqlite3.Error, OSError) as error:
@@ -631,6 +717,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if failure_reason is None and not drained:
         failure_reason = "soak did not drain before --duration elapsed"
     counters.update(counter_snapshot(child_counters))
+    exhausted = [
+        item for item in diagnostics if item.get("kind") == "sqlite_busy_exhausted"
+    ]
+    if exhausted:
+        detail = exhausted[0]
+        failure_reason = (
+            "sqlite contention exhausted: consumer "
+            f"{detail['consumer_id']}, operation {detail['operation']}, "
+            f"{detail['attempts']} attempts, {detail['elapsed_seconds']:.2f} seconds"
+        )
     invariant_errors = report_invariant_errors(counters, last_state, exits, restarts)
     if failure_reason is None and invariant_errors:
         failure_reason = "report invariant failed: " + "; ".join(invariant_errors)
@@ -649,6 +745,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "restarts": restarts,
         "counters": counters,
         "exits": exits,
+        "sqlite_contention_diagnostics": exhausted,
         "last_stats": last_state,
         "database": state,
         "path": str(path),
@@ -720,6 +817,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         "sqlite_retry_initial_delay": args.sqlite_retry_initial_delay,
         "sqlite_retry_max_delay": args.sqlite_retry_max_delay,
         "sqlite_retry_attempts": args.sqlite_retry_attempts,
+        "sqlite_native_call_budget": args.sqlite_native_call_budget,
         "seed": args.seed,
     }
     result["summary"] = {
@@ -763,7 +861,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--transition-delay-seconds", type=float, default=0.0)
     parser.add_argument("--sqlite-retry-initial-delay", type=float, default=0.01)
     parser.add_argument("--sqlite-retry-max-delay", type=float, default=0.1)
-    parser.add_argument("--sqlite-retry-attempts", type=int, default=8)
+    parser.add_argument("--sqlite-retry-attempts", type=int, default=2)
+    parser.add_argument("--sqlite-native-call-budget", type=float, default=5.0)
     parser.add_argument("--path", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--markdown-output", type=Path)
