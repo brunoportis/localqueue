@@ -11,6 +11,7 @@ por horas aumentando ``--duration`` e ``--messages``.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import multiprocessing as mp
 import os
@@ -54,6 +55,12 @@ CHILD_COUNTERS = (
     "lease_losses_ack",
     "lease_losses_nack",
     "lease_losses_fail",
+    "sqlite_busy_get",
+    "sqlite_busy_ack",
+    "sqlite_busy_nack",
+    "sqlite_busy_fail",
+    "sqlite_busy_retries_total",
+    "sqlite_busy_exhausted",
 )
 
 
@@ -83,6 +90,86 @@ def is_transient_sqlite_contention(error: LocalQueueError) -> bool:
     return message in {"database is locked", "database is busy"}
 
 
+@dataclasses.dataclass(frozen=True)
+class SQLiteRetryPolicy:
+    initial_delay_seconds: float = 0.01
+    max_delay_seconds: float = 0.1
+    max_attempts: int = 8
+
+
+DEFAULT_SQLITE_RETRY_POLICY = SQLiteRetryPolicy()
+
+
+class SQLiteContentionExhausted(LocalQueueError):
+    def __init__(self, operation: str, attempts: int) -> None:
+        self.operation = operation
+        self.attempts = attempts
+        super().__init__(
+            f"sqlite busy retry exhausted during {operation} after {attempts} attempts"
+        )
+
+
+class SQLiteRetryStopped(Exception):
+    pass
+
+
+def _wait_for_stop(stop: Any, delay_seconds: float) -> bool:
+    wait = getattr(stop, "wait", None)
+    if callable(wait):
+        return bool(wait(delay_seconds))
+    if stop.is_set():
+        return True
+    time.sleep(delay_seconds)
+    return stop.is_set()
+
+
+def retry_transient_sqlite_contention(
+    operation: str,
+    action: Any,
+    *,
+    stop: Any,
+    deadline: float | None,
+    policy: SQLiteRetryPolicy,
+    counters: dict[str, Any],
+    consumer_id: int,
+    events: Any | None,
+) -> Any:
+    """Retry only known transient SQLite contention with bounded backoff."""
+    attempts = 0
+    while True:
+        if stop.is_set():
+            raise SQLiteRetryStopped
+        try:
+            return action()
+        except LocalQueueError as error:
+            if not is_transient_sqlite_contention(error):
+                raise
+            attempts += 1
+            increment(counters[f"sqlite_busy_{operation}"])
+            now = time.monotonic()
+            if attempts >= policy.max_attempts or (
+                deadline is not None and now >= deadline
+            ):
+                increment(counters["sqlite_busy_exhausted"])
+                diagnostic_event(
+                    events,
+                    "sqlite_busy_exhausted",
+                    consumer_id,
+                    operation=operation,
+                    attempts=attempts,
+                )
+                raise SQLiteContentionExhausted(operation, attempts) from error
+            delay = min(
+                policy.initial_delay_seconds * (2 ** (attempts - 1)),
+                policy.max_delay_seconds,
+            )
+            if deadline is not None:
+                delay = min(delay, max(0.0, deadline - now))
+            if delay > 0 and _wait_for_stop(stop, delay):
+                raise SQLiteRetryStopped
+            increment(counters["sqlite_busy_retries_total"])
+
+
 def consume(
     path: str,
     queue_name: str,
@@ -96,6 +183,8 @@ def consume(
     counters: dict[str, Any],
     events: Any | None = None,
     transition_delay_seconds: float = 0.0,
+    deadline: float | None = None,
+    retry_policy: SQLiteRetryPolicy = DEFAULT_SQLITE_RETRY_POLICY,
 ) -> None:
     queue = SimpleQueue(
         path, name=queue_name, lease_seconds=lease_seconds, max_retries=3
@@ -104,7 +193,18 @@ def consume(
     try:
         while not stop.is_set():
             try:
-                job = queue.get(block=False)
+                job = retry_transient_sqlite_contention(
+                    "get",
+                    lambda: queue.get(block=False),
+                    stop=stop,
+                    deadline=deadline,
+                    policy=retry_policy,
+                    counters=counters,
+                    consumer_id=consumer_id,
+                    events=events,
+                )
+            except SQLiteRetryStopped:
+                return
             except Empty:
                 time.sleep(0.005)
                 continue
@@ -121,7 +221,20 @@ def consume(
             if choice < crash_rate + nack_rate:
                 operation = "nack"
                 try:
-                    queue.nack(job, delay=0.01, last_error="stress transient error")
+                    retry_transient_sqlite_contention(
+                        operation,
+                        lambda: queue.nack(
+                            job, delay=0.01, last_error="stress transient error"
+                        ),
+                        stop=stop,
+                        deadline=deadline,
+                        policy=retry_policy,
+                        counters=counters,
+                        consumer_id=consumer_id,
+                        events=events,
+                    )
+                except SQLiteRetryStopped:
+                    return
                 except LeaseExpired:
                     increment(counters[f"lease_losses_{operation}"])
                     diagnostic_event(
@@ -133,7 +246,18 @@ def consume(
             elif choice < crash_rate + nack_rate + fail_rate:
                 operation = "fail"
                 try:
-                    queue.fail(job, last_error="stress permanent error")
+                    retry_transient_sqlite_contention(
+                        operation,
+                        lambda: queue.fail(job, last_error="stress permanent error"),
+                        stop=stop,
+                        deadline=deadline,
+                        policy=retry_policy,
+                        counters=counters,
+                        consumer_id=consumer_id,
+                        events=events,
+                    )
+                except SQLiteRetryStopped:
+                    return
                 except LeaseExpired:
                     increment(counters[f"lease_losses_{operation}"])
                     diagnostic_event(
@@ -145,7 +269,18 @@ def consume(
             else:
                 operation = "ack"
                 try:
-                    queue.ack(job)
+                    retry_transient_sqlite_contention(
+                        operation,
+                        lambda: queue.ack(job),
+                        stop=stop,
+                        deadline=deadline,
+                        policy=retry_policy,
+                        counters=counters,
+                        consumer_id=consumer_id,
+                        events=events,
+                    )
+                except SQLiteRetryStopped:
+                    return
                 except LeaseExpired:
                     increment(counters[f"lease_losses_{operation}"])
                     diagnostic_event(
@@ -202,6 +337,12 @@ def empty_counters() -> dict[str, int]:
         "lease_losses_ack": 0,
         "lease_losses_nack": 0,
         "lease_losses_fail": 0,
+        "sqlite_busy_get": 0,
+        "sqlite_busy_ack": 0,
+        "sqlite_busy_nack": 0,
+        "sqlite_busy_fail": 0,
+        "sqlite_busy_retries_total": 0,
+        "sqlite_busy_exhausted": 0,
         "intentional_crashes": 0,
         "unexpected_consumer_exits": 0,
         "normal_shutdowns": 0,
@@ -276,6 +417,12 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--lease-seconds deve ser positivo")
     if args.transition_delay_seconds < 0:
         raise ValueError("--transition-delay-seconds não pode ser negativo")
+    if args.sqlite_retry_initial_delay <= 0 or args.sqlite_retry_max_delay <= 0:
+        raise ValueError("os atrasos de retry SQLite devem ser positivos")
+    if args.sqlite_retry_initial_delay > args.sqlite_retry_max_delay:
+        raise ValueError("o atraso inicial SQLite não pode exceder o máximo")
+    if args.sqlite_retry_attempts < 1:
+        raise ValueError("--sqlite-retry-attempts deve ser positivo")
     if args.consumers < 1 or args.producers < 1:
         raise ValueError("--producers e --consumers devem ser positivos")
     if args.nack_rate + args.fail_rate + args.crash_rate > 1:
@@ -295,6 +442,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         path.mkdir(parents=True, exist_ok=True)
 
     stop = context.Event()
+    retry_policy = SQLiteRetryPolicy(
+        args.sqlite_retry_initial_delay,
+        args.sqlite_retry_max_delay,
+        args.sqlite_retry_attempts,
+    )
     child_counters = shared_counters(context)
     producers: list[mp.Process] = []
     consumers: list[mp.Process | None] = []
@@ -338,6 +490,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 child_counters,
                 None,
                 args.transition_delay_seconds,
+                started_at + args.duration,
+                retry_policy,
             ),
             name=f"localqueue-consumer-{consumer_id}-{restart}",
         )
@@ -563,7 +717,21 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         "max_restarts": args.max_restarts,
         "lease_seconds": args.lease_seconds,
         "transition_delay_seconds": args.transition_delay_seconds,
+        "sqlite_retry_initial_delay": args.sqlite_retry_initial_delay,
+        "sqlite_retry_max_delay": args.sqlite_retry_max_delay,
+        "sqlite_retry_attempts": args.sqlite_retry_attempts,
         "seed": args.seed,
+    }
+    result["summary"] = {
+        name: result["counters"][name]
+        for name in (
+            "sqlite_busy_get",
+            "sqlite_busy_ack",
+            "sqlite_busy_nack",
+            "sqlite_busy_fail",
+            "sqlite_busy_retries_total",
+            "sqlite_busy_exhausted",
+        )
     }
     result["status"] = "passed" if result["success"] else "failed"
     rendered = json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
@@ -593,6 +761,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-restarts", type=int, default=100)
     parser.add_argument("--lease-seconds", type=float, default=5.0)
     parser.add_argument("--transition-delay-seconds", type=float, default=0.0)
+    parser.add_argument("--sqlite-retry-initial-delay", type=float, default=0.01)
+    parser.add_argument("--sqlite-retry-max-delay", type=float, default=0.1)
+    parser.add_argument("--sqlite-retry-attempts", type=int, default=8)
     parser.add_argument("--path", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--markdown-output", type=Path)

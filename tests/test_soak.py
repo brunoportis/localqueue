@@ -77,6 +77,9 @@ def soak_args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
         "max_restarts": 2,
         "lease_seconds": 5.0,
         "transition_delay_seconds": 0.0,
+        "sqlite_retry_initial_delay": 0.01,
+        "sqlite_retry_max_delay": 0.1,
+        "sqlite_retry_attempts": 8,
         "path": tmp_path / "database",
         "output": None,
         "markdown_output": None,
@@ -207,6 +210,9 @@ def test_supervisor_failure_always_writes_reports(
         max_restarts=1,
         lease_seconds=5.0,
         transition_delay_seconds=0.0,
+        sqlite_retry_initial_delay=0.01,
+        sqlite_retry_max_delay=0.1,
+        sqlite_retry_attempts=8,
         path=tmp_path / "database",
         output=output,
         markdown_output=markdown,
@@ -376,3 +382,168 @@ def test_does_not_classify_other_queue_errors_as_sqlite_contention(
     message: str,
 ) -> None:
     assert not run_soak.is_transient_sqlite_contention(LocalQueueError(message))
+
+
+def test_retries_busy_get_then_returns_job() -> None:
+    stop = _StopAfterTransition()
+    counters = run_soak.shared_counters(mp.get_context("spawn"))
+    calls = 0
+    job = object()
+
+    def get() -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise LocalQueueError("database is locked")
+        return job
+
+    assert (
+        run_soak.retry_transient_sqlite_contention(
+            "get",
+            get,
+            stop=stop,
+            deadline=None,
+            policy=run_soak.SQLiteRetryPolicy(0.0, 0.0, 2),
+            counters=counters,
+            consumer_id=0,
+            events=None,
+        )
+        is job
+    )
+    assert run_soak.counter_snapshot(counters)["sqlite_busy_get"] == 1
+
+
+def test_non_transient_get_error_propagates() -> None:
+    stop = _StopAfterTransition()
+    counters = run_soak.shared_counters(mp.get_context("spawn"))
+
+    with pytest.raises(LocalQueueError, match="malformed"):
+        run_soak.retry_transient_sqlite_contention(
+            "get",
+            lambda: (_ for _ in ()).throw(
+                LocalQueueError("database disk image is malformed")
+            ),
+            stop=stop,
+            deadline=None,
+            policy=run_soak.SQLiteRetryPolicy(0.0, 0.0, 2),
+            counters=counters,
+            consumer_id=0,
+            events=None,
+        )
+    assert run_soak.counter_snapshot(counters)["sqlite_busy_get"] == 0
+
+
+@pytest.mark.parametrize("operation", ["ack", "nack", "fail"])
+def test_retries_busy_transition_then_succeeds(operation: str) -> None:
+    stop = _StopAfterTransition()
+    counters = run_soak.shared_counters(mp.get_context("spawn"))
+    calls = 0
+
+    def transition() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise LocalQueueError("database is busy")
+
+    assert (
+        run_soak.retry_transient_sqlite_contention(
+            operation,
+            transition,
+            stop=stop,
+            deadline=None,
+            policy=run_soak.SQLiteRetryPolicy(0.0, 0.0, 2),
+            counters=counters,
+            consumer_id=0,
+            events=None,
+        )
+        is None
+    )
+    assert calls == 2
+    assert run_soak.counter_snapshot(counters)[f"sqlite_busy_{operation}"] == 1
+
+
+def test_busy_ack_followed_by_lease_expired_is_not_retried() -> None:
+    stop = _StopAfterTransition()
+    counters = run_soak.shared_counters(mp.get_context("spawn"))
+    calls = 0
+
+    def ack() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise LocalQueueError("database is locked")
+        raise LeaseExpired("lease has expired")
+
+    with pytest.raises(LeaseExpired):
+        run_soak.retry_transient_sqlite_contention(
+            "ack",
+            ack,
+            stop=stop,
+            deadline=None,
+            policy=run_soak.SQLiteRetryPolicy(0.0, 0.0, 3),
+            counters=counters,
+            consumer_id=0,
+            events=None,
+        )
+    assert calls == 2
+    assert run_soak.counter_snapshot(counters)["sqlite_busy_ack"] == 1
+
+
+def test_busy_retry_respects_stop_event() -> None:
+    stop = _StopAfterTransition()
+    stop.set()
+    counters = run_soak.shared_counters(mp.get_context("spawn"))
+
+    with pytest.raises(run_soak.SQLiteRetryStopped):
+        run_soak.retry_transient_sqlite_contention(
+            "get",
+            lambda: (_ for _ in ()).throw(LocalQueueError("database is locked")),
+            stop=stop,
+            deadline=None,
+            policy=run_soak.SQLiteRetryPolicy(0.0, 0.0, 2),
+            counters=counters,
+            consumer_id=0,
+            events=None,
+        )
+
+
+def test_busy_retry_respects_deadline() -> None:
+    stop = _StopAfterTransition()
+    counters = run_soak.shared_counters(mp.get_context("spawn"))
+
+    with pytest.raises(run_soak.SQLiteContentionExhausted, match="get after 1"):
+        run_soak.retry_transient_sqlite_contention(
+            "get",
+            lambda: (_ for _ in ()).throw(LocalQueueError("database is locked")),
+            stop=stop,
+            deadline=0.0,
+            policy=run_soak.SQLiteRetryPolicy(1.0, 1.0, 8),
+            counters=counters,
+            consumer_id=0,
+            events=None,
+        )
+
+
+def test_busy_retry_exhaustion_is_reported_with_operation_and_attempts() -> None:
+    stop = _StopAfterTransition()
+    counters = run_soak.shared_counters(mp.get_context("spawn"))
+    events = _Events()
+
+    with pytest.raises(run_soak.SQLiteContentionExhausted, match="ack after 2"):
+        run_soak.retry_transient_sqlite_contention(
+            "ack",
+            lambda: (_ for _ in ()).throw(LocalQueueError("database is locked")),
+            stop=stop,
+            deadline=None,
+            policy=run_soak.SQLiteRetryPolicy(0.0, 0.0, 2),
+            counters=counters,
+            consumer_id=7,
+            events=events,
+        )
+    assert run_soak.counter_snapshot(counters)["sqlite_busy_exhausted"] == 1
+    assert events.items[-1] == {
+        "kind": "sqlite_busy_exhausted",
+        "consumer_id": 7,
+        "operation": "ack",
+        "attempts": 2,
+    }
