@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from localqueue import Empty, LeaseExpired, SimpleQueue  # noqa: E402
+from localqueue import Empty, LeaseExpired, LocalQueueError, SimpleQueue  # noqa: E402
 
 from release_gate.markdown import evidence_markdown  # noqa: E402
 from release_gate.subject import installed_subject  # noqa: E402
@@ -75,6 +75,12 @@ def diagnostic_event(
 ) -> None:
     if events is not None:
         events.put({"kind": kind, "consumer_id": consumer_id, **details})
+
+
+def is_transient_sqlite_contention(error: LocalQueueError) -> bool:
+    """Return true only for SQLite's retryable busy/locked messages."""
+    message = " ".join(str(error).casefold().split())
+    return message in {"database is locked", "database is busy"}
 
 
 def consume(

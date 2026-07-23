@@ -6,7 +6,7 @@ import multiprocessing as mp
 from pathlib import Path
 
 import pytest
-from localqueue import Empty, LeaseExpired
+from localqueue import Empty, LeaseExpired, LocalQueueError
 
 from stress import run_soak
 
@@ -352,3 +352,27 @@ def test_real_lease_expiry_is_recorded_without_killing_consumer(tmp_path: Path) 
         "operation": "ack",
     }
     assert run_soak.counter_snapshot(counters)["lease_losses_ack"] == 1
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["database is locked", " DATABASE   IS LOCKED ", "database is busy"],
+)
+def test_classifies_only_normalized_transient_sqlite_contention(message: str) -> None:
+    assert run_soak.is_transient_sqlite_contention(LocalQueueError(message))
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "database disk image is malformed",
+        "file is not a database",
+        "database or disk is full",
+        "attempt to write a readonly database",
+        "queue is closed",
+    ],
+)
+def test_does_not_classify_other_queue_errors_as_sqlite_contention(
+    message: str,
+) -> None:
+    assert not run_soak.is_transient_sqlite_contention(LocalQueueError(message))
