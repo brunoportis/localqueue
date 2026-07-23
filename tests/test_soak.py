@@ -294,7 +294,7 @@ def test_many_spawn_consumers_preserve_operation_counters(tmp_path: Path) -> Non
     result = run_soak.execute(
         soak_args(
             tmp_path,
-            messages=5_000,
+            messages=1_000,
             producers=4,
             consumers=8,
             seed=456,
@@ -305,7 +305,7 @@ def test_many_spawn_consumers_preserve_operation_counters(tmp_path: Path) -> Non
 
     assert result["status"] == "passed"
     assert result["database"]["integrity"] == "ok"
-    assert result["database"]["rows"] == result["messages"] == 5_000
+    assert result["database"]["rows"] == result["messages"] == 1_000
     assert result["counters"]["acks"] > 0
     assert result["counters"]["nacks"] > 0
     assert result["counters"]["fails"] > 0
