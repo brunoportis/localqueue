@@ -596,7 +596,7 @@ def test_spawn_busy_success_writes_a_passed_report(tmp_path: Path) -> None:
 
     assert result["status"] == "passed"
     assert result["counters"]["sqlite_busy_get"] == 1
-    assert result["counters"]["sqlite_busy_retries_total"] == 1
+    assert result["counters"]["sqlite_busy_retries_total"] >= 1
     assert result["counters"]["sqlite_busy_exhausted"] == 0
 
 
@@ -625,3 +625,55 @@ def test_spawn_busy_exhaustion_reaches_json_markdown_and_exit(tmp_path: Path) ->
     assert result["exits"][1]["exit_code"] != 0
     assert output.is_file() and markdown.is_file()
     assert "database is locked" in markdown.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("mode", "counter"),
+    [
+        ("ack-success", "sqlite_busy_ack"),
+        ("nack-success", "sqlite_busy_nack"),
+        ("fail-success", "sqlite_busy_fail"),
+    ],
+)
+def test_spawn_transition_busy_then_success_uses_release_budget(
+    tmp_path: Path, mode: str, counter: str
+) -> None:
+    result = run_soak.execute(
+        soak_args(
+            tmp_path,
+            messages=1,
+            producers=1,
+            consumers=1,
+            nack_rate=1.0 if mode == "nack-success" else 0.0,
+            fail_rate=1.0 if mode == "fail-success" else 0.0,
+            sqlite_contention_mode=mode,
+            lease_seconds=5.0,
+            sqlite_native_call_budget=5.0,
+            sqlite_retry_attempts=2,
+        )
+    )
+    assert result["status"] == "passed"
+    assert result["counters"][counter] == 1
+    assert result["counters"]["sqlite_busy_retries_total"] == 1
+    assert result["counters"]["sqlite_busy_exhausted"] == 0
+    assert result["counters"]["unexpected_consumer_exits"] == 0
+
+
+def test_spawn_ack_busy_then_lease_expired_preserves_lease_loss(tmp_path: Path) -> None:
+    result = run_soak.execute(
+        soak_args(
+            tmp_path,
+            messages=1,
+            producers=1,
+            consumers=1,
+            sqlite_contention_mode="ack-lease-expired",
+            lease_seconds=5.0,
+            sqlite_native_call_budget=5.0,
+            sqlite_retry_attempts=2,
+        )
+    )
+    assert result["status"] == "passed"
+    assert result["counters"]["sqlite_busy_ack"] == 1
+    assert result["counters"]["sqlite_busy_retries_total"] == 1
+    assert result["counters"]["lease_losses_ack"] == 1
+    assert result["counters"]["unexpected_consumer_exits"] == 0

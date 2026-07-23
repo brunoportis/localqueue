@@ -164,7 +164,8 @@ def retry_transient_sqlite_contention(
             raise SQLiteRetryStopped
         now = time.monotonic()
         if (
-            calls > 0
+            operation == "get"
+            and calls > 0
             and deadline is not None
             and now + policy.native_call_budget_seconds > deadline
         ):
@@ -257,14 +258,29 @@ def consume(
     )
     rng = random.Random(seed)
     injected_get_calls = 0
+    injected_transition_calls: dict[str, int] = {}
 
     def get_job() -> Any:
         nonlocal injected_get_calls
-        if sqlite_contention_mode is not None:
+        if sqlite_contention_mode is not None and sqlite_contention_mode.startswith(
+            "get-"
+        ):
             injected_get_calls += 1
             if sqlite_contention_mode == "get-exhausted" or injected_get_calls == 1:
                 raise LocalQueueError("database is locked")
         return queue.get(block=False)
+
+    def transition_action(operation: str, action: Any) -> Any:
+        calls = injected_transition_calls.get(operation, 0) + 1
+        injected_transition_calls[operation] = calls
+        if sqlite_contention_mode == f"{operation}-success" and calls == 1:
+            raise LocalQueueError("database is locked")
+        if sqlite_contention_mode == "ack-lease-expired":
+            if calls == 1:
+                raise LocalQueueError("database is locked")
+            if calls == 2:
+                raise LeaseExpired("lease has expired")
+        return action()
 
     try:
         while not stop.is_set():
@@ -303,8 +319,11 @@ def consume(
                 try:
                     retry_transient_sqlite_contention(
                         operation,
-                        lambda: queue.nack(
-                            job, delay=0.01, last_error="stress transient error"
+                        lambda: transition_action(
+                            operation,
+                            lambda: queue.nack(
+                                job, delay=0.01, last_error="stress transient error"
+                            ),
                         ),
                         stop=stop,
                         deadline=transition_deadline,
@@ -328,7 +347,12 @@ def consume(
                 try:
                     retry_transient_sqlite_contention(
                         operation,
-                        lambda: queue.fail(job, last_error="stress permanent error"),
+                        lambda: transition_action(
+                            operation,
+                            lambda: queue.fail(
+                                job, last_error="stress permanent error"
+                            ),
+                        ),
                         stop=stop,
                         deadline=transition_deadline,
                         policy=retry_policy,
@@ -351,7 +375,7 @@ def consume(
                 try:
                     retry_transient_sqlite_contention(
                         operation,
-                        lambda: queue.ack(job),
+                        lambda: transition_action(operation, lambda: queue.ack(job)),
                         stop=stop,
                         deadline=transition_deadline,
                         policy=retry_policy,
@@ -547,10 +571,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     def collect_diagnostics() -> None:
         for receiver in diagnostic_receivers:
-            while receiver.poll():
+            try:
+                ready = receiver.poll()
+            except OSError:
+                continue
+            while ready:
                 try:
                     diagnostics.append(receiver.recv())
-                except EOFError:
+                except (EOFError, OSError):
+                    break
+                try:
+                    ready = receiver.poll()
+                except OSError:
                     break
 
     def record_exit(
@@ -865,11 +897,21 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                     "operation",
                     "attempts",
                     "calls",
+                    "backoff_seconds",
                     "elapsed_seconds",
                     "message",
                 )
             }
         )
+        diagnostic_exit = next(
+            (
+                item["exit_code"]
+                for item in result["exits"]
+                if item.get("sqlite_contention") == diagnostic
+            ),
+            None,
+        )
+        result["summary"]["sqlite_contention_exit_code"] = diagnostic_exit
     result["status"] = "passed" if result["success"] else "failed"
     rendered = json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     if args.output:
@@ -904,7 +946,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sqlite-native-call-budget", type=float, default=5.0)
     parser.add_argument(
         "--sqlite-contention-mode",
-        choices=("get-success", "get-exhausted"),
+        choices=(
+            "get-success",
+            "get-exhausted",
+            "ack-success",
+            "ack-lease-expired",
+            "nack-success",
+            "fail-success",
+        ),
     )
     parser.add_argument("--path", type=Path)
     parser.add_argument("--output", type=Path)

@@ -378,9 +378,30 @@ jobs:
             and .sqlite_contention_diagnostics[0].calls > 0
             and .sqlite_contention_diagnostics[0].elapsed_seconds >= 0
             and .sqlite_contention_diagnostics[0].message == "database is locked"
+            and ([.exits[] | select(.sqlite_contention != null)] | length) == 1
             and ([.exits[] | select(.sqlite_contention != null) | .exit_code != 0] | all)
           ' sqlite-busy-exhausted.json
           grep -q 'database is locked' sqlite-busy-exhausted.md
+
+      - name: Prove deterministic SQLite busy transition outcomes
+        if: matrix.name == 'linux-x86_64'
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          python "$GITHUB_WORKSPACE/stress/run_soak.py" \
+            --messages 1 --duration 30 --producers 1 --consumers 1 \
+            --nack-rate 0 --fail-rate 0 --crash-rate 0 --lease-seconds 5 \
+            --sqlite-native-call-budget 5 --sqlite-retry-attempts 2 \
+            --sqlite-contention-mode ack-success \
+            --output sqlite-busy-ack-success.json --markdown-output sqlite-busy-ack-success.md
+          jq -e '.status == "passed" and .counters.sqlite_busy_ack == 1 and .counters.sqlite_busy_retries_total == 1 and .counters.sqlite_busy_exhausted == 0 and .counters.unexpected_consumer_exits == 0' sqlite-busy-ack-success.json
+          python "$GITHUB_WORKSPACE/stress/run_soak.py" \
+            --messages 1 --duration 30 --producers 1 --consumers 1 \
+            --nack-rate 0 --fail-rate 0 --crash-rate 0 --lease-seconds 5 \
+            --sqlite-native-call-budget 5 --sqlite-retry-attempts 2 \
+            --sqlite-contention-mode ack-lease-expired \
+            --output sqlite-busy-ack-lease.json --markdown-output sqlite-busy-ack-lease.md
+          jq -e '.status == "passed" and .counters.sqlite_busy_ack == 1 and .counters.lease_losses_ack == 1 and .counters.unexpected_consumer_exits == 0' sqlite-busy-ack-lease.json
 
       - name: Upload CPython 3.13 soak reports
         if: always() && matrix.name == 'linux-x86_64'
@@ -396,6 +417,10 @@ jobs:
             ${{ runner.temp }}/sqlite-busy-success.md
             ${{ runner.temp }}/sqlite-busy-exhausted.json
             ${{ runner.temp }}/sqlite-busy-exhausted.md
+            ${{ runner.temp }}/sqlite-busy-ack-success.json
+            ${{ runner.temp }}/sqlite-busy-ack-success.md
+            ${{ runner.temp }}/sqlite-busy-ack-lease.json
+            ${{ runner.temp }}/sqlite-busy-ack-lease.md
           if-no-files-found: error
           retention-days: 30
 
