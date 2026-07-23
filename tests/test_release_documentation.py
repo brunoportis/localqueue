@@ -137,12 +137,10 @@ def test_release_dependency_audit_checkout_has_complete_history_preflight() -> N
     candidate = (ROOT / ".github/workflows/release-candidate.yml").read_text(
         encoding="utf-8"
     )
-    audits = candidate.split("  audits:\n", 1)[1].split(
-        "\n  assemble-evidence:", 1
-    )[0]
+    audits = candidate.split("  audits:\n", 1)[1].split("\n  assemble-evidence:", 1)[0]
     assert "fetch-depth: 0" in audits
     assert 'test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"' in audits
-    assert 'git rev-parse --is-shallow-repository' in audits
+    assert "git rev-parse --is-shallow-repository" in audits
     assert 'test "$shallow" = "false"' in audits
     for label in (
         "candidate SHA:",

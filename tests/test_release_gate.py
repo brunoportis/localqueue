@@ -758,14 +758,18 @@ def test_dependency_audit_fails_for_known_divergent_commit_and_passes_ancestors(
     tmp_path: Path,
 ) -> None:
     root, first_ancestor, candidate, divergent = git_repository(tmp_path)
-    closed = lambda number, commit: {
-        "number": number,
-        "state": "CLOSED",
-        "closedByPullRequestsReferences": {
-            "nodes": [{"merged": True, "mergeCommit": {"oid": commit}}]
-        },
-    }
-    is_ancestor = lambda commit: is_git_ancestor(commit, candidate, root)
+
+    def closed(number: int, commit: str) -> dict[str, object]:
+        return {
+            "number": number,
+            "state": "CLOSED",
+            "closedByPullRequestsReferences": {
+                "nodes": [{"merged": True, "mergeCommit": {"oid": commit}}]
+            },
+        }
+
+    def is_ancestor(commit: str) -> bool:
+        return is_git_ancestor(commit, candidate, root)
 
     with pytest.raises(AuditError, match="no merged closing PR"):
         audit_release_dependencies(
