@@ -355,6 +355,28 @@ jobs:
             and .counters.unexpected_consumer_exits == 0
           ' sqlite-busy-success.json
 
+      - name: Prove deterministic SQLite PUT busy retry succeeds
+        if: matrix.name == 'linux-x86_64'
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          python "$GITHUB_WORKSPACE/stress/run_soak.py" \
+            --messages 1 --duration 30 --producers 1 --consumers 1 \
+            --nack-rate 0 --fail-rate 0 --crash-rate 0 --lease-seconds 5 \
+            --sqlite-contention-mode put-success \
+            --path "$RUNNER_TEMP/sqlite-busy-put-success-db" \
+            --output sqlite-busy-put-success.json --markdown-output sqlite-busy-put-success.md
+          jq -e '
+            .status == "passed"
+            and .database.integrity == "ok"
+            and .database.rows == .messages
+            and .counters.sqlite_busy_put == 1
+            and .counters.sqlite_busy_retries_total >= 1
+            and .counters.sqlite_busy_exhausted == 0
+            and .counters.unexpected_consumer_exits == 0
+          ' sqlite-busy-put-success.json
+          test "$(sqlite3 sqlite-busy-put-success-db/localqueue.db "SELECT COUNT(*) FROM messages WHERE job_id = 'stress-0';")" -eq 1
+
       - name: Prove deterministic SQLite busy exhaustion reports failure
         if: matrix.name == 'linux-x86_64'
         shell: bash
@@ -382,6 +404,33 @@ jobs:
             and ([.exits[] | select(.sqlite_contention != null) | .exit_code != 0] | all)
           ' sqlite-busy-exhausted.json
           grep -q 'database is locked' sqlite-busy-exhausted.md
+
+      - name: Prove deterministic SQLite PUT busy exhaustion reports failure
+        if: matrix.name == 'linux-x86_64'
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          set +e
+          python "$GITHUB_WORKSPACE/stress/run_soak.py" \
+            --messages 1 --duration 30 --producers 1 --consumers 1 \
+            --nack-rate 0 --fail-rate 0 --crash-rate 0 --lease-seconds 5 \
+            --sqlite-contention-mode put-exhausted \
+            --output sqlite-busy-put-exhausted.json --markdown-output sqlite-busy-put-exhausted.md
+          soak_exit=$?
+          set -e
+          test "$soak_exit" -ne 0
+          jq -e '
+            .status == "failed"
+            and .counters.sqlite_busy_exhausted == 1
+            and ([.sqlite_contention_diagnostics[] | select(
+              .role == "producer" and .producer_id == 0 and .operation == "put"
+              and .attempts == 2 and .calls == 2
+              and .message == "database is locked"
+            )] | length) == 1
+            and ([.exits[] | select(.sqlite_contention != null) | .exit_code != 0] | all)
+          ' sqlite-busy-put-exhausted.json
+          test -s sqlite-busy-put-exhausted.json
+          test -s sqlite-busy-put-exhausted.md
 
       - name: Prove deterministic SQLite busy transition outcomes
         if: matrix.name == 'linux-x86_64'
@@ -415,8 +464,12 @@ jobs:
             ${{ runner.temp }}/lease-loss-report.md
             ${{ runner.temp }}/sqlite-busy-success.json
             ${{ runner.temp }}/sqlite-busy-success.md
+            ${{ runner.temp }}/sqlite-busy-put-success.json
+            ${{ runner.temp }}/sqlite-busy-put-success.md
             ${{ runner.temp }}/sqlite-busy-exhausted.json
             ${{ runner.temp }}/sqlite-busy-exhausted.md
+            ${{ runner.temp }}/sqlite-busy-put-exhausted.json
+            ${{ runner.temp }}/sqlite-busy-put-exhausted.md
             ${{ runner.temp }}/sqlite-busy-ack-success.json
             ${{ runner.temp }}/sqlite-busy-ack-success.md
             ${{ runner.temp }}/sqlite-busy-ack-lease.json

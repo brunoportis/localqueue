@@ -304,9 +304,16 @@ def test_many_spawn_consumers_preserve_operation_counters(tmp_path: Path) -> Non
     )
 
     assert result["status"] == "passed"
+    assert result["database"]["integrity"] == "ok"
+    assert result["database"]["rows"] == result["messages"] == 1_000
     assert result["counters"]["acks"] > 0
     assert result["counters"]["nacks"] > 0
     assert result["counters"]["fails"] > 0
+    assert result["counters"]["unexpected_consumer_exits"] == 0
+    assert not any(
+        item["role"] == "producer" and item["classification"] != "normal_shutdown"
+        for item in result["exits"]
+    )
     assert not run_soak.report_invariant_errors(
         result["counters"], result["last_stats"], result["exits"], result["restarts"]
     )
@@ -418,6 +425,143 @@ def test_retries_busy_get_then_returns_job() -> None:
         is job
     )
     assert run_soak.counter_snapshot(counters)["sqlite_busy_get"] == 1
+
+
+def test_retries_busy_put_once_with_the_same_job_id_and_no_duplicate() -> None:
+    stop = _StopAfterTransition()
+    counters = run_soak.shared_counters(mp.get_context("spawn"))
+    calls: list[str] = []
+    inserted: set[str] = set()
+    job_id = "stress-0"
+
+    def put() -> None:
+        calls.append(job_id)
+        if len(calls) == 1:
+            raise LocalQueueError("database is locked")
+        inserted.add(job_id)
+
+    run_soak.retry_transient_sqlite_contention(
+        "put",
+        put,
+        stop=stop,
+        deadline=None,
+        policy=run_soak.SQLiteRetryPolicy(0.0, 0.0, 2),
+        counters=counters,
+        consumer_id=0,
+        events=None,
+    )
+
+    assert calls == [job_id, job_id]
+    assert inserted == {job_id}
+    snapshot = run_soak.counter_snapshot(counters)
+    assert snapshot["sqlite_busy_put"] == 1
+    assert snapshot["sqlite_busy_retries_total"] == 1
+
+
+def test_busy_put_exhaustion_stops_after_two_calls_and_reports_producer() -> None:
+    stop = _StopAfterTransition()
+    counters = run_soak.shared_counters(mp.get_context("spawn"))
+    events = _Events()
+    calls = 0
+
+    def put() -> None:
+        nonlocal calls
+        calls += 1
+        raise LocalQueueError("database is locked")
+
+    with pytest.raises(run_soak.SQLiteContentionExhausted):
+        run_soak.retry_transient_sqlite_contention(
+            "put",
+            put,
+            stop=stop,
+            deadline=None,
+            policy=run_soak.SQLiteRetryPolicy(0.0, 0.0, 2),
+            counters=counters,
+            consumer_id=0,
+            events=events,
+            role="producer",
+            job_id="stress-0",
+        )
+
+    assert calls == 2
+    snapshot = run_soak.counter_snapshot(counters)
+    assert snapshot["sqlite_busy_put"] == 2
+    assert snapshot["sqlite_busy_exhausted"] == 1
+    event = events.items[-1]
+    assert event["role"] == "producer"
+    assert event["producer_id"] == 0
+    assert event["job_id"] == "stress-0"
+
+
+def test_busy_put_does_not_retry_after_stop_or_without_native_call_budget() -> None:
+    counters = run_soak.shared_counters(mp.get_context("spawn"))
+    stop = _StopAfterTransition()
+    calls = 0
+
+    def busy_put() -> None:
+        nonlocal calls
+        calls += 1
+        stop.set()
+        raise LocalQueueError("database is busy")
+
+    with pytest.raises(run_soak.SQLiteRetryStopped):
+        run_soak.retry_transient_sqlite_contention(
+            "put",
+            busy_put,
+            stop=stop,
+            deadline=None,
+            policy=run_soak.SQLiteRetryPolicy(0.0, 0.0, 2),
+            counters=counters,
+            consumer_id=0,
+            events=None,
+        )
+    assert calls == 1
+
+    stop = _StopAfterTransition()
+    calls = 0
+
+    def deadline_busy_put() -> None:
+        nonlocal calls
+        calls += 1
+        raise LocalQueueError("database is locked")
+
+    with pytest.raises(run_soak.SQLiteContentionExhausted):
+        run_soak.retry_transient_sqlite_contention(
+            "put",
+            deadline_busy_put,
+            stop=stop,
+            deadline=time.monotonic(),
+            policy=run_soak.SQLiteRetryPolicy(0.0, 0.0, 2, 5.0),
+            counters=counters,
+            consumer_id=0,
+            events=None,
+        )
+    assert calls == 1
+
+
+def test_non_transient_put_error_is_not_retried() -> None:
+    stop = _StopAfterTransition()
+    counters = run_soak.shared_counters(mp.get_context("spawn"))
+    calls = 0
+
+    def malformed_put() -> None:
+        nonlocal calls
+        calls += 1
+        raise LocalQueueError("database disk image is malformed")
+
+    with pytest.raises(LocalQueueError, match="malformed"):
+        run_soak.retry_transient_sqlite_contention(
+            "put",
+            malformed_put,
+            stop=stop,
+            deadline=None,
+            policy=run_soak.SQLiteRetryPolicy(0.0, 0.0, 2),
+            counters=counters,
+            consumer_id=0,
+            events=None,
+        )
+    assert calls == 1
+    assert run_soak.counter_snapshot(counters)["sqlite_busy_put"] == 0
 
 
 def test_non_transient_get_error_propagates() -> None:
@@ -624,6 +768,64 @@ def test_spawn_busy_success_writes_a_passed_report(tmp_path: Path) -> None:
     assert result["counters"]["sqlite_busy_get"] == 1
     assert result["counters"]["sqlite_busy_retries_total"] >= 1
     assert result["counters"]["sqlite_busy_exhausted"] == 0
+
+
+def test_spawn_put_busy_success_writes_one_row_and_passes(tmp_path: Path) -> None:
+    result = run_soak.execute(
+        soak_args(
+            tmp_path,
+            messages=1,
+            producers=1,
+            consumers=1,
+            sqlite_contention_mode="put-success",
+        )
+    )
+
+    assert result["status"] == "passed"
+    assert result["database"]["integrity"] == "ok"
+    assert result["database"]["rows"] == result["messages"] == 1
+    assert result["counters"]["sqlite_busy_put"] == 1
+    assert result["counters"]["sqlite_busy_retries_total"] >= 1
+    assert result["counters"]["sqlite_busy_exhausted"] == 0
+
+
+def test_spawn_put_busy_exhaustion_reaches_json_markdown_and_exit(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "put-exhausted.json"
+    markdown = tmp_path / "put-exhausted.md"
+    result = run_soak.execute(
+        soak_args(
+            tmp_path,
+            messages=1,
+            producers=1,
+            consumers=1,
+            sqlite_contention_mode="put-exhausted",
+            output=output,
+            markdown_output=markdown,
+        )
+    )
+
+    assert result["status"] == "failed"
+    assert "sqlite contention exhausted: producer 0, operation put, 2 attempts" in str(
+        result["failure_reason"]
+    )
+    assert len(result["sqlite_contention_diagnostics"]) == 1
+    diagnostic = result["sqlite_contention_diagnostics"][0]
+    assert diagnostic["role"] == "producer"
+    assert diagnostic["producer_id"] == 0
+    assert diagnostic["operation"] == "put"
+    assert diagnostic["job_id"] == "stress-0"
+    assert diagnostic["attempts"] == diagnostic["calls"] == 2
+    assert diagnostic["message"] == "database is locked"
+    assert any(
+        item["role"] == "producer"
+        and item["sqlite_contention"] == diagnostic
+        and item["exit_code"] != 0
+        for item in result["exits"]
+    )
+    assert output.is_file() and markdown.is_file()
+    assert "producer_id" in markdown.read_text(encoding="utf-8")
 
 
 def test_spawn_busy_exhaustion_reaches_json_markdown_and_exit(tmp_path: Path) -> None:
