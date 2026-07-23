@@ -25,11 +25,13 @@ import persistqueue
 
 queue = persistqueue.SQLiteAckQueue("./data/jobs")
 
-queue.put({
-    "type": "deploy",
-    "app": "jarvis",
-    "revision": "abc123",
-})
+queue.put(
+    {
+        "type": "deploy",
+        "app": "jarvis",
+        "revision": "abc123",
+    }
+)
 ```
 
 Worker:
@@ -45,9 +47,9 @@ while True:
     try:
         process(job)
     except TemporaryError:
-        queue.nack(job)       # volta para a fila
+        queue.nack(job)  # volta para a fila
     except Exception:
-        queue.ack_failed(job) # dead-letter/falha definitiva
+        queue.ack_failed(job)  # dead-letter/falha definitiva
     else:
         queue.ack(job)
 ```
@@ -73,6 +75,7 @@ huey = SqliteHuey(
     timeout=10,
     store_intermediate_errors=False,
 )
+
 
 @huey.task(
     retries=5,
