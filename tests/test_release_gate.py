@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -53,6 +54,7 @@ from release_gate.simulation import (
     PromotionState,
     simulate_promotion,
 )
+from scripts import validate_cpython_paths
 
 SHA = "a" * 40
 PARENT = "b" * 40
@@ -160,6 +162,99 @@ def test_candidate_identity_rejects_divergence(
 
 def wheel(name: str, content: bytes = b"wheel") -> tuple[str, bytes]:
     return name, content
+
+
+def test_explicit_cpython_path_validator_checks_all_paths_and_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    interpreters = {}
+    for tag, expected in validate_cpython_paths.EXPECTED.items():
+        path = tmp_path / tag
+        path.write_text("placeholder", encoding="utf-8")
+        interpreters[tag] = path
+
+    def run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        tag = Path(command[0]).name
+        if command[1] == "--version":
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=f"Python {validate_cpython_paths.EXPECTED[tag]}.9\n",
+            )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "implementation": "cpython",
+                    "version": f"{validate_cpython_paths.EXPECTED[tag]}.9",
+                    "gil_disabled": False,
+                }
+            ),
+        )
+
+    monkeypatch.setattr(validate_cpython_paths.subprocess, "run", run)
+    results = validate_cpython_paths.validate_interpreters(interpreters)
+    summary = validate_cpython_paths.render_summary(results)
+    assert [result["id"] for result in results] == sorted(interpreters)
+    assert "Runner platform:" in summary
+    for tag, expected in validate_cpython_paths.EXPECTED.items():
+        assert f"`{tag}`" in summary
+        assert f"`{expected}.x`" in summary
+
+
+@pytest.mark.parametrize(
+    ("probe", "message"),
+    [
+        (
+            {"implementation": "pypy", "version": "3.10.1", "gil_disabled": False},
+            "not CPython",
+        ),
+        (
+            {"implementation": "cpython", "version": "3.10.1", "gil_disabled": True},
+            "free-threaded",
+        ),
+        (
+            {"implementation": "cpython", "version": "3.11.1", "gil_disabled": False},
+            "expected Python 3.10.x",
+        ),
+    ],
+)
+def test_explicit_cpython_path_validator_rejects_nonportable_interpreters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    probe: dict[str, object],
+    message: str,
+) -> None:
+    paths = {}
+    for tag in validate_cpython_paths.EXPECTED:
+        path = tmp_path / tag
+        path.write_text("placeholder", encoding="utf-8")
+        paths[tag] = path
+
+    def run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        tag = Path(command[0]).name
+        if command[1] == "--version":
+            version = (
+                "3.11.1"
+                if tag == "cp310" and probe["version"] == "3.11.1"
+                else f"{validate_cpython_paths.EXPECTED[tag]}.1"
+            )
+            return subprocess.CompletedProcess(command, 0, stdout=f"Python {version}\n")
+        payload = (
+            probe
+            if tag == "cp310"
+            else {
+                "implementation": "cpython",
+                "version": f"{validate_cpython_paths.EXPECTED[tag]}.1",
+                "gil_disabled": False,
+            }
+        )
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload))
+
+    monkeypatch.setattr(validate_cpython_paths.subprocess, "run", run)
+    with pytest.raises(validate_cpython_paths.InterpreterPathError, match=message):
+        validate_cpython_paths.validate_interpreters(paths)
 
 
 REAL_ARM64_WHEEL_FILENAMES = (
