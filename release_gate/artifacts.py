@@ -16,6 +16,7 @@ SMOKE_PASSED = "passed"
 SMOKE_BUILT = "built-not-smoke-tested"
 SMOKE_ARM64 = "artifact-validated-not-physical-smoke"
 SMOKE_NOT_APPLICABLE = "not-applicable"
+EXPECTED_CPYTHON_TAGS = frozenset({"cp310", "cp311", "cp312", "cp313", "cp314"})
 
 
 class ArtifactError(ValueError):
@@ -150,12 +151,101 @@ def _platform_family_matches(job: str, tags: set[str]) -> bool:
     return job == "windows-x86_64" and tags == {"win_amd64"}
 
 
+def _wheel_filenames(entries: Iterable[Mapping[str, object]]) -> list[str]:
+    return sorted(str(entry.get("filename", "")) for entry in entries)
+
+
+def validate_wheel_build_job(
+    inventory: list[Mapping[str, object]], job: str, version: str
+) -> None:
+    """Validate one build-job fragment with the same rules as the final matrix."""
+    wheels = [
+        item
+        for item in inventory
+        if item.get("build_job") == job
+        and str(item.get("filename", "")).endswith(".whl")
+    ]
+    filenames = _wheel_filenames(wheels)
+    observed: dict[str, list[Mapping[str, object]]] = {}
+    for item in wheels:
+        filename = str(item.get("filename", ""))
+        if item.get("package_version") != version:
+            raise ArtifactError(f"wheel version differs from {version}: {filename}")
+        python_tag_value, abi_tag_value, platform_tag_value = _wheel_tags(
+            filename, version
+        )
+        if (
+            item.get("python_tag") != python_tag_value
+            or item.get("abi_tag") != abi_tag_value
+            or item.get("platform_tag") != platform_tag_value
+        ):
+            raise ArtifactError(
+                f"wheel inventory tags differ from filename: {filename}"
+            )
+        python_tags = _tags(item, "python_tag")
+        if len(python_tags) != 1 or not python_tags <= EXPECTED_CPYTHON_TAGS:
+            raise ArtifactError(
+                f"wheel must identify exactly one expected CPython tag: {filename}"
+            )
+        python_tag = next(iter(python_tags))
+        abi_tags = _tags(item, "abi_tag")
+        if abi_tags != {python_tag}:
+            raise ArtifactError(f"wheel ABI does not match interpreter: {filename}")
+        platform_tags = _tags(item, "platform_tag")
+        if not _platform_family_matches(job, platform_tags):
+            raise ArtifactError(f"wheel platform does not match {job}: {filename}")
+        if job == "linux-aarch64" and item.get("smoke_test_status") != SMOKE_ARM64:
+            raise ArtifactError(f"Linux ARM64 wheel must be {SMOKE_ARM64}: {filename}")
+        observed.setdefault(python_tag, []).append(item)
+    for tag in sorted(EXPECTED_CPYTHON_TAGS):
+        if len(observed.get(tag, [])) != 1:
+            raise ArtifactError(
+                f"expected one {tag} {job} wheel, found {len(observed.get(tag, []))}: {filenames}"
+            )
+    if len(wheels) != len(EXPECTED_CPYTHON_TAGS):
+        raise ArtifactError(
+            f"expected exactly {len(EXPECTED_CPYTHON_TAGS)} {job} wheels, "
+            f"found {len(wheels)}: {filenames}"
+        )
+
+
+def render_wheel_build_job_diagnostics(
+    inventory: list[Mapping[str, object]], job: str, candidate_sha: str, version: str
+) -> str:
+    """Render parser-derived wheel facts before a job-level validation runs."""
+    wheels = [
+        item
+        for item in inventory
+        if item.get("build_job") == job
+        and str(item.get("filename", "")).endswith(".whl")
+    ]
+    filenames = _wheel_filenames(wheels)
+    counts = {
+        tag: sum(_tags(item, "python_tag") == {tag} for item in wheels)
+        for tag in sorted(EXPECTED_CPYTHON_TAGS)
+    }
+    lines = [
+        f"## {job} wheel diagnostics",
+        "",
+        f"- Candidate SHA: `{candidate_sha}`",
+        f"- Candidate version: `{version}`",
+        f"- Filenames: {', '.join(f'`{name}`' for name in filenames) or '(none)'}",
+        f"- Interpreter tags: {', '.join(sorted({_joined(_tags(item, 'python_tag')) for item in wheels})) or '(none)'}",
+        f"- ABI tags: {', '.join(sorted({_joined(_tags(item, 'abi_tag')) for item in wheels})) or '(none)'}",
+        f"- Platform tags: {', '.join(sorted({_joined(_tags(item, 'platform_tag')) for item in wheels})) or '(none)'}",
+        "- Count by interpreter: "
+        + ", ".join(f"{tag}={counts[tag]}" for tag in sorted(counts)),
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def validate_distribution_matrix(inventory: list[Mapping[str, object]]) -> None:
     wheels = [item for item in inventory if str(item["filename"]).endswith(".whl")]
     sdists = [item for item in inventory if str(item["filename"]).endswith(".tar.gz")]
     if len(sdists) != 1:
         raise ArtifactError(f"expected exactly one sdist, found {len(sdists)}")
-    expected_python = {"cp310", "cp311", "cp312", "cp313", "cp314"}
+    expected_python = set(EXPECTED_CPYTHON_TAGS)
     expected_jobs = {
         "linux-x86_64": {
             SMOKE_PASSED: {"cp313"},
@@ -177,47 +267,24 @@ def validate_distribution_matrix(inventory: list[Mapping[str, object]]) -> None:
     }
     if len(wheels) != 25:
         raise ArtifactError(f"expected 25 wheels, found {len(wheels)}")
-    observed: dict[str, dict[str, Mapping[str, object]]] = {
-        job: {} for job in expected_jobs
+    unexpected_jobs = {
+        str(item.get("build_job", ""))
+        for item in wheels
+        if str(item.get("build_job", "")) not in expected_jobs
     }
-    for item in wheels:
-        job = str(item["build_job"])
-        if job not in expected_jobs:
-            raise ArtifactError(f"unexpected wheel build job: {job}")
-        filename = str(item["filename"])
-        python_tag_value, abi_tag_value, platform_tag_value = _wheel_tags(
-            filename, str(item["package_version"])
-        )
-        if (
-            item.get("python_tag") != python_tag_value
-            or item.get("abi_tag") != abi_tag_value
-            or item.get("platform_tag") != platform_tag_value
-        ):
-            raise ArtifactError(
-                f"wheel inventory tags differ from filename: {filename}"
-            )
-        python_tags = _tags(item, "python_tag")
-        if len(python_tags) != 1 or next(iter(python_tags)) not in expected_python:
-            raise ArtifactError(
-                f"wheel must identify exactly one expected CPython tag: {item['filename']}"
-            )
-        python_tag = next(iter(python_tags))
-        abi_tags = _tags(item, "abi_tag")
-        if abi_tags != {python_tag}:
-            raise ArtifactError(f"wheel ABI does not match interpreter: {filename}")
-        platform_tags = _tags(item, "platform_tag")
-        if not _platform_family_matches(job, platform_tags):
-            raise ArtifactError(f"wheel platform does not match {job}: {filename}")
-        if python_tag in observed[job]:
-            raise ArtifactError(f"duplicate {job} wheel for {python_tag}")
-        observed[job][python_tag] = item
+    if unexpected_jobs:
+        raise ArtifactError(f"unexpected wheel build job: {sorted(unexpected_jobs)}")
     for job, status_policy in expected_jobs.items():
-        if set(observed[job]) != expected_python:
-            raise ArtifactError(f"wheel matrix is incomplete for {job}")
+        validate_wheel_build_job(inventory, job, str(wheels[0]["package_version"]))
+        observed = {
+            next(iter(_tags(item, "python_tag"))): item
+            for item in wheels
+            if item.get("build_job") == job
+        }
         for status, expected_tags in status_policy.items():
             actual_tags = {
                 tag
-                for tag, item in observed[job].items()
+                for tag, item in observed.items()
                 if item.get("smoke_test_status") == status
             }
             if actual_tags != expected_tags:

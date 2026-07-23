@@ -146,7 +146,7 @@ jobs:
           command: build
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
-          args: --release --locked --find-interpreter --compatibility pypi
+          args: --release --locked --compatibility pypi --interpreter python3.10 python3.11 python3.12 python3.13 python3.14
           maturin-version: v1.14.1
 
       - name: Set up smoke-test Python
@@ -172,15 +172,6 @@ jobs:
           python "$GITHUB_WORKSPACE/tests/test_wheel_isolation.py"
           EXPECTED_LOCALQUEUE_VERSION="$CANDIDATE_VERSION" \
             python "$GITHUB_WORKSPACE/scripts/smoke_installed_wheel.py"
-
-      - name: Validate Linux ARM64 artifacts without claiming physical smoke
-        if: matrix.name == 'linux-aarch64'
-        shell: bash
-        run: |
-          for tag in cp310 cp311 cp312 cp313 cp314; do
-            test "$(find target/wheels -name "*${tag}*aarch64.whl" | wc -l)" -eq 1
-          done
-          echo "Linux ARM64 wheels were validated under the cross-build/QEMU path; this is not physical ARM64 evidence." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build the single source distribution
         if: matrix.name == 'linux-x86_64'
@@ -214,6 +205,23 @@ jobs:
             --smoke-status "${{ matrix.default_smoke }}" \
             "${smoke_args[@]}" \
             --output "target/wheels/inventory-${{ matrix.name }}.json"
+
+      - name: Diagnose and validate Linux ARM64 artifacts without claiming physical smoke
+        if: matrix.name == 'linux-aarch64'
+        shell: bash
+        run: |
+          inventory="target/wheels/inventory-${{ matrix.name }}.json"
+          python -m release_gate.cli wheel-job-diagnostics \
+            --inventory "$inventory" \
+            --build-job "${{ matrix.name }}" \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --version "$CANDIDATE_VERSION" \
+            --output "$GITHUB_STEP_SUMMARY"
+          python -m release_gate.cli validate-wheel-job \
+            --inventory "$inventory" \
+            --build-job "${{ matrix.name }}" \
+            --version "$CANDIDATE_VERSION"
+          echo "Linux ARM64 wheels were validated under the cross-build/QEMU path; this is not physical ARM64 evidence." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload immutable candidate distributions
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

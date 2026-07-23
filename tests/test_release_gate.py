@@ -8,7 +8,9 @@ import pytest
 from release_gate.artifacts import (
     ArtifactError,
     build_inventory,
+    render_wheel_build_job_diagnostics,
     validate_distribution_matrix,
+    validate_wheel_build_job,
     verify_inventory,
 )
 from release_gate.audits import (
@@ -158,6 +160,124 @@ def test_candidate_identity_rejects_divergence(
 
 def wheel(name: str, content: bytes = b"wheel") -> tuple[str, bytes]:
     return name, content
+
+
+REAL_ARM64_WHEEL_FILENAMES = (
+    "localqueue-1.2.0-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+    "localqueue-1.2.0-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+    "localqueue-1.2.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+    "localqueue-1.2.0-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+    "localqueue-1.2.0-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+)
+
+
+def arm64_inventory(tmp_path: Path) -> list[dict[str, object]]:
+    paths = []
+    for name in REAL_ARM64_WHEEL_FILENAMES:
+        path = tmp_path / name
+        path.write_bytes(name.encode())
+        paths.append(path)
+    return build_inventory(
+        paths, SHA, VERSION, "linux-aarch64", "artifact-validated-not-physical-smoke"
+    )
+
+
+def test_arm64_build_job_accepts_real_compressed_manylinux_wheels(
+    tmp_path: Path,
+) -> None:
+    inventory = arm64_inventory(tmp_path)
+    validate_wheel_build_job(inventory, "linux-aarch64", VERSION)
+    diagnostics = render_wheel_build_job_diagnostics(
+        inventory, "linux-aarch64", SHA, VERSION
+    )
+    assert "manylinux_2_17_aarch64" in diagnostics
+    assert "manylinux2014_aarch64" in diagnostics
+    assert "cp310=1" in diagnostics and "cp314=1" in diagnostics
+    assert SHA in diagnostics and VERSION in diagnostics
+
+
+@pytest.mark.parametrize(
+    ("replacement", "message"),
+    [
+        (None, "expected one cp314 linux-aarch64 wheel, found 0"),
+        (
+            "localqueue-1.2.0-cp312-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+            "ABI does not match",
+        ),
+        (
+            "localqueue-1.2.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+            "platform does not match linux-aarch64",
+        ),
+        (
+            "localqueue-1.2.0-cp312-cp312-macosx_11_0_arm64.whl",
+            "platform does not match linux-aarch64",
+        ),
+    ],
+)
+def test_arm64_build_job_rejects_invalid_or_missing_wheels(
+    tmp_path: Path, replacement: str | None, message: str
+) -> None:
+    inventory = arm64_inventory(tmp_path)
+    if replacement is None:
+        inventory.pop()
+    else:
+        inventory = [item for item in inventory if item["python_tag"] != "cp312"]
+        path = tmp_path / replacement
+        path.write_bytes(replacement.encode())
+        inventory.extend(
+            build_inventory(
+                [path],
+                SHA,
+                VERSION,
+                "linux-aarch64",
+                "artifact-validated-not-physical-smoke",
+            )
+        )
+    with pytest.raises(ArtifactError, match=message):
+        validate_wheel_build_job(inventory, "linux-aarch64", VERSION)
+
+
+def test_arm64_build_job_duplicate_error_names_the_tag_and_all_observed_files(
+    tmp_path: Path,
+) -> None:
+    inventory = arm64_inventory(tmp_path)
+    duplicate = tmp_path / "localqueue-1.2.0-cp312-cp312-manylinux_2_28_aarch64.whl"
+    duplicate.write_bytes(b"duplicate")
+    inventory.extend(
+        build_inventory(
+            [duplicate],
+            SHA,
+            VERSION,
+            "linux-aarch64",
+            "artifact-validated-not-physical-smoke",
+        )
+    )
+    with pytest.raises(ArtifactError) as error:
+        validate_wheel_build_job(inventory, "linux-aarch64", VERSION)
+    assert "expected one cp312 linux-aarch64 wheel, found 2" in str(error.value)
+    assert duplicate.name in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "otherqueue-1.2.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "localqueue-1.2.1-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+    ],
+)
+def test_arm64_build_job_rejects_wrong_distribution_or_version(
+    tmp_path: Path, filename: str
+) -> None:
+    path = tmp_path / filename
+    path.write_bytes(b"invalid")
+    with pytest.raises(ArtifactError, match="localqueue|version differs"):
+        build_inventory(
+            [path],
+            SHA,
+            VERSION,
+            "linux-aarch64",
+            "artifact-validated-not-physical-smoke",
+        )
 
 
 def test_inventory_rejects_duplicate_missing_and_wrong_version(tmp_path: Path) -> None:

@@ -173,6 +173,29 @@ def command_merge_inventory(args: argparse.Namespace) -> None:
     write_json(args.output, entries)
 
 
+def command_wheel_job_diagnostics(args: argparse.Namespace) -> None:
+    from .artifacts import render_wheel_build_job_diagnostics
+
+    inventory = read_json(args.inventory)
+    if not isinstance(inventory, list):
+        raise ValueError(f"inventory fragment is not a list: {args.inventory}")
+    args.output.write_text(
+        render_wheel_build_job_diagnostics(
+            inventory, args.build_job, args.candidate_sha, args.version
+        ),
+        encoding="utf-8",
+    )
+
+
+def command_validate_wheel_job(args: argparse.Namespace) -> None:
+    from .artifacts import validate_wheel_build_job
+
+    inventory = read_json(args.inventory)
+    if not isinstance(inventory, list):
+        raise ValueError(f"inventory fragment is not a list: {args.inventory}")
+    validate_wheel_build_job(inventory, args.build_job, args.version)
+
+
 def command_validate_report(args: argparse.Namespace) -> None:
     validate_report(
         read_json(args.report),
@@ -531,6 +554,20 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--smoke-passed-filename", action="append", default=[])
     command.add_argument("--output", type=Path, required=True)
     command.set_defaults(handler=command_inventory)
+
+    command = commands.add_parser("wheel-job-diagnostics")
+    command.add_argument("--inventory", type=Path, required=True)
+    command.add_argument("--build-job", required=True)
+    command.add_argument("--candidate-sha", required=True)
+    command.add_argument("--version", required=True)
+    command.add_argument("--output", type=Path, required=True)
+    command.set_defaults(handler=command_wheel_job_diagnostics)
+
+    command = commands.add_parser("validate-wheel-job")
+    command.add_argument("--inventory", type=Path, required=True)
+    command.add_argument("--build-job", required=True)
+    command.add_argument("--version", required=True)
+    command.set_defaults(handler=command_validate_wheel_job)
 
     command = commands.add_parser("merge-inventory")
     command.add_argument("inputs", nargs="+", type=Path)

@@ -89,6 +89,14 @@ def test_release_artifact_commands_have_explicit_packaging_bootstrap() -> None:
     assert candidate.index(
         "Bootstrap packaging for artifact manifest validation"
     ) < candidate.index("release_gate.cli generate-manifest")
+    assert "*${tag}*aarch64.whl" not in candidate
+    assert (
+        "--interpreter python3.10 python3.11 python3.12 python3.13 python3.14"
+        in candidate
+    )
+    assert candidate.index("wheel-job-diagnostics") < candidate.index(
+        "validate-wheel-job"
+    )
     first_bootstrap = promotion.index(
         "Bootstrap packaging for evidence artifact validation"
     )
