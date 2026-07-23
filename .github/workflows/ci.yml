@@ -271,6 +271,81 @@ jobs:
           cd "$RUNNER_TEMP"
           python -m localqueue.benchmark --profile smoke --output benchmark-smoke.json
 
+      - name: Run short multiprocess soak from the exact CPython 3.13 wheel
+        if: matrix.name == 'linux-x86_64'
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          python "$GITHUB_WORKSPACE/stress/run_soak.py" \
+            --messages 2000 \
+            --duration 120 \
+            --producers 4 \
+            --consumers 8 \
+            --crash-rate 0.01 \
+            --lease-seconds 5 \
+            --output stress-report.json \
+            --markdown-output stress-report.md
+          jq -e '
+            .status == "passed"
+            and .database.integrity == "ok"
+            and .database.rows == .messages
+            and .counters.unexpected_consumer_exits == 0
+            and .counters.claims == (
+              .counters.acks
+              + .counters.nacks
+              + .counters.fails
+              + .counters.lease_losses_ack
+              + .counters.lease_losses_nack
+              + .counters.lease_losses_fail
+              + .counters.intentional_crashes
+            )
+            and .counters.acks == .last_stats.acked
+            and .counters.intentional_crashes == (
+              [.exits[] | select(.classification == "intentional_crash")] | length
+            )
+            and ([.restarts[]] | add) == .counters.intentional_crashes
+          ' stress-report.json
+
+      - name: Prove deterministic lease loss is not a consumer crash
+        if: matrix.name == 'linux-x86_64'
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          set +e
+          python "$GITHUB_WORKSPACE/stress/run_soak.py" \
+            --messages 1 \
+            --duration 1 \
+            --producers 1 \
+            --consumers 1 \
+            --nack-rate 0 \
+            --fail-rate 0 \
+            --crash-rate 0 \
+            --lease-seconds 0.01 \
+            --transition-delay-seconds 0.03 \
+            --output lease-loss-report.json \
+            --markdown-output lease-loss-report.md
+          soak_exit=$?
+          set -e
+          test "$soak_exit" -eq 0
+          jq -e '
+            .status == "passed"
+            and .counters.lease_losses_ack > 0
+            and .counters.unexpected_consumer_exits == 0
+          ' lease-loss-report.json
+
+      - name: Upload CPython 3.13 soak reports
+        if: always() && matrix.name == 'linux-x86_64'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: multiprocess-soak-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/stress-report.json
+            ${{ runner.temp }}/stress-report.md
+            ${{ runner.temp }}/lease-loss-report.json
+            ${{ runner.temp }}/lease-loss-report.md
+          if-no-files-found: error
+          retention-days: 30
+
   secrets:
     name: Secret scan
     runs-on: ubuntu-latest

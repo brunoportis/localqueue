@@ -26,20 +26,55 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from localqueue import Empty, SimpleQueue  # noqa: E402
+from localqueue import Empty, LeaseExpired, SimpleQueue  # noqa: E402
 
 from release_gate.markdown import evidence_markdown  # noqa: E402
 from release_gate.subject import installed_subject  # noqa: E402
 
 
-def produce(path: str, queue_name: str, first: int, count: int) -> None:
-    queue = SimpleQueue(path, name=queue_name, lease_seconds=1.0, max_retries=3)
+def produce(
+    path: str, queue_name: str, first: int, count: int, lease_seconds: float
+) -> None:
+    queue = SimpleQueue(
+        path, name=queue_name, lease_seconds=lease_seconds, max_retries=3
+    )
     try:
         for index in range(first, first + count):
             job_id = f"stress-{index}"
             queue.put({"id": job_id, "producer": os.getpid()}, job_id=job_id)
     finally:
         queue.close()
+
+
+CHILD_COUNTERS = (
+    "claims",
+    "acks",
+    "nacks",
+    "fails",
+    "lease_losses_ack",
+    "lease_losses_nack",
+    "lease_losses_fail",
+)
+
+
+def shared_counters(context: Any) -> dict[str, Any]:
+    return {name: context.Value("q", 0) for name in CHILD_COUNTERS}
+
+
+def increment(counter: Any) -> None:
+    with counter.get_lock():
+        counter.value += 1
+
+
+def counter_snapshot(counters: dict[str, Any]) -> dict[str, int]:
+    return {name: int(counter.value) for name, counter in counters.items()}
+
+
+def diagnostic_event(
+    events: Any | None, kind: str, consumer_id: int, **details: object
+) -> None:
+    if events is not None:
+        events.put({"kind": kind, "consumer_id": consumer_id, **details})
 
 
 def consume(
@@ -50,8 +85,15 @@ def consume(
     nack_rate: float,
     fail_rate: float,
     crash_rate: float,
+    lease_seconds: float,
+    consumer_id: int,
+    counters: dict[str, Any],
+    events: Any | None = None,
+    transition_delay_seconds: float = 0.0,
 ) -> None:
-    queue = SimpleQueue(path, name=queue_name, lease_seconds=1.0, max_retries=3)
+    queue = SimpleQueue(
+        path, name=queue_name, lease_seconds=lease_seconds, max_retries=3
+    )
     rng = random.Random(seed)
     try:
         while not stop.is_set():
@@ -61,18 +103,144 @@ def consume(
                 time.sleep(0.005)
                 continue
 
+            # This synchronous shared-memory write must precede os._exit(17).
+            increment(counters["claims"])
+            diagnostic_event(events, "claim", consumer_id)
             choice = rng.random()
             if choice < crash_rate:
-                # Simula um processo que morre depois do get e antes do ACK.
+                # Deliberately bypass cleanup to simulate a crash after claiming.
                 os._exit(17)
+            if transition_delay_seconds:
+                time.sleep(transition_delay_seconds)
             if choice < crash_rate + nack_rate:
-                queue.nack(job, delay=0.01, last_error="stress transient error")
+                operation = "nack"
+                try:
+                    queue.nack(job, delay=0.01, last_error="stress transient error")
+                except LeaseExpired:
+                    increment(counters[f"lease_losses_{operation}"])
+                    diagnostic_event(
+                        events, "lease_lost", consumer_id, operation=operation
+                    )
+                else:
+                    increment(counters[f"{operation}s"])
+                    diagnostic_event(events, operation, consumer_id)
             elif choice < crash_rate + nack_rate + fail_rate:
-                queue.fail(job, last_error="stress permanent error")
+                operation = "fail"
+                try:
+                    queue.fail(job, last_error="stress permanent error")
+                except LeaseExpired:
+                    increment(counters[f"lease_losses_{operation}"])
+                    diagnostic_event(
+                        events, "lease_lost", consumer_id, operation=operation
+                    )
+                else:
+                    increment(counters[f"{operation}s"])
+                    diagnostic_event(events, operation, consumer_id)
             else:
-                queue.ack(job)
+                operation = "ack"
+                try:
+                    queue.ack(job)
+                except LeaseExpired:
+                    increment(counters[f"lease_losses_{operation}"])
+                    diagnostic_event(
+                        events, "lease_lost", consumer_id, operation=operation
+                    )
+                else:
+                    increment(counters[f"{operation}s"])
+                    diagnostic_event(events, operation, consumer_id)
     finally:
         queue.close()
+
+
+def classify_consumer_exit(exit_code: int | None, *, stopping: bool) -> str:
+    if exit_code == 17:
+        return "intentional_crash"
+    if exit_code == 0:
+        return "normal_shutdown" if stopping else "premature_normal_exit"
+    return "unexpected_consumer_exit"
+
+
+def handle_consumer_exit(
+    exit_code: int | None,
+    consumer_id: int,
+    restarts: list[int],
+    max_restarts: int,
+    *,
+    stopping: bool,
+) -> tuple[str, bool, str | None]:
+    classification = classify_consumer_exit(exit_code, stopping=stopping)
+    if classification == "intentional_crash" and not stopping:
+        restarts[consumer_id] += 1
+        if restarts[consumer_id] > max_restarts:
+            return (
+                classification,
+                False,
+                f"consumer {consumer_id} exceeded --max-restarts",
+            )
+        return classification, True, None
+    if classification in {"premature_normal_exit", "unexpected_consumer_exit"}:
+        return (
+            classification,
+            False,
+            f"{classification}: consumer {consumer_id} exited with code {exit_code}",
+        )
+    return classification, False, None
+
+
+def empty_counters() -> dict[str, int]:
+    return {
+        "claims": 0,
+        "acks": 0,
+        "nacks": 0,
+        "fails": 0,
+        "lease_losses_ack": 0,
+        "lease_losses_nack": 0,
+        "lease_losses_fail": 0,
+        "intentional_crashes": 0,
+        "unexpected_consumer_exits": 0,
+        "normal_shutdowns": 0,
+    }
+
+
+def report_invariant_errors(
+    counters: dict[str, int],
+    last_stats: dict[str, Any],
+    exits: list[dict[str, object]],
+    restarts: list[int],
+) -> list[str]:
+    completed_claims = sum(
+        counters[name]
+        for name in (
+            "acks",
+            "nacks",
+            "fails",
+            "lease_losses_ack",
+            "lease_losses_nack",
+            "lease_losses_fail",
+            "intentional_crashes",
+        )
+    )
+    errors = []
+    if counters["claims"] != completed_claims:
+        errors.append(f"claims={counters['claims']} but outcomes={completed_claims}")
+    if counters["acks"] != last_stats.get("acked"):
+        errors.append(
+            f"acks={counters['acks']} but last_stats.acked={last_stats.get('acked')}"
+        )
+    intentional_exits = sum(
+        item["classification"] == "intentional_crash" for item in exits
+    )
+    if counters["intentional_crashes"] != intentional_exits:
+        errors.append(
+            "intentional_crashes="
+            f"{counters['intentional_crashes']} but intentional exits={intentional_exits}"
+        )
+    if sum(restarts) != counters["intentional_crashes"]:
+        errors.append(
+            f"sum(restarts)={sum(restarts)} but intentional_crashes="
+            f"{counters['intentional_crashes']}"
+        )
+    return errors
 
 
 def database_state(path: Path, queue_name: str) -> dict[str, Any]:
@@ -93,19 +261,26 @@ def database_state(path: Path, queue_name: str) -> dict[str, Any]:
     return {"integrity": integrity, "counts": counts, "rows": sum(counts.values())}
 
 
-def run(args: argparse.Namespace) -> dict[str, Any]:
+def validate_args(args: argparse.Namespace) -> None:
     if args.messages < 1:
         raise ValueError("--messages deve ser positivo")
     if args.duration <= 0:
         raise ValueError("--duration deve ser positivo")
+    if args.lease_seconds <= 0:
+        raise ValueError("--lease-seconds deve ser positivo")
+    if args.transition_delay_seconds < 0:
+        raise ValueError("--transition-delay-seconds não pode ser negativo")
     if args.consumers < 1 or args.producers < 1:
         raise ValueError("--producers e --consumers devem ser positivos")
     if args.nack_rate + args.fail_rate + args.crash_rate > 1:
         raise ValueError("as taxas de erro não podem somar mais que 1")
 
+
+def run(args: argparse.Namespace) -> dict[str, Any]:
+    validate_args(args)
     context = mp.get_context("spawn")
     queue_name = "stress"
-    temporary_directory = None
+    temporary_directory: tempfile.TemporaryDirectory[str] | None = None
     if args.path is None:
         temporary_directory = tempfile.TemporaryDirectory(prefix="localqueue-stress-")
         path = Path(temporary_directory.name)
@@ -114,61 +289,121 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         path.mkdir(parents=True, exist_ok=True)
 
     stop = context.Event()
+    child_counters = shared_counters(context)
     producers: list[mp.Process] = []
-    consumers: list[mp.Process] = []
-    messages_per_producer, remainder = divmod(args.messages, args.producers)
-    first = 0
+    consumers: list[mp.Process | None] = []
+    counters = empty_counters()
+    exits: list[dict[str, object]] = []
+    recorded_pids: set[int | None] = set()
+    failure_reason: str | None = None
+    last_state: dict[str, Any] = {}
+    started_at = time.monotonic()
+    restarts = [0] * args.consumers
+    drained = False
+    queue: SimpleQueue | None = None
+
+    def record_exit(
+        role: str, identity: int, process: mp.Process, classification: str
+    ) -> None:
+        recorded_pids.add(process.pid)
+        exits.append(
+            {
+                "role": role,
+                "id": identity,
+                "pid": process.pid,
+                "exit_code": process.exitcode,
+                "classification": classification,
+            }
+        )
+
+    def start_consumer(consumer_id: int, restart: int = 0) -> mp.Process:
+        process = context.Process(
+            target=consume,
+            args=(
+                str(path),
+                queue_name,
+                stop,
+                args.seed + consumer_id + restart * 100_000,
+                args.nack_rate,
+                args.fail_rate,
+                args.crash_rate,
+                args.lease_seconds,
+                consumer_id,
+                child_counters,
+                None,
+                args.transition_delay_seconds,
+            ),
+            name=f"localqueue-consumer-{consumer_id}-{restart}",
+        )
+        process.start()
+        return process
 
     try:
+        messages_per_producer, remainder = divmod(args.messages, args.producers)
+        first = 0
         for producer_id in range(args.producers):
             count = messages_per_producer + (producer_id < remainder)
             process = context.Process(
                 target=produce,
-                args=(str(path), queue_name, first, count),
+                args=(str(path), queue_name, first, count, args.lease_seconds),
                 name=f"localqueue-producer-{producer_id}",
             )
             process.start()
             producers.append(process)
             first += count
-
-        def start_consumer(consumer_id: int, restart: int = 0) -> mp.Process:
-            process = context.Process(
-                target=consume,
-                args=(
-                    str(path),
-                    queue_name,
-                    stop,
-                    args.seed + consumer_id + restart * 100_000,
-                    args.nack_rate,
-                    args.fail_rate,
-                    args.crash_rate,
-                ),
-                name=f"localqueue-consumer-{consumer_id}-{restart}",
-            )
-            process.start()
-            return process
-
-        for consumer_id in range(args.consumers):
-            consumers.append(start_consumer(consumer_id))
-
+        consumers = [
+            start_consumer(consumer_id) for consumer_id in range(args.consumers)
+        ]
         queue = SimpleQueue(
-            str(path), name=queue_name, lease_seconds=1.0, max_retries=3
+            str(path), name=queue_name, lease_seconds=args.lease_seconds, max_retries=3
         )
-        started_at = time.monotonic()
-        restarts = [0] * args.consumers
-        drained = False
-        last_state: dict[str, Any] = {}
+        observed_producers: set[int] = set()
 
         while time.monotonic() - started_at < args.duration:
-            for index, process in enumerate(consumers):
-                if process.is_alive() or stop.is_set():
+            for producer_id, process in enumerate(producers):
+                if producer_id not in observed_producers and not process.is_alive():
+                    process.join()
+                    observed_producers.add(producer_id)
+                    classification = (
+                        "normal_shutdown"
+                        if process.exitcode == 0
+                        else "unexpected_producer_exit"
+                    )
+                    record_exit("producer", producer_id, process, classification)
+                    if process.exitcode != 0:
+                        failure_reason = f"producer {producer_id} exited with code {process.exitcode}"
+
+            for consumer_id, process in enumerate(consumers):
+                if process is None or process.is_alive() or stop.is_set():
                     continue
                 process.join()
-                restarts[index] += 1
-                if restarts[index] > args.max_restarts:
-                    raise RuntimeError(f"consumidor {index} excedeu --max-restarts")
-                consumers[index] = start_consumer(index, restarts[index])
+                classification, should_restart, error = handle_consumer_exit(
+                    process.exitcode,
+                    consumer_id,
+                    restarts,
+                    args.max_restarts,
+                    stopping=False,
+                )
+                record_exit("consumer", consumer_id, process, classification)
+                if classification == "intentional_crash":
+                    counters["intentional_crashes"] += 1
+                    if should_restart:
+                        consumers[consumer_id] = start_consumer(
+                            consumer_id, restarts[consumer_id]
+                        )
+                    else:
+                        failure_reason = error
+                elif classification in {
+                    "premature_normal_exit",
+                    "unexpected_consumer_exit",
+                }:
+                    counters["unexpected_consumer_exits"] += 1
+                    failure_reason = error
+                else:
+                    consumers[consumer_id] = None
 
+            if failure_reason is not None:
+                break
             last_state = queue.stats()
             terminal = last_state["acked"] + last_state["failed"]
             if (
@@ -179,45 +414,164 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             ):
                 drained = True
                 break
-            time.sleep(0.1)
-
-        stop.set()
-        for process in producers + consumers:
-            process.join(timeout=5)
-        queue.close()
-
-        state = database_state(path, queue_name)
-        producer_exitcodes = [process.exitcode for process in producers]
-        consumer_exitcodes = [process.exitcode for process in consumers]
-        success = (
-            drained
-            and state["integrity"] == "ok"
-            and state["rows"] == args.messages
-            and all(code == 0 for code in producer_exitcodes)
-            and all(code == 0 for code in consumer_exitcodes)
-            and all(not process.is_alive() for process in consumers)
+            time.sleep(0.05)
+    except Exception as error:
+        failure_reason = (
+            failure_reason or f"supervisor error: {type(error).__name__}: {error}"
         )
-        return {
-            "success": success,
-            "duration_seconds": round(time.monotonic() - started_at, 3),
-            "messages": args.messages,
-            "producers": args.producers,
-            "consumers": args.consumers,
-            "restarts": restarts,
-            "producer_exitcodes": producer_exitcodes,
-            "consumer_exitcodes": consumer_exitcodes,
-            "last_stats": last_state,
-            "database": state,
-            "path": str(path),
-        }
     finally:
         stop.set()
-        for process in producers + consumers:
+        for process in producers + [item for item in consumers if item is not None]:
+            process.join(timeout=5)
             if process.is_alive():
                 process.terminate()
-            process.join(timeout=2)
-        if temporary_directory is not None:
-            temporary_directory.cleanup()
+                process.join(timeout=2)
+            if process.exitcode == 0:
+                counters["normal_shutdowns"] += 1
+            if process.pid not in recorded_pids:
+                role = "producer" if process in producers else "consumer"
+                identity = (
+                    producers.index(process)
+                    if role == "producer"
+                    else consumers.index(process)
+                )
+                classification = (
+                    "normal_shutdown"
+                    if process.exitcode == 0
+                    else (
+                        "unexpected_producer_exit"
+                        if role == "producer"
+                        else classify_consumer_exit(process.exitcode, stopping=True)
+                    )
+                )
+                record_exit(role, identity, process, classification)
+                if classification == "unexpected_consumer_exit":
+                    counters["unexpected_consumer_exits"] += 1
+                    failure_reason = failure_reason or (
+                        f"unexpected consumer exit: consumer {identity} "
+                        f"exited with code {process.exitcode}"
+                    )
+                elif classification == "unexpected_producer_exit":
+                    failure_reason = failure_reason or (
+                        f"producer {identity} exited with code {process.exitcode}"
+                    )
+        if queue is not None:
+            queue.close()
+
+    try:
+        state = database_state(path, queue_name)
+    except (sqlite3.Error, OSError) as error:
+        state = {
+            "integrity": "unavailable",
+            "counts": {},
+            "rows": 0,
+            "error": str(error),
+        }
+        failure_reason = failure_reason or f"could not inspect database: {error}"
+    if failure_reason is None and not drained:
+        failure_reason = "soak did not drain before --duration elapsed"
+    counters.update(counter_snapshot(child_counters))
+    invariant_errors = report_invariant_errors(counters, last_state, exits, restarts)
+    if failure_reason is None and invariant_errors:
+        failure_reason = "report invariant failed: " + "; ".join(invariant_errors)
+    success = (
+        failure_reason is None
+        and state["integrity"] == "ok"
+        and state["rows"] == args.messages
+    )
+    result = {
+        "success": success,
+        "failure_reason": failure_reason,
+        "duration_seconds": round(time.monotonic() - started_at, 3),
+        "messages": args.messages,
+        "producers": args.producers,
+        "consumers": args.consumers,
+        "restarts": restarts,
+        "counters": counters,
+        "exits": exits,
+        "last_stats": last_state,
+        "database": state,
+        "path": str(path),
+    }
+    if temporary_directory is not None:
+        temporary_directory.cleanup()
+    return result
+
+
+def base_result(
+    args: argparse.Namespace, error: Exception | None = None
+) -> dict[str, Any]:
+    return {
+        "success": False,
+        "failure_reason": str(error) if error is not None else "unknown failure",
+        "duration_seconds": 0.0,
+        "messages": args.messages,
+        "producers": args.producers,
+        "consumers": args.consumers,
+        "restarts": [0] * args.consumers,
+        "counters": empty_counters(),
+        "exits": [],
+        "last_stats": {},
+        "database": {"integrity": "unavailable", "counts": {}, "rows": 0},
+        "path": str(args.path) if args.path is not None else None,
+    }
+
+
+def execute(args: argparse.Namespace) -> dict[str, Any]:
+    try:
+        result = run(args)
+    except Exception as error:
+        result = base_result(args, error)
+    identity = (args.candidate_sha, args.candidate_ref, args.candidate_version)
+    if any(identity):
+        result["subject"] = {
+            "candidate_sha": args.candidate_sha,
+            "candidate_ref": args.candidate_ref,
+            "candidate_version": args.candidate_version,
+        }
+        if all(identity):
+            try:
+                result["subject"] = installed_subject(
+                    args.candidate_sha,
+                    args.candidate_ref,
+                    args.candidate_version,
+                    require_wheel=args.require_wheel,
+                )
+            except Exception as error:
+                result["success"] = False
+                result["failure_reason"] = result.get("failure_reason") or str(error)
+        else:
+            result["failure_reason"] = (
+                "candidate SHA, ref and version must be provided together"
+            )
+            result["success"] = False
+    result["schema_version"] = 1
+    result["configuration"] = {
+        "duration_seconds": args.duration,
+        "messages": args.messages,
+        "producers": args.producers,
+        "consumers": args.consumers,
+        "nack_rate": args.nack_rate,
+        "fail_rate": args.fail_rate,
+        "crash_rate": args.crash_rate,
+        "max_restarts": args.max_restarts,
+        "lease_seconds": args.lease_seconds,
+        "transition_delay_seconds": args.transition_delay_seconds,
+        "seed": args.seed,
+    }
+    result["status"] = "passed" if result["success"] else "failed"
+    rendered = json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(rendered, encoding="utf-8")
+    else:
+        print(rendered, end="")
+    if args.markdown_output:
+        args.markdown_output.parent.mkdir(parents=True, exist_ok=True)
+        args.markdown_output.write_text(
+            evidence_markdown("Multiprocess soak", result), encoding="utf-8"
+        )
+    return result
 
 
 def parse_args() -> argparse.Namespace:
@@ -231,6 +585,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fail-rate", type=float, default=0.01)
     parser.add_argument("--crash-rate", type=float, default=0.01)
     parser.add_argument("--max-restarts", type=int, default=100)
+    parser.add_argument("--lease-seconds", type=float, default=5.0)
+    parser.add_argument("--transition-delay-seconds", type=float, default=0.0)
     parser.add_argument("--path", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--markdown-output", type=Path)
@@ -242,43 +598,5 @@ def parse_args() -> argparse.Namespace:
 
 
 if __name__ == "__main__":
-    arguments = parse_args()
-    result = run(arguments)
-    identity = (
-        arguments.candidate_sha,
-        arguments.candidate_ref,
-        arguments.candidate_version,
-    )
-    if any(identity):
-        if not all(identity):
-            raise SystemExit("candidate SHA, ref and version must be provided together")
-        result["subject"] = installed_subject(
-            arguments.candidate_sha,
-            arguments.candidate_ref,
-            arguments.candidate_version,
-            require_wheel=arguments.require_wheel,
-        )
-    result["schema_version"] = 1
-    result["configuration"] = {
-        "duration_seconds": arguments.duration,
-        "messages": arguments.messages,
-        "producers": arguments.producers,
-        "consumers": arguments.consumers,
-        "nack_rate": arguments.nack_rate,
-        "fail_rate": arguments.fail_rate,
-        "crash_rate": arguments.crash_rate,
-        "max_restarts": arguments.max_restarts,
-        "seed": arguments.seed,
-    }
-    result["status"] = "passed" if result["success"] else "failed"
-    rendered = json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    if arguments.output:
-        arguments.output.parent.mkdir(parents=True, exist_ok=True)
-        arguments.output.write_text(rendered, encoding="utf-8")
-    else:
-        print(rendered, end="")
-    if arguments.markdown_output:
-        arguments.markdown_output.write_text(
-            evidence_markdown("Multiprocess soak", result), encoding="utf-8"
-        )
-    raise SystemExit(0 if result["success"] else 1)
+    report = execute(parse_args())
+    raise SystemExit(0 if report["success"] else 1)
