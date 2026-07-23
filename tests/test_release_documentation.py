@@ -89,6 +89,36 @@ def test_release_artifact_commands_have_explicit_packaging_bootstrap() -> None:
     assert candidate.index(
         "Bootstrap packaging for artifact manifest validation"
     ) < candidate.index("release_gate.cli generate-manifest")
+    assert "*${tag}*aarch64.whl" not in candidate
+    linux_build = candidate.split("Build Linux manylinux candidate wheels", 1)[1].split(
+        "Build host candidate wheels", 1
+    )[0]
+    host_build = candidate.split("Build host candidate wheels", 1)[1].split(
+        "Set up smoke-test Python", 1
+    )[0]
+    assert (
+        "before-script-linux: bash scripts/validate_manylinux_cpython.sh" in linux_build
+    )
+    assert "--interpreter\n            python3.10" in linux_build
+    assert "python3.14" in linux_build
+    assert "outputs.python-path" not in linux_build
+    assert "outputs.python-path" in host_build
+    for tag in ("cp310", "cp311", "cp312", "cp313", "cp314"):
+        assert f"steps.{tag}.outputs.python-path" in candidate
+        assert f"id: {tag}" in candidate
+    assert "validate_cpython_paths.py" in candidate
+    assert "shell: pwsh" in candidate
+    assert "Explicit CPython paths (${{ matrix.os }})" in ci
+    assert "macos-15-intel" in ci and "windows-latest" in ci
+    assert "validate_cpython_paths.py" in ci
+    assert "shell: pwsh" in ci
+    assert "Manylinux five-wheel integration (${{ matrix.name }})" in ci
+    assert "docker/setup-qemu-action" in ci
+    assert "validate-wheel-job" in ci
+    assert "before-script-linux: bash scripts/validate_manylinux_cpython.sh" in ci
+    assert candidate.index("wheel-job-diagnostics") < candidate.index(
+        "validate-wheel-job"
+    )
     first_bootstrap = promotion.index(
         "Bootstrap packaging for evidence artifact validation"
     )

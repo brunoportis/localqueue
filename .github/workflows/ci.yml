@@ -62,6 +62,140 @@ jobs:
           PYTHONPATH: python
         run: pyrefly check --progress-bar no
 
+  explicit-cpython-paths:
+    name: Explicit CPython paths (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15-intel, macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
+
+      - name: Set up CPython 3.10
+        id: cp310
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.10'
+          update-environment: false
+
+      - name: Set up CPython 3.11
+        id: cp311
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+          update-environment: false
+
+      - name: Set up CPython 3.12
+        id: cp312
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          update-environment: false
+
+      - name: Set up CPython 3.13
+        id: cp313
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+          update-environment: false
+
+      - name: Set up CPython 3.14
+        id: cp314
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+          update-environment: false
+
+      - name: Validate explicit CPython interpreter paths
+        shell: pwsh
+        run: >-
+          & "${{ steps.cp314.outputs.python-path }}" scripts/validate_cpython_paths.py
+          --interpreter "cp310=${{ steps.cp310.outputs.python-path }}"
+          --interpreter "cp311=${{ steps.cp311.outputs.python-path }}"
+          --interpreter "cp312=${{ steps.cp312.outputs.python-path }}"
+          --interpreter "cp313=${{ steps.cp313.outputs.python-path }}"
+          --interpreter "cp314=${{ steps.cp314.outputs.python-path }}"
+
+  manylinux-wheel-integration:
+    name: Manylinux five-wheel integration (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            target: x86_64-unknown-linux-gnu
+            manylinux: '2_17'
+            smoke_status: built-not-smoke-tested
+          - name: linux-aarch64
+            target: aarch64-unknown-linux-gnu
+            manylinux: '2_17'
+            smoke_status: artifact-validated-not-physical-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
+
+      - name: Set up QEMU for Linux ARM64 artifact validation
+        if: matrix.name == 'linux-aarch64'
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Build five wheels in the manylinux container
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: >-
+            --release
+            --locked
+            --compatibility pypi
+            --interpreter
+            python3.10
+            python3.11
+            python3.12
+            python3.13
+            python3.14
+          maturin-version: v1.14.1
+          before-script-linux: bash scripts/validate_manylinux_cpython.sh
+
+      - name: Set up release tooling Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+
+      - name: Install release artifact tooling
+        run: python -m pip install --upgrade "packaging>=24,<26"
+
+      - name: Validate the exact five-wheel inventory
+        shell: bash
+        run: |
+          version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          inventory="$RUNNER_TEMP/manylinux-${{ matrix.name }}-inventory.json"
+          python -m release_gate.cli inventory \
+            --directory target/wheels \
+            --pattern '*.whl' \
+            --candidate-sha "$(git rev-parse HEAD)" \
+            --version "$version" \
+            --build-job "${{ matrix.name }}" \
+            --smoke-status "${{ matrix.smoke_status }}" \
+            --output "$inventory"
+          python -m release_gate.cli wheel-job-diagnostics \
+            --inventory "$inventory" \
+            --build-job "${{ matrix.name }}" \
+            --candidate-sha "$(git rev-parse HEAD)" \
+            --version "$version" \
+            --output "$GITHUB_STEP_SUMMARY"
+          python -m release_gate.cli validate-wheel-job \
+            --inventory "$inventory" \
+            --build-job "${{ matrix.name }}" \
+            --version "$version"
+
   secrets:
     name: Secret scan
     runs-on: ubuntu-latest

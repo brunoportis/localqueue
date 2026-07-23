@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import argparse
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -8,7 +10,9 @@ import pytest
 from release_gate.artifacts import (
     ArtifactError,
     build_inventory,
+    render_wheel_build_job_diagnostics,
     validate_distribution_matrix,
+    validate_wheel_build_job,
     verify_inventory,
 )
 from release_gate.audits import (
@@ -17,6 +21,7 @@ from release_gate.audits import (
     audit_release_dependencies,
     audit_security,
 )
+from release_gate.cli import command_wheel_job_diagnostics
 from release_gate.identity import (
     IdentityError,
     validate_candidate,
@@ -51,6 +56,7 @@ from release_gate.simulation import (
     PromotionState,
     simulate_promotion,
 )
+from scripts import validate_cpython_paths
 
 SHA = "a" * 40
 PARENT = "b" * 40
@@ -158,6 +164,241 @@ def test_candidate_identity_rejects_divergence(
 
 def wheel(name: str, content: bytes = b"wheel") -> tuple[str, bytes]:
     return name, content
+
+
+def test_explicit_cpython_path_validator_checks_all_paths_and_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    interpreters = {}
+    for tag, expected in validate_cpython_paths.EXPECTED.items():
+        path = tmp_path / tag
+        path.write_text("placeholder", encoding="utf-8")
+        interpreters[tag] = path
+
+    def run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        tag = Path(command[0]).name
+        if command[1] == "--version":
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=f"Python {validate_cpython_paths.EXPECTED[tag]}.9\n",
+            )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "implementation": "cpython",
+                    "version": f"{validate_cpython_paths.EXPECTED[tag]}.9",
+                    "gil_disabled": False,
+                }
+            ),
+        )
+
+    monkeypatch.setattr(validate_cpython_paths.subprocess, "run", run)
+    results = validate_cpython_paths.validate_interpreters(interpreters)
+    summary = validate_cpython_paths.render_summary(results)
+    assert [result["id"] for result in results] == sorted(interpreters)
+    assert "Runner platform:" in summary
+    for tag, expected in validate_cpython_paths.EXPECTED.items():
+        assert f"`{tag}`" in summary
+        assert f"`{expected}.x`" in summary
+
+
+@pytest.mark.parametrize(
+    ("probe", "message"),
+    [
+        (
+            {"implementation": "pypy", "version": "3.10.1", "gil_disabled": False},
+            "not CPython",
+        ),
+        (
+            {"implementation": "cpython", "version": "3.10.1", "gil_disabled": True},
+            "free-threaded",
+        ),
+        (
+            {"implementation": "cpython", "version": "3.11.1", "gil_disabled": False},
+            "expected Python 3.10.x",
+        ),
+    ],
+)
+def test_explicit_cpython_path_validator_rejects_nonportable_interpreters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    probe: dict[str, object],
+    message: str,
+) -> None:
+    paths = {}
+    for tag in validate_cpython_paths.EXPECTED:
+        path = tmp_path / tag
+        path.write_text("placeholder", encoding="utf-8")
+        paths[tag] = path
+
+    def run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        tag = Path(command[0]).name
+        if command[1] == "--version":
+            version = (
+                "3.11.1"
+                if tag == "cp310" and probe["version"] == "3.11.1"
+                else f"{validate_cpython_paths.EXPECTED[tag]}.1"
+            )
+            return subprocess.CompletedProcess(command, 0, stdout=f"Python {version}\n")
+        payload = (
+            probe
+            if tag == "cp310"
+            else {
+                "implementation": "cpython",
+                "version": f"{validate_cpython_paths.EXPECTED[tag]}.1",
+                "gil_disabled": False,
+            }
+        )
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload))
+
+    monkeypatch.setattr(validate_cpython_paths.subprocess, "run", run)
+    with pytest.raises(validate_cpython_paths.InterpreterPathError, match=message):
+        validate_cpython_paths.validate_interpreters(paths)
+
+
+REAL_ARM64_WHEEL_FILENAMES = (
+    "localqueue-1.2.0-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+    "localqueue-1.2.0-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+    "localqueue-1.2.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+    "localqueue-1.2.0-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+    "localqueue-1.2.0-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+)
+
+
+def arm64_inventory(tmp_path: Path) -> list[dict[str, object]]:
+    paths = []
+    for name in REAL_ARM64_WHEEL_FILENAMES:
+        path = tmp_path / name
+        path.write_bytes(name.encode())
+        paths.append(path)
+    return build_inventory(
+        paths, SHA, VERSION, "linux-aarch64", "artifact-validated-not-physical-smoke"
+    )
+
+
+def test_arm64_build_job_accepts_real_compressed_manylinux_wheels(
+    tmp_path: Path,
+) -> None:
+    inventory = arm64_inventory(tmp_path)
+    validate_wheel_build_job(inventory, "linux-aarch64", VERSION)
+    diagnostics = render_wheel_build_job_diagnostics(
+        inventory, "linux-aarch64", SHA, VERSION
+    )
+    assert "manylinux_2_17_aarch64" in diagnostics
+    assert "manylinux2014_aarch64" in diagnostics
+    assert "cp310=1" in diagnostics and "cp314=1" in diagnostics
+    assert SHA in diagnostics and VERSION in diagnostics
+
+
+def test_wheel_job_diagnostics_append_to_summary_and_log(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    inventory_path = tmp_path / "inventory.json"
+    inventory_path.write_text(json.dumps(arm64_inventory(tmp_path)), encoding="utf-8")
+    summary = tmp_path / "summary.md"
+    summary.write_text("existing summary\n", encoding="utf-8")
+
+    command_wheel_job_diagnostics(
+        argparse.Namespace(
+            inventory=inventory_path,
+            build_job="linux-aarch64",
+            candidate_sha=SHA,
+            version=VERSION,
+            output=summary,
+        )
+    )
+
+    diagnostics = summary.read_text(encoding="utf-8")
+    assert diagnostics.startswith("existing summary\n")
+    assert "cp310=1" in diagnostics and "cp314=1" in diagnostics
+    assert "manylinux2014_aarch64" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("replacement", "message"),
+    [
+        (None, "expected one cp314 linux-aarch64 wheel, found 0"),
+        (
+            "localqueue-1.2.0-cp312-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+            "ABI does not match",
+        ),
+        (
+            "localqueue-1.2.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+            "platform does not match linux-aarch64",
+        ),
+        (
+            "localqueue-1.2.0-cp312-cp312-macosx_11_0_arm64.whl",
+            "platform does not match linux-aarch64",
+        ),
+    ],
+)
+def test_arm64_build_job_rejects_invalid_or_missing_wheels(
+    tmp_path: Path, replacement: str | None, message: str
+) -> None:
+    inventory = arm64_inventory(tmp_path)
+    if replacement is None:
+        inventory.pop()
+    else:
+        inventory = [item for item in inventory if item["python_tag"] != "cp312"]
+        path = tmp_path / replacement
+        path.write_bytes(replacement.encode())
+        inventory.extend(
+            build_inventory(
+                [path],
+                SHA,
+                VERSION,
+                "linux-aarch64",
+                "artifact-validated-not-physical-smoke",
+            )
+        )
+    with pytest.raises(ArtifactError, match=message):
+        validate_wheel_build_job(inventory, "linux-aarch64", VERSION)
+
+
+def test_arm64_build_job_duplicate_error_names_the_tag_and_all_observed_files(
+    tmp_path: Path,
+) -> None:
+    inventory = arm64_inventory(tmp_path)
+    duplicate = tmp_path / "localqueue-1.2.0-cp312-cp312-manylinux_2_28_aarch64.whl"
+    duplicate.write_bytes(b"duplicate")
+    inventory.extend(
+        build_inventory(
+            [duplicate],
+            SHA,
+            VERSION,
+            "linux-aarch64",
+            "artifact-validated-not-physical-smoke",
+        )
+    )
+    with pytest.raises(ArtifactError) as error:
+        validate_wheel_build_job(inventory, "linux-aarch64", VERSION)
+    assert "expected one cp312 linux-aarch64 wheel, found 2" in str(error.value)
+    assert duplicate.name in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "otherqueue-1.2.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "localqueue-1.2.1-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+    ],
+)
+def test_arm64_build_job_rejects_wrong_distribution_or_version(
+    tmp_path: Path, filename: str
+) -> None:
+    path = tmp_path / filename
+    path.write_bytes(b"invalid")
+    with pytest.raises(ArtifactError, match="localqueue|version differs"):
+        build_inventory(
+            [path],
+            SHA,
+            VERSION,
+            "linux-aarch64",
+            "artifact-validated-not-physical-smoke",
+        )
 
 
 def test_inventory_rejects_duplicate_missing_and_wrong_version(tmp_path: Path) -> None:
