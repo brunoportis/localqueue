@@ -179,12 +179,12 @@ def command_wheel_job_diagnostics(args: argparse.Namespace) -> None:
     inventory = read_json(args.inventory)
     if not isinstance(inventory, list):
         raise ValueError(f"inventory fragment is not a list: {args.inventory}")
-    args.output.write_text(
-        render_wheel_build_job_diagnostics(
-            inventory, args.build_job, args.candidate_sha, args.version
-        ),
-        encoding="utf-8",
+    diagnostics = render_wheel_build_job_diagnostics(
+        inventory, args.build_job, args.candidate_sha, args.version
     )
+    print(diagnostics, end="")
+    with args.output.open("a", encoding="utf-8") as output:
+        output.write(diagnostics)
 
 
 def command_validate_wheel_job(args: argparse.Namespace) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 from pathlib import Path
@@ -20,6 +21,7 @@ from release_gate.audits import (
     audit_release_dependencies,
     audit_security,
 )
+from release_gate.cli import command_wheel_job_diagnostics
 from release_gate.identity import (
     IdentityError,
     validate_candidate,
@@ -289,6 +291,30 @@ def test_arm64_build_job_accepts_real_compressed_manylinux_wheels(
     assert "manylinux2014_aarch64" in diagnostics
     assert "cp310=1" in diagnostics and "cp314=1" in diagnostics
     assert SHA in diagnostics and VERSION in diagnostics
+
+
+def test_wheel_job_diagnostics_append_to_summary_and_log(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    inventory_path = tmp_path / "inventory.json"
+    inventory_path.write_text(json.dumps(arm64_inventory(tmp_path)), encoding="utf-8")
+    summary = tmp_path / "summary.md"
+    summary.write_text("existing summary\n", encoding="utf-8")
+
+    command_wheel_job_diagnostics(
+        argparse.Namespace(
+            inventory=inventory_path,
+            build_job="linux-aarch64",
+            candidate_sha=SHA,
+            version=VERSION,
+            output=summary,
+        )
+    )
+
+    diagnostics = summary.read_text(encoding="utf-8")
+    assert diagnostics.startswith("existing summary\n")
+    assert "cp310=1" in diagnostics and "cp314=1" in diagnostics
+    assert "manylinux2014_aarch64" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
