@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing as mp
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,31 @@ class _LeaseLossQueue:
         self.closed = True
 
 
+def soak_args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
+    values: dict[str, object] = {
+        "messages": 40,
+        "duration": 15.0,
+        "producers": 2,
+        "consumers": 2,
+        "seed": 123,
+        "nack_rate": 0.0,
+        "fail_rate": 0.0,
+        "crash_rate": 0.0,
+        "max_restarts": 2,
+        "lease_seconds": 5.0,
+        "transition_delay_seconds": 0.0,
+        "path": tmp_path / "database",
+        "output": None,
+        "markdown_output": None,
+        "candidate_sha": None,
+        "candidate_ref": None,
+        "candidate_version": None,
+        "require_wheel": False,
+    }
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
 @pytest.mark.parametrize(
     ("operation", "nack_rate", "fail_rate"),
     [("ack", 0.0, 0.0), ("nack", 1.0, 0.0), ("fail", 0.0, 1.0)],
@@ -76,6 +102,7 @@ def test_consumer_records_lease_loss_and_keeps_running(
     stop = _StopAfterTransition()
     queue = _LeaseLossQueue(operation, stop)
     events = _Events(stop)
+    counters = run_soak.shared_counters(mp.get_context("spawn"))
     monkeypatch.setattr(run_soak, "SimpleQueue", lambda *args, **kwargs: queue)
 
     run_soak.consume(
@@ -88,10 +115,13 @@ def test_consumer_records_lease_loss_and_keeps_running(
         0.0,
         5.0,
         3,
+        counters,
         events,
     )
 
     assert queue.closed
+    assert run_soak.counter_snapshot(counters)["claims"] == 1
+    assert run_soak.counter_snapshot(counters)[f"lease_losses_{operation}"] == 1
     assert {item["kind"] for item in events.items} == {"claim", "lease_lost"}
     assert events.items[-1]["operation"] == operation
 
@@ -118,7 +148,7 @@ def test_unexpected_consumer_exit_fails_without_restart() -> None:
 
     assert classification == "unexpected_consumer_exit"
     assert not should_restart
-    assert error == "unexpected consumer exit: consumer 0 exited with code 9"
+    assert error == "unexpected_consumer_exit: consumer 0 exited with code 9"
     assert restarts == [0]
 
 
@@ -133,6 +163,18 @@ def test_normal_consumer_exit_during_shutdown_is_not_a_restart() -> None:
     assert not should_restart
     assert error is None
     assert restarts == [0]
+
+
+def test_normal_consumer_exit_before_shutdown_fails() -> None:
+    restarts = [0]
+
+    classification, should_restart, error = run_soak.handle_consumer_exit(
+        0, 0, restarts, 100, stopping=False
+    )
+
+    assert classification == "premature_normal_exit"
+    assert not should_restart
+    assert error == "premature_normal_exit: consumer 0 exited with code 0"
 
 
 def test_max_restarts_only_limits_intentional_crash_loops() -> None:
@@ -194,26 +236,7 @@ def test_supervisor_failure_always_writes_reports(
 
 
 def test_real_spawn_soak_drains_with_integrity(tmp_path: Path) -> None:
-    args = argparse.Namespace(
-        messages=40,
-        duration=15.0,
-        producers=2,
-        consumers=2,
-        seed=123,
-        nack_rate=0.0,
-        fail_rate=0.0,
-        crash_rate=0.0,
-        max_restarts=2,
-        lease_seconds=5.0,
-        transition_delay_seconds=0.0,
-        path=tmp_path / "database",
-        output=None,
-        markdown_output=None,
-        candidate_sha=None,
-        candidate_ref=None,
-        candidate_version=None,
-        require_wheel=False,
-    )
+    args = soak_args(tmp_path)
 
     result = run_soak.execute(args)
 
@@ -229,6 +252,74 @@ def test_real_spawn_soak_drains_with_integrity(tmp_path: Path) -> None:
         ("consumer", 0, 0, "normal_shutdown"),
         ("consumer", 1, 0, "normal_shutdown"),
     }
+    assert not run_soak.report_invariant_errors(
+        result["counters"], result["last_stats"], result["exits"], result["restarts"]
+    )
+
+
+def test_real_crash_after_claim_is_reported_from_shared_memory(tmp_path: Path) -> None:
+    result = run_soak.execute(
+        soak_args(
+            tmp_path,
+            messages=1,
+            producers=1,
+            consumers=1,
+            crash_rate=1.0,
+            max_restarts=0,
+        )
+    )
+
+    assert result["status"] == "failed"
+    assert result["counters"]["claims"] == 1
+    assert result["counters"]["intentional_crashes"] == 1
+    assert [item["classification"] for item in result["exits"]].count(
+        "intentional_crash"
+    ) == 1
+
+
+def test_many_spawn_consumers_preserve_operation_counters(tmp_path: Path) -> None:
+    result = run_soak.execute(
+        soak_args(
+            tmp_path,
+            messages=180,
+            producers=4,
+            consumers=8,
+            seed=456,
+            nack_rate=0.2,
+            fail_rate=0.2,
+        )
+    )
+
+    assert result["status"] == "passed"
+    assert result["counters"]["acks"] > 0
+    assert result["counters"]["nacks"] > 0
+    assert result["counters"]["fails"] > 0
+    assert not run_soak.report_invariant_errors(
+        result["counters"], result["last_stats"], result["exits"], result["restarts"]
+    )
+
+
+def test_counter_divergence_fails_and_writes_report(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    output = tmp_path / "stress-report.json"
+    markdown = tmp_path / "stress-report.md"
+    original_snapshot = run_soak.counter_snapshot
+
+    def divergent_snapshot(counters: dict[str, object]) -> dict[str, int]:
+        snapshot = original_snapshot(counters)
+        snapshot["claims"] += 1
+        return snapshot
+
+    monkeypatch.setattr(run_soak, "counter_snapshot", divergent_snapshot)
+    result = run_soak.execute(
+        soak_args(tmp_path, messages=2, output=output, markdown_output=markdown)
+    )
+
+    assert result["status"] == "failed"
+    assert "claims=" in str(result["failure_reason"])
+    assert output.is_file()
+    assert markdown.is_file()
 
 
 def test_real_lease_expiry_is_recorded_without_killing_consumer(tmp_path: Path) -> None:
@@ -238,6 +329,7 @@ def test_real_lease_expiry_is_recorded_without_killing_consumer(tmp_path: Path) 
     queue.close()
     stop = _StopAfterTransition()
     events = _Events(stop)
+    counters = run_soak.shared_counters(mp.get_context("spawn"))
 
     run_soak.consume(
         str(queue_path),
@@ -249,6 +341,7 @@ def test_real_lease_expiry_is_recorded_without_killing_consumer(tmp_path: Path) 
         0.0,
         0.01,
         0,
+        counters,
         events,
         transition_delay_seconds=0.03,
     )
@@ -258,3 +351,4 @@ def test_real_lease_expiry_is_recorded_without_killing_consumer(tmp_path: Path) 
         "consumer_id": 0,
         "operation": "ack",
     }
+    assert run_soak.counter_snapshot(counters)["lease_losses_ack"] == 1

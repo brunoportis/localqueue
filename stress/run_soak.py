@@ -14,7 +14,6 @@ import argparse
 import json
 import multiprocessing as mp
 import os
-import queue as stdlib_queue
 import random
 import sqlite3
 import sys
@@ -47,8 +46,35 @@ def produce(
         queue.close()
 
 
-def event(events: Any, kind: str, consumer_id: int, **details: object) -> None:
-    events.put({"kind": kind, "consumer_id": consumer_id, **details})
+CHILD_COUNTERS = (
+    "claims",
+    "acks",
+    "nacks",
+    "fails",
+    "lease_losses_ack",
+    "lease_losses_nack",
+    "lease_losses_fail",
+)
+
+
+def shared_counters(context: Any) -> dict[str, Any]:
+    return {name: context.Value("q", 0) for name in CHILD_COUNTERS}
+
+
+def increment(counter: Any) -> None:
+    with counter.get_lock():
+        counter.value += 1
+
+
+def counter_snapshot(counters: dict[str, Any]) -> dict[str, int]:
+    return {name: int(counter.value) for name, counter in counters.items()}
+
+
+def diagnostic_event(
+    events: Any | None, kind: str, consumer_id: int, **details: object
+) -> None:
+    if events is not None:
+        events.put({"kind": kind, "consumer_id": consumer_id, **details})
 
 
 def consume(
@@ -61,7 +87,8 @@ def consume(
     crash_rate: float,
     lease_seconds: float,
     consumer_id: int,
-    events: Any,
+    counters: dict[str, Any],
+    events: Any | None = None,
     transition_delay_seconds: float = 0.0,
 ) -> None:
     queue = SimpleQueue(
@@ -76,7 +103,9 @@ def consume(
                 time.sleep(0.005)
                 continue
 
-            event(events, "claim", consumer_id)
+            # This synchronous shared-memory write must precede os._exit(17).
+            increment(counters["claims"])
+            diagnostic_event(events, "claim", consumer_id)
             choice = rng.random()
             if choice < crash_rate:
                 # Deliberately bypass cleanup to simulate a crash after claiming.
@@ -88,25 +117,37 @@ def consume(
                 try:
                     queue.nack(job, delay=0.01, last_error="stress transient error")
                 except LeaseExpired:
-                    event(events, "lease_lost", consumer_id, operation=operation)
+                    increment(counters[f"lease_losses_{operation}"])
+                    diagnostic_event(
+                        events, "lease_lost", consumer_id, operation=operation
+                    )
                 else:
-                    event(events, operation, consumer_id)
+                    increment(counters[f"{operation}s"])
+                    diagnostic_event(events, operation, consumer_id)
             elif choice < crash_rate + nack_rate + fail_rate:
                 operation = "fail"
                 try:
                     queue.fail(job, last_error="stress permanent error")
                 except LeaseExpired:
-                    event(events, "lease_lost", consumer_id, operation=operation)
+                    increment(counters[f"lease_losses_{operation}"])
+                    diagnostic_event(
+                        events, "lease_lost", consumer_id, operation=operation
+                    )
                 else:
-                    event(events, operation, consumer_id)
+                    increment(counters[f"{operation}s"])
+                    diagnostic_event(events, operation, consumer_id)
             else:
                 operation = "ack"
                 try:
                     queue.ack(job)
                 except LeaseExpired:
-                    event(events, "lease_lost", consumer_id, operation=operation)
+                    increment(counters[f"lease_losses_{operation}"])
+                    diagnostic_event(
+                        events, "lease_lost", consumer_id, operation=operation
+                    )
                 else:
-                    event(events, operation, consumer_id)
+                    increment(counters[f"{operation}s"])
+                    diagnostic_event(events, operation, consumer_id)
     finally:
         queue.close()
 
@@ -115,7 +156,7 @@ def classify_consumer_exit(exit_code: int | None, *, stopping: bool) -> str:
     if exit_code == 17:
         return "intentional_crash"
     if exit_code == 0:
-        return "normal_shutdown" if stopping else "normal_exit"
+        return "normal_shutdown" if stopping else "premature_normal_exit"
     return "unexpected_consumer_exit"
 
 
@@ -137,11 +178,11 @@ def handle_consumer_exit(
                 f"consumer {consumer_id} exceeded --max-restarts",
             )
         return classification, True, None
-    if classification == "unexpected_consumer_exit":
+    if classification in {"premature_normal_exit", "unexpected_consumer_exit"}:
         return (
             classification,
             False,
-            f"unexpected consumer exit: consumer {consumer_id} exited with code {exit_code}",
+            f"{classification}: consumer {consumer_id} exited with code {exit_code}",
         )
     return classification, False, None
 
@@ -161,19 +202,45 @@ def empty_counters() -> dict[str, int]:
     }
 
 
-def collect_events(events: Any, counters: dict[str, int]) -> None:
-    while True:
-        try:
-            item = events.get_nowait()
-        except stdlib_queue.Empty:
-            return
-        kind = item["kind"]
-        if kind == "claim":
-            counters["claims"] += 1
-        elif kind in {"ack", "nack", "fail"}:
-            counters[f"{kind}s"] += 1
-        elif kind == "lease_lost":
-            counters[f"lease_losses_{item['operation']}"] += 1
+def report_invariant_errors(
+    counters: dict[str, int],
+    last_stats: dict[str, Any],
+    exits: list[dict[str, object]],
+    restarts: list[int],
+) -> list[str]:
+    completed_claims = sum(
+        counters[name]
+        for name in (
+            "acks",
+            "nacks",
+            "fails",
+            "lease_losses_ack",
+            "lease_losses_nack",
+            "lease_losses_fail",
+            "intentional_crashes",
+        )
+    )
+    errors = []
+    if counters["claims"] != completed_claims:
+        errors.append(f"claims={counters['claims']} but outcomes={completed_claims}")
+    if counters["acks"] != last_stats.get("acked"):
+        errors.append(
+            f"acks={counters['acks']} but last_stats.acked={last_stats.get('acked')}"
+        )
+    intentional_exits = sum(
+        item["classification"] == "intentional_crash" for item in exits
+    )
+    if counters["intentional_crashes"] != intentional_exits:
+        errors.append(
+            "intentional_crashes="
+            f"{counters['intentional_crashes']} but intentional exits={intentional_exits}"
+        )
+    if sum(restarts) != counters["intentional_crashes"]:
+        errors.append(
+            f"sum(restarts)={sum(restarts)} but intentional_crashes="
+            f"{counters['intentional_crashes']}"
+        )
+    return errors
 
 
 def database_state(path: Path, queue_name: str) -> dict[str, Any]:
@@ -222,7 +289,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         path.mkdir(parents=True, exist_ok=True)
 
     stop = context.Event()
-    events = context.Queue()
+    child_counters = shared_counters(context)
     producers: list[mp.Process] = []
     consumers: list[mp.Process | None] = []
     counters = empty_counters()
@@ -262,7 +329,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 args.crash_rate,
                 args.lease_seconds,
                 consumer_id,
-                events,
+                child_counters,
+                None,
                 args.transition_delay_seconds,
             ),
             name=f"localqueue-consumer-{consumer_id}-{restart}",
@@ -292,7 +360,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         observed_producers: set[int] = set()
 
         while time.monotonic() - started_at < args.duration:
-            collect_events(events, counters)
             for producer_id, process in enumerate(producers):
                 if producer_id not in observed_producers and not process.is_alive():
                     process.join()
@@ -326,7 +393,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         )
                     else:
                         failure_reason = error
-                elif classification == "unexpected_consumer_exit":
+                elif classification in {
+                    "premature_normal_exit",
+                    "unexpected_consumer_exit",
+                }:
                     counters["unexpected_consumer_exits"] += 1
                     failure_reason = error
                 else:
@@ -385,7 +455,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     failure_reason = failure_reason or (
                         f"producer {identity} exited with code {process.exitcode}"
                     )
-        collect_events(events, counters)
         if queue is not None:
             queue.close()
 
@@ -401,6 +470,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         failure_reason = failure_reason or f"could not inspect database: {error}"
     if failure_reason is None and not drained:
         failure_reason = "soak did not drain before --duration elapsed"
+    counters.update(counter_snapshot(child_counters))
+    invariant_errors = report_invariant_errors(counters, last_state, exits, restarts)
+    if failure_reason is None and invariant_errors:
+        failure_reason = "report invariant failed: " + "; ".join(invariant_errors)
     success = (
         failure_reason is None
         and state["integrity"] == "ok"

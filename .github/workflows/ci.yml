@@ -290,6 +290,20 @@ jobs:
             and .database.integrity == "ok"
             and .database.rows == .messages
             and .counters.unexpected_consumer_exits == 0
+            and .counters.claims == (
+              .counters.acks
+              + .counters.nacks
+              + .counters.fails
+              + .counters.lease_losses_ack
+              + .counters.lease_losses_nack
+              + .counters.lease_losses_fail
+              + .counters.intentional_crashes
+            )
+            and .counters.acks == .last_stats.acked
+            and .counters.intentional_crashes == (
+              [.exits[] | select(.classification == "intentional_crash")] | length
+            )
+            and ([.restarts[]] | add) == .counters.intentional_crashes
           ' stress-report.json
 
       - name: Prove deterministic lease loss is not a consumer crash
