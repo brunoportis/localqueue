@@ -30,6 +30,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  release-dependency-history:
+    name: Release dependency history validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository history for release dependency validation
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Validate release dependency ancestry against complete history
+        shell: bash
+        run: |
+          test "$(git rev-parse --is-shallow-repository)" = "false"
+          git merge-base --is-ancestor 93e37638ce386925b6175f7ad1c5c18872b518d9 HEAD
+          git merge-base --is-ancestor 79d415f07c57f4c4ab3d3898af41fe5e95dbf7e9 HEAD
+          python - <<'PY'
+          from pathlib import Path
+
+          from release_gate.audits import AuditError
+          from release_gate.cli import is_git_ancestor
+
+          candidate = "HEAD"
+          unknown = "f" * 40
+          try:
+              is_git_ancestor(unknown, candidate, Path.cwd())
+          except AuditError as error:
+              assert unknown in str(error)
+              assert "git exited" in str(error)
+          else:
+              raise AssertionError("an unknown SHA must raise AuditError")
+          PY
+
   python-quality:
     name: Python lint and types
     runs-on: ubuntu-latest

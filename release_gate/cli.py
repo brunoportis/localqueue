@@ -59,6 +59,33 @@ def git(*arguments: str, cwd: Path = ROOT, check: bool = True) -> str:
     return completed.stdout.strip()
 
 
+def is_git_ancestor(merge_commit: str, candidate_sha: str, root: Path) -> bool:
+    """Return whether ``merge_commit`` is an ancestor of ``candidate_sha``.
+
+    Git reserves exit status 1 for a known commit that is not an ancestor. Any
+    other status means the ancestry result is unknown, commonly because the
+    checkout does not contain the commit history needed for the comparison.
+    """
+
+    completed = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", merge_commit, candidate_sha],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode == 0:
+        return True
+    if completed.returncode == 1:
+        return False
+    stderr = " ".join(completed.stderr.split()) or "<no stderr>"
+    raise AuditError(
+        f"unable to determine ancestry for {merge_commit} against {candidate_sha}: "
+        f"git exited {completed.returncode}: {stderr}; history may be incomplete "
+        "or the commit may be unknown"
+    )
+
+
 def command_versions(args: argparse.Namespace) -> None:
     versions = versions_from_tree(args.root)
     if args.expected and set(versions.values()) != {args.expected}:
@@ -266,12 +293,7 @@ def command_issue_audit(args: argparse.Namespace) -> None:
         dependency_issues = read_json(args.dependency_issues)
 
         def is_ancestor(commit: str) -> bool:
-            completed = subprocess.run(
-                ["git", "merge-base", "--is-ancestor", commit, args.candidate_sha],
-                cwd=args.root,
-                check=False,
-            )
-            return completed.returncode == 0
+            return is_git_ancestor(commit, args.candidate_sha, args.root)
 
         result["release_dependencies"] = audit_release_dependencies(
             dependency_issues,

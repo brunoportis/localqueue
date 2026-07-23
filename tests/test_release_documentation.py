@@ -133,6 +133,30 @@ def test_release_artifact_commands_have_explicit_packaging_bootstrap() -> None:
     assert promotion_bootstrap < promotion_validation
 
 
+def test_release_dependency_audit_checkout_has_complete_history_preflight() -> None:
+    candidate = (ROOT / ".github/workflows/release-candidate.yml").read_text(
+        encoding="utf-8"
+    )
+    audits = candidate.split("  audits:\n", 1)[1].split("\n  assemble-evidence:", 1)[0]
+    assert "fetch-depth: 0" in audits
+    assert 'test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"' in audits
+    assert "git rev-parse --is-shallow-repository" in audits
+    assert 'test "$shallow" = "false"' in audits
+    for label in (
+        "candidate SHA:",
+        "commits available:",
+        "shallow repository:",
+        "first commit available:",
+        "last commit available:",
+    ):
+        assert label in audits
+
+    build_distributions = candidate.split("  build-distributions:\n", 1)[1].split(
+        "\n  complete-ci:", 1
+    )[0]
+    assert "fetch-depth: 0" not in build_distributions
+
+
 def test_candidate_wheel_benchmarks_install_extra_and_run_outside_checkout() -> None:
     candidate = (ROOT / ".github/workflows/release-candidate.yml").read_text(
         encoding="utf-8"

@@ -21,7 +21,7 @@ from release_gate.audits import (
     audit_release_dependencies,
     audit_security,
 )
-from release_gate.cli import command_wheel_job_diagnostics
+from release_gate.cli import command_wheel_job_diagnostics, is_git_ancestor
 from release_gate.identity import (
     IdentityError,
     validate_candidate,
@@ -700,6 +700,95 @@ def test_release_dependencies_require_merged_ancestor_and_changelog() -> None:
             "Adopt strict Pyrefly checks",
             lambda _commit: False,
         )
+
+
+def git_repository(tmp_path: Path) -> tuple[Path, str, str, str]:
+    root = tmp_path / "history"
+    root.mkdir()
+
+    def run(*arguments: str) -> str:
+        return subprocess.run(
+            ["git", *arguments],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    run("init", "--initial-branch=main")
+    run("config", "user.name", "Release Gate Test")
+    run("config", "user.email", "release-gate@example.test")
+    (root / "history.txt").write_text("base\n", encoding="utf-8")
+    run("add", "history.txt")
+    run("commit", "-m", "base")
+    base = run("rev-parse", "HEAD")
+    (root / "history.txt").write_text("base\nfirst\n", encoding="utf-8")
+    run("commit", "-am", "first ancestor")
+    first_ancestor = run("rev-parse", "HEAD")
+    (root / "history.txt").write_text("base\nfirst\nsecond\n", encoding="utf-8")
+    run("commit", "-am", "second ancestor")
+    candidate = run("rev-parse", "HEAD")
+    run("switch", "-c", "divergent", base)
+    (root / "history.txt").write_text("base\ndivergent\n", encoding="utf-8")
+    run("commit", "-am", "divergent commit")
+    divergent = run("rev-parse", "HEAD")
+    run("switch", "main")
+    return root, first_ancestor, candidate, divergent
+
+
+def test_git_ancestry_distinguishes_ancestor_divergence_and_unknown_sha(
+    tmp_path: Path,
+) -> None:
+    root, ancestor, candidate, divergent = git_repository(tmp_path)
+
+    assert is_git_ancestor(ancestor, candidate, root) is True
+    assert is_git_ancestor(divergent, candidate, root) is False
+
+    unknown = "f" * 40
+    with pytest.raises(AuditError) as error:
+        is_git_ancestor(unknown, candidate, root)
+    message = str(error.value)
+    assert unknown in message
+    assert candidate in message
+    assert "git exited 128" in message
+    assert "Not a valid commit name" in message
+
+
+def test_dependency_audit_fails_for_known_divergent_commit_and_passes_ancestors(
+    tmp_path: Path,
+) -> None:
+    root, first_ancestor, candidate, divergent = git_repository(tmp_path)
+
+    def closed(number: int, commit: str) -> dict[str, object]:
+        return {
+            "number": number,
+            "state": "CLOSED",
+            "closedByPullRequestsReferences": {
+                "nodes": [{"merged": True, "mergeCommit": {"oid": commit}}]
+            },
+        }
+
+    def is_ancestor(commit: str) -> bool:
+        return is_git_ancestor(commit, candidate, root)
+
+    with pytest.raises(AuditError, match="no merged closing PR"):
+        audit_release_dependencies(
+            [closed(15, divergent)],
+            [{"issue": 15, "changelog_terms": ["history"]}],
+            "history",
+            is_ancestor,
+        )
+
+    result = audit_release_dependencies(
+        [closed(15, first_ancestor), closed(17, candidate)],
+        [
+            {"issue": 15, "changelog_terms": ["first"]},
+            {"issue": 17, "changelog_terms": ["second"]},
+        ],
+        "first and second",
+        is_ancestor,
+    )
+    assert result["status"] == "passed"
 
 
 def test_security_unknown_requires_manual_confirmation(tmp_path: Path) -> None:
