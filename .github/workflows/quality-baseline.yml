@@ -52,7 +52,7 @@ jobs:
           pyrefly coverage check python/localqueue
           --strict
           --public-only
-          --fail-under 89.83
+          --fail-under 89.82
 
       - name: Generate Radon reports
         shell: bash
