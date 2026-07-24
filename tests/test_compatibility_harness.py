@@ -28,6 +28,7 @@ def test_manifest_is_parseable_and_unique() -> None:
         "1.1.0",
         "1.1.1",
         "1.1.2",
+        "1.2.0",
     ]
 
 

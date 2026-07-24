@@ -14,7 +14,7 @@ def test_release_notes_template_contains_required_scope_and_limits() -> None:
         "diagnostics",
         "Integrity",
         "benchmarks",
-        "Storage compatibility",
+        "Persisted database compatibility",
         "correlation/causality",
         "bounded per-subscription concurrency",
         "timeout behavior",
@@ -31,6 +31,8 @@ def test_release_notes_template_contains_required_scope_and_limits() -> None:
         "production-grade transactional core",
         "production-ready for documented single-host workloads",
         "validated for documented single-host workloads",
+        "changes since v1.2.0",
+        "Upgrade from v1.2.0",
     )
     for phrase in required:
         assert phrase in text
@@ -38,6 +40,11 @@ def test_release_notes_template_contains_required_scope_and_limits() -> None:
     assert (
         "release candidate validated for documented single-host workloads" not in text
     )
+
+
+def test_v1_3_migration_does_not_claim_failed_message_exposes_job_id() -> None:
+    migration = (ROOT / "docs/migrating-to-1.3.md").read_text(encoding="utf-8")
+    assert ".job_id" not in migration
 
 
 def test_release_workflows_have_no_automatic_publication_trigger() -> None:
@@ -198,8 +205,8 @@ def test_release_gate_runbook_documents_go_no_go_and_recovery() -> None:
         "Recovery after a partial failure",
         "editable `localqueue` entry",
         "uv lock --check",
-        "confirm v1.2.0",
-        "Only then close #32",
+        "publish v1.3.0",
+        "Only then close #66",
     ):
         assert phrase in text
 

@@ -1,31 +1,55 @@
 # localqueue v{{ version }}
 
-This candidate consolidates the changes since v1.1.2. The final public claim is
+This candidate consolidates the changes since v1.2.0. The final public claim is
 deliberately left to the human promotion gate and must not exceed the collected
 evidence.
 
-## Highlights
+## Breaking Python API changes
+
+- `fsync`, `lease_seconds`, and `max_retries` were replaced by
+  `DurabilityMode` and `DeliveryPolicy`; no compatibility shims are provided.
+
+## New public APIs
+
+- Typed queue and subscription dead-letter inspection and replay.
+
+## Typing improvements
+
+- Generic `SimpleQueue`, `Job`, `Worker`, serializers, and typed EventBus
+  handlers.
+
+## Dead-letter inspection and replay
+
+- `FailedMessage`, `FailedDelivery`, and stable `FailureReason` classifications.
+
+## Persisted database compatibility
 
 - A transactional SQLite/Rust core with documented atomicity, durability, lease,
   retry, and at-least-once guarantees.
 - Bounded producer backpressure and typed runtime diagnostics.
 - Integrity checking and online backup operations.
 - Canonical single-process and multiprocess benchmarks with correctness gates.
-- Storage compatibility policy and release-to-release online/offline validation.
+- Additive, idempotent `messages.failure_reason` migration and release-to-release
+  online/offline validation.
 - EventBus correlation/causality metadata and bounded per-subscription concurrency.
 - Explicit timeout behavior for asynchronous EventBus handlers.
 
 See the [operational envelope](../docs/operational-envelope.md) and
 [storage compatibility policy](../docs/storage-compatibility.md) before upgrading.
 
-## Upgrade notes
+## Replay guarantees and limitations
 
-Upgrade from v1.1.2 using the wheel matching the supported Python and platform
+Upgrade from v1.2.0 using the wheel matching the supported Python and platform
 matrix. Back up queue databases before upgrading and follow the documented
-compatibility procedure. The candidate does not change the public storage policy
-outside what is documented in the linked policy.
+compatibility procedure. Replay is at-least-once; handlers must remain idempotent
+when duplicate external effects matter.
 
-## Limits and unsupported deployment modes
+## Artifacts and supported platforms
+
+The evidence inventory records each validated distribution and its smoke status.
+Linux ARM64 is build/QEMU-validated only unless evidence explicitly says otherwise.
+
+## Known limitations
 
 - NFS, SMB, other network filesystems, and multi-host access are unsupported.
 - Delivery is at least once; exactly-once processing is not provided.
