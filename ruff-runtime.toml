@@ -16,20 +16,17 @@ explicit-preview-rules = true
 max-complexity = 17
 
 [lint.pylint]
-max-args = 9
-max-branches = 18
+max-args = 8
+max-branches = 15
 max-nested-blocks = 5
-max-returns = 7
+max-returns = 6
 max-statements = 56
 
 [lint.per-file-ignores]
-"python/localqueue/benchmark/cli.py" = ["C901"]
-"python/localqueue/benchmark/metrics.py" = ["PLR0913"]
 "python/localqueue/benchmark/multiprocess.py" = [
     "C901",
     "PLR0912",
     "PLR0913",
     "PLR0915",
 ]
-"python/localqueue/benchmark/render.py" = ["C901"]
-"python/localqueue/benchmark/runner.py" = ["C901", "PLR0912", "PLR0913"]
+"python/localqueue/benchmark/runner.py" = ["PLR0912"]
