@@ -15,6 +15,11 @@ evidence.
 - A persisted `failure_reason` field with an idempotent, concurrency-safe schema
   migration for databases created by earlier 1.x releases.
 
+The release retains the v1.2 transactional SQLite/Rust core, backpressure,
+diagnostics, Integrity and backup APIs, canonical benchmarks,
+correlation/causality metadata, bounded per-subscription concurrency, and handler
+timeout behavior. Storage compatibility remains a separately tested contract.
+
 See the [v1.3 migration guide](../docs/migrating-to-1.3.md),
 [dead-letter guide](../docs/dead-letters.md),
 [operational envelope](../docs/operational-envelope.md), and
