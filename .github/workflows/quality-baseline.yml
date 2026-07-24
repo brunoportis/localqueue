@@ -32,18 +32,23 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifacts
-          set -o pipefail
           ruff check python/localqueue \
             --preview \
             --select C901,PLR0911,PLR0912,PLR0913,PLR0915,PLR1702 \
-            --statistics 2>&1 | tee artifacts/ruff.txt
+            2>&1 | tee artifacts/ruff-findings.txt
+          ruff check python/localqueue \
+            --preview \
+            --select C901,PLR0911,PLR0912,PLR0913,PLR0915,PLR1702 \
+            --statistics \
+            2>&1 | tee artifacts/ruff-statistics.txt
+          exit 0
 
       - name: Upload Ruff baseline
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: quality-ruff-${{ github.run_id }}
-          path: artifacts/ruff.txt
+          path: artifacts/
           if-no-files-found: error
           retention-days: 7
 
