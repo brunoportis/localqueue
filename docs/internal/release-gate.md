@@ -10,7 +10,7 @@ creates the final tag, creates a GitHub Release, or publishes to PyPI.
 
 1. Open **Actions → Prepare release candidate → Run workflow** on `main`.
 2. Select `dry-run` (the default). Confirm that the latest declared, tagged, and
-   PyPI versions are all v1.2.0 and that the calculated next version is v1.3.0.
+   PyPI versions are all v1.3.0 and that the calculated next version is v1.3.0.
 3. Run the workflow again with `prepare-candidate`.
 4. Record the base main SHA, candidate SHA, candidate branch, release-notes path,
    changelog section, and evidence-run URL from the job summary.

@@ -112,7 +112,7 @@ def test_uv_lock_update_rejects_third_party_resolution_changes(tmp_path: Path) -
     after = tmp_path / "after.lock"
     before.write_text(
         '[[package]]\nname = "dependency"\nversion = "1.0"\n\n'
-        '[[package]]\nname = "localqueue"\nversion = "1.2.0"\nsource = { editable = "." }\n',
+        '[[package]]\nname = "localqueue"\nversion = "1.3.0"\nsource = { editable = "." }\n',
         encoding="utf-8",
     )
     after.write_text(
