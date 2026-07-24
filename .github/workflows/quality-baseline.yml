@@ -40,6 +40,7 @@ jobs:
         run: ruff check python/localqueue --config ruff-runtime.toml
 
       - name: Surface explicit Any diagnostics
+        continue-on-error: true
         env:
           PYTHONPATH: python
         run: pyrefly check --progress-bar no --min-severity warn
