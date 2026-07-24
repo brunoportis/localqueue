@@ -4,6 +4,13 @@ All notable changes to `localqueue` are documented here.
 
 <!-- version list -->
 
+## v1.4.0 (2026-07-24)
+
+### Features
+
+- Add typed, per-attempt EventBus handler contexts with synchronous or async
+  factories, runtime publishing, and retry integration.
+
 ## v1.3.0 (2026-07-24)
 
 ### Bug Fixes

@@ -249,6 +249,11 @@ bus.on(UserCreated, send_welcome_email, subscription="email")
 Neither form declares a subscription or changes dispatch routing. The
 canonical API is `bus.subscription(...).handler(...)`.
 
+Handlers may also accept a second `HandlerContext` argument. Applications can
+use an `EventBus[AppContext]` with `context_factory=` to add explicitly managed
+dependencies with static typing. The factory runs for every attempt; its errors
+use the normal retry policy. See [Custom handler contexts](custom-handler-contexts.md).
+
 An exact handler may be registered only when its subscription declares that
 event type or `"*"`. A wildcard handler may be registered for any declared
 subscription, but it is only a runtime fallback for deliveries the topology

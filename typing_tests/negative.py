@@ -3,7 +3,13 @@
 from dataclasses import dataclass
 
 from localqueue import FailedMessage, Job, Serializer, SimpleQueue, Worker
-from localqueue.bus import BaseEvent, BusTopology, EventBus
+from localqueue.bus import (
+    BaseEvent,
+    BusTopology,
+    EventBus,
+    HandlerContext,
+    RuntimeContext,
+)
 
 
 @dataclass(frozen=True)
@@ -67,3 +73,23 @@ wrong_subscription_result: list[FailedMessage[object]] = bus.subscription(
 ).list_failed()
 task_queue.retry_failed("1")
 bus.subscription("users").retry_failed("1")
+
+
+class AppContext(HandlerContext):
+    pass
+
+
+def create_context(runtime: RuntimeContext) -> AppContext:
+    return AppContext(runtime)
+
+
+typed_bus = EventBus[AppContext](
+    "./typing-negative-context-bus",
+    topology=BusTopology({"users": [UserCreated]}),
+    context_factory=create_context,
+)
+
+
+@typed_bus.subscription("users").handler(UserCreated)
+def invalid_context_access(event: UserCreated, ctx: AppContext) -> None:
+    ctx.nonexistent_service

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable, TypeVar, overload
+from typing import TYPE_CHECKING, Callable, Generic, TypeVar, overload
 
+from localqueue.bus.context import ContextT
 from localqueue.bus.deadletter import FailedDelivery, inspect_delivery
 from localqueue.bus.topology import EventPattern
 
@@ -15,10 +16,10 @@ _EventT = TypeVar("_EventT", bound="BaseEvent")
 _HandlerResultT = TypeVar("_HandlerResultT")
 
 
-class Subscription:
+class Subscription(Generic[ContextT]):
     """Bind local handlers to one statically declared subscription."""
 
-    def __init__(self, bus: EventBus, name: str) -> None:
+    def __init__(self, bus: EventBus[ContextT], name: str) -> None:
         self._bus = bus
         self.name = name
 
@@ -35,7 +36,7 @@ class Subscription:
         *,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
-    ) -> _EventHandlerDecorator[_EventT]: ...
+    ) -> _EventHandlerDecorator[_EventT, ContextT]: ...
 
     @overload
     def handler(
@@ -50,12 +51,22 @@ class Subscription:
     @overload
     def handler(
         self,
+        pattern: type[_EventT],
+        handler: Callable[[_EventT, ContextT], _HandlerResultT],
+        *,
+        permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
+    ) -> Callable[[_EventT, ContextT], _HandlerResultT]: ...
+
+    @overload
+    def handler(
+        self,
         pattern: str,
         handler: None = None,
         *,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
-    ) -> _EventHandlerDecorator[BaseEvent]: ...
+    ) -> _EventHandlerDecorator[BaseEvent, ContextT]: ...
 
     @overload
     def handler(
@@ -66,6 +77,16 @@ class Subscription:
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
     ) -> Callable[[BaseEvent], _HandlerResultT]: ...
+
+    @overload
+    def handler(
+        self,
+        pattern: str,
+        handler: Callable[[BaseEvent, ContextT], _HandlerResultT],
+        *,
+        permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
+    ) -> Callable[[BaseEvent, ContextT], _HandlerResultT]: ...
 
     def handler(
         self,

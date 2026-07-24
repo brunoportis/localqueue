@@ -1,6 +1,6 @@
 [project]
 name = "localqueue"
-version = "1.3.0"
+version = "1.4.0"
 description = "A persistent, multiprocess-safe local queue for Python, backed by SQLite and Rust."
 readme = "README.md"
 license = "Apache-2.0"
@@ -30,6 +30,8 @@ dev = [
     "maturin>=1.14",
     "pydantic>=2,<3",
     "packaging>=24,<26",
+    "mypy>=1.18,<2",
+    "pyright>=1.1,<2",
     "ruff>=0.15,<1",
     "pyrefly>=1.1,<2",
     "pre-commit>=4,<5",

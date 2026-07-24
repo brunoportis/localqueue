@@ -6,13 +6,14 @@ import asyncio
 import contextlib
 import inspect
 import logging
-from typing import TYPE_CHECKING, Literal, Optional, TypedDict
+from typing import TYPE_CHECKING, Literal, Optional, TypedDict, cast
 
 from localqueue.bus.bus import (
     WILDCARD,
     _AsyncStoredEventHandler,
     _is_async_callable,
 )
+from localqueue.bus.context import ContextT, HandlerContext, RuntimeContext
 from localqueue.bus.envelope import (
     EnvelopeError,
     parse_envelope,
@@ -56,6 +57,8 @@ async def _observe_cancelled_handler(
 async def _run_async_handler(
     handler: _AsyncStoredEventHandler,
     event: BaseEvent,
+    context: HandlerContext,
+    accepts_context: bool,
     timeout: float | None,
 ) -> bool:
     """Run an async handler and return whether its internal deadline elapsed.
@@ -64,7 +67,8 @@ async def _run_async_handler(
     wins, the deadline remains authoritative even when cancellation is
     suppressed or cleanup raises.
     """
-    handler_task = asyncio.ensure_future(handler(event))
+    result = handler(event, context) if accepts_context else handler(event)
+    handler_task = asyncio.ensure_future(result)
     if timeout is None:
         await handler_task
         return False
@@ -110,7 +114,10 @@ async def _run_async_handler(
 
 
 async def run_consumer(
-    bus: "EventBus", subscription: str, *, idle_timeout: Optional[float] = None
+    bus: "EventBus[ContextT]",
+    subscription: str,
+    *,
+    idle_timeout: Optional[float] = None,
 ) -> None:
     """Consume ``subscription`` until cancellation or an idle timeout.
 
@@ -240,7 +247,7 @@ async def _transition(
 
 
 async def _process_delivery(
-    bus: "EventBus",
+    bus: "EventBus[ContextT]",
     subscription: str,
     queue: SimpleQueue[object],
     job: Job[object],
@@ -290,8 +297,28 @@ async def _process_delivery(
     )
     try:
         handler = registration.handler
+        runtime = RuntimeContext(
+            event_id=str(event.event_id),
+            attempt=job.attempts + 1,
+            handler_name=registration.handler_name,
+            _publish=bus.dispatch_async,
+        )
+        factory = bus.context_factory
+        if factory is None:
+            context: HandlerContext = HandlerContext(runtime)
+        else:
+            created = factory(runtime)
+            if inspect.isawaitable(created):
+                created = await created
+            context = cast(HandlerContext, created)
         if _is_async_callable(handler):
-            timed_out = await _run_async_handler(handler, event, registration.timeout)
+            timed_out = await _run_async_handler(
+                handler,
+                event,
+                context,
+                registration.accepts_context,
+                registration.timeout,
+            )
             if timed_out:
                 # Keep renewing the lease through cooperative handler cleanup,
                 # then stop the heartbeat before making the final decision.
@@ -319,7 +346,10 @@ async def _process_delivery(
                 return
         else:
             # Run synchronous handlers outside the event-loop thread.
-            result = await asyncio.to_thread(handler, event)
+            if registration.accepts_context:
+                result = await asyncio.to_thread(handler, event, context)
+            else:
+                result = await asyncio.to_thread(handler, event)
             if result is not None and inspect.isawaitable(result):
                 # Safety net for a synchronous handler that returned an awaitable.
                 await result

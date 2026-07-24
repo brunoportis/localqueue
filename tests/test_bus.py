@@ -6,7 +6,14 @@ import time
 
 import pytest
 from localqueue import DeliveryPolicy, DurabilityMode, FailureReason
-from localqueue.bus import BaseEvent, BusTopology, EventBus, NoSubscribers
+from localqueue.bus import (
+    BaseEvent,
+    BusTopology,
+    EventBus,
+    HandlerContext,
+    NoSubscribers,
+    RuntimeContext,
+)
 
 
 class UserCreated(BaseEvent):
@@ -197,6 +204,104 @@ class TestDispatch:
 
 
 class TestConsumption:
+    def test_default_handler_context_exposes_runtime_capabilities(self, tmp_path):
+        bus = EventBus(
+            str(tmp_path / "bus"),
+            topology=BusTopology({"users": [UserCreated], "orders": [OrderPlaced]}),
+        )
+        seen = []
+
+        @bus.subscription("users").handler(UserCreated)
+        async def handle_user(event, ctx):
+            assert isinstance(ctx, HandlerContext)
+            seen.append((ctx.event_id, ctx.attempt, ctx.handler_name))
+            await ctx.publish(OrderPlaced(order_id=event.user_id))
+
+        @bus.subscription("orders").handler(OrderPlaced)
+        def handle_order(event):
+            seen.append(("order", event.order_id))
+
+        event = UserCreated(user_id="42")
+        bus.dispatch(event)
+        run(bus.run(idle_timeout=0.2))
+
+        assert seen[0] == (str(event.event_id), 1, "handle_user")
+        assert ("order", "42") in seen
+        bus.close()
+
+    def test_custom_context_is_created_for_each_attempt(self, tmp_path):
+        shared_dependency = object()
+        contexts = []
+
+        class AppContext(HandlerContext):
+            def __init__(self, runtime: RuntimeContext, *, dependency: object):
+                super().__init__(runtime)
+                self.dependency = dependency
+
+        def create_context(runtime: RuntimeContext) -> AppContext:
+            context = AppContext(runtime, dependency=shared_dependency)
+            contexts.append(context)
+            return context
+
+        bus = EventBus[AppContext](
+            str(tmp_path / "bus"),
+            topology=BusTopology({"users": [UserCreated]}),
+            delivery=DeliveryPolicy(max_retries=1),
+            context_factory=create_context,
+        )
+        attempts = []
+
+        @bus.subscription("users").handler(UserCreated)
+        def handle_user(event, ctx):
+            assert ctx.dependency is shared_dependency
+            attempts.append(ctx.attempt)
+            if len(attempts) == 1:
+                raise RuntimeError("retry")
+
+        bus.dispatch(UserCreated(user_id="42"))
+        run(bus.run(idle_timeout=0.2))
+
+        assert attempts == [1, 2]
+        assert len(contexts) == 2
+        assert contexts[0] is not contexts[1]
+        assert contexts[0].dependency is contexts[1].dependency
+        bus.close()
+
+    def test_async_context_factory_is_awaited_and_failures_retry(self, tmp_path):
+        factory_attempts = []
+        handler_attempts = []
+
+        class AppContext(HandlerContext):
+            pass
+
+        async def create_context(runtime: RuntimeContext) -> AppContext:
+            factory_attempts.append(runtime.attempt)
+            await asyncio.sleep(0)
+            if runtime.attempt == 1:
+                raise RuntimeError("context unavailable")
+            return AppContext(runtime)
+
+        bus = EventBus[AppContext](
+            str(tmp_path / "bus"),
+            topology=BusTopology({"users": [UserCreated]}),
+            delivery=DeliveryPolicy(max_retries=1),
+            context_factory=create_context,
+        )
+
+        @bus.subscription("users").handler(UserCreated)
+        def handle_user(event, ctx):
+            handler_attempts.append(ctx.attempt)
+
+        bus.dispatch(UserCreated(user_id="42"))
+        run(bus.run(idle_timeout=0.2))
+
+        assert factory_attempts == [1, 2]
+        assert handler_attempts == [2]
+        queue = bus._open_subscription_queue("users")
+        assert queue.stats()["acked"] == 1
+        queue.close()
+        bus.close()
+
     def test_handler_sync_e_async_ack(self, tmp_path):
         bus = EventBus(
             str(tmp_path / "bus"),
