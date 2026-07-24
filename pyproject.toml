@@ -30,6 +30,7 @@ dev = [
     "pydantic>=2,<3",
     "packaging>=24,<26",
     "ruff>=0.15,<1",
+    "radon>=6,<7",
     "pyrefly>=1.1,<2",
     "pre-commit>=4,<5",
     "python-semantic-release>=10.6,<11",
@@ -62,6 +63,7 @@ testpaths = ["tests"]
 preset = "strict"
 project-includes = ["python/localqueue/**/*.py", "python/localqueue/**/*.pyi"]
 disable-project-excludes-heuristics = true
+errors = { explicit-any = "warn", no-any-return = "warn" }
 
 [tool.coverage.run]
 branch = true
