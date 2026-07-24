@@ -5,6 +5,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from localqueue import DeliveryPolicy
 from localqueue.bus import BaseEvent, BusTopology, EventBus, NoSubscribers
 from pydantic import ValidationError
 
@@ -37,8 +38,7 @@ def make_bus(tmp_path, topology=None, **kwargs):
         str(tmp_path / "bus"),
         name="causality",
         topology=topology or BusTopology({"events": ["*"]}),
-        lease_seconds=0.5,
-        max_retries=1,
+        delivery=DeliveryPolicy(lease_seconds=0.5, max_retries=1),
         **kwargs,
     )
 

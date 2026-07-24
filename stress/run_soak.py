@@ -27,7 +27,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from localqueue import Empty, LeaseExpired, LocalQueueError, SimpleQueue  # noqa: E402
+from localqueue import (  # noqa: E402
+    DeliveryPolicy,
+    Empty,
+    LeaseExpired,
+    LocalQueueError,
+    SimpleQueue,
+)
 
 from release_gate.markdown import evidence_markdown  # noqa: E402
 from release_gate.subject import installed_subject  # noqa: E402
@@ -49,7 +55,9 @@ def produce(
 ) -> None:
     retry_policy = retry_policy or DEFAULT_SQLITE_RETRY_POLICY
     queue = SimpleQueue(
-        path, name=queue_name, lease_seconds=lease_seconds, max_retries=3
+        path,
+        name=queue_name,
+        delivery=DeliveryPolicy(lease_seconds=lease_seconds, max_retries=3),
     )
     try:
         for index in range(first, first + count):
@@ -311,7 +319,9 @@ def consume(
     sqlite_contention_mode: str | None = None,
 ) -> None:
     queue = SimpleQueue(
-        path, name=queue_name, lease_seconds=lease_seconds, max_retries=3
+        path,
+        name=queue_name,
+        delivery=DeliveryPolicy(lease_seconds=lease_seconds, max_retries=3),
     )
     rng = random.Random(seed)
     injected_get_calls = 0
@@ -732,7 +742,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             start_consumer(consumer_id) for consumer_id in range(args.consumers)
         ]
         queue = SimpleQueue(
-            str(path), name=queue_name, lease_seconds=args.lease_seconds, max_retries=3
+            str(path),
+            name=queue_name,
+            delivery=DeliveryPolicy(lease_seconds=args.lease_seconds, max_retries=3),
         )
         observed_producers: set[int] = set()
 

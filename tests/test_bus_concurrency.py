@@ -6,6 +6,7 @@ import asyncio
 import threading
 
 import pytest
+from localqueue import DeliveryPolicy
 from localqueue.bus import BaseEvent, BusTopology, EventBus
 
 
@@ -23,7 +24,7 @@ def _concurrent_consumer_group_worker(path, processed, active, duplicates, peak,
         path,
         name="group",
         topology=BusTopology({"email": [WorkSubmitted]}),
-        lease_seconds=5.0,
+        delivery=DeliveryPolicy(lease_seconds=5.0),
     )
 
     def handle(event):
@@ -53,7 +54,7 @@ def bus(tmp_path):
         str(tmp_path / "bus"),
         name="test",
         topology=BusTopology({"email": [WorkSubmitted]}),
-        lease_seconds=5.0,
+        delivery=DeliveryPolicy(lease_seconds=5.0),
     )
     yield instance
     instance.close()
@@ -227,7 +228,7 @@ class TestBoundedSubscriptionConcurrency:
             str(tmp_path / "bus"),
             name="test",
             topology=BusTopology({"email": [WorkSubmitted]}),
-            lease_seconds=0.15,
+            delivery=DeliveryPolicy(lease_seconds=0.15),
         )
         subscription = instance.subscription("email", concurrency=2)
         completed: list[int] = []
@@ -628,7 +629,12 @@ class TestConcurrentConsumerGroup:
 
         path = str(tmp_path / "group")
         topology = BusTopology({"email": [WorkSubmitted]})
-        producer = EventBus(path, name="group", topology=topology, lease_seconds=5.0)
+        producer = EventBus(
+            path,
+            name="group",
+            topology=topology,
+            delivery=DeliveryPolicy(lease_seconds=5.0),
+        )
         event_ids = []
         for sequence in range(16):
             event = WorkSubmitted(sequence=sequence)

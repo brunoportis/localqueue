@@ -135,7 +135,7 @@ continues to raise `LocalQueueError("job not found")`; a valid failed row raises
 ## Configuration across processes
 
 `max_pending_jobs` is configuration of each `SimpleQueue` object, like lease,
-retry, and fsync settings. It is not stored in SQLite and adds no schema
+delivery and durability settings. It is not stored in SQLite and adds no schema
 migration. All participating producers for the same logical queue must use the
 same limit.
 

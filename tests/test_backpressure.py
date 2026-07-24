@@ -11,7 +11,14 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from localqueue import EnqueueItem, Full, LocalQueueError, QueueDiagnostics, SimpleQueue
+from localqueue import (
+    DeliveryPolicy,
+    EnqueueItem,
+    Full,
+    LocalQueueError,
+    QueueDiagnostics,
+    SimpleQueue,
+)
 
 
 def _pending(queue: SimpleQueue) -> int:
@@ -415,7 +422,9 @@ def test_short_timeout_caps_sqlite_busy_wait_without_turning_busy_into_full(
 
 
 def test_indefinite_wait_is_released_by_ack(tmp_path: Path) -> None:
-    queue = SimpleQueue(str(tmp_path), max_pending_jobs=1, lease_seconds=30)
+    queue = SimpleQueue(
+        str(tmp_path), max_pending_jobs=1, delivery=DeliveryPolicy(lease_seconds=30)
+    )
     queue.put({"seed": True})
     job = queue.get_nowait()
     result: list[int] = []
@@ -447,7 +456,9 @@ def test_indefinite_wait_is_released_by_ack(tmp_path: Path) -> None:
 
 
 def test_wait_is_released_by_fail(tmp_path: Path) -> None:
-    queue = SimpleQueue(str(tmp_path), max_pending_jobs=1, lease_seconds=30)
+    queue = SimpleQueue(
+        str(tmp_path), max_pending_jobs=1, delivery=DeliveryPolicy(lease_seconds=30)
+    )
     queue.put({"seed": True})
     job = queue.get_nowait()
     completed = threading.Event()
@@ -499,7 +510,9 @@ def test_close_interrupts_waiting_producer(tmp_path: Path) -> None:
 
 def test_ack_and_fail_release_slots_but_nack_to_ready_does_not(tmp_path: Path) -> None:
     queue = SimpleQueue(
-        str(tmp_path), max_pending_jobs=1, lease_seconds=30, max_retries=1
+        str(tmp_path),
+        max_pending_jobs=1,
+        delivery=DeliveryPolicy(lease_seconds=30, max_retries=1),
     )
     queue.put({"seed": True})
     job = queue.get_nowait()
@@ -519,7 +532,9 @@ def test_ack_and_fail_release_slots_but_nack_to_ready_does_not(tmp_path: Path) -
 
 def test_exhausted_nack_releases_a_slot(tmp_path: Path) -> None:
     queue = SimpleQueue(
-        str(tmp_path), max_pending_jobs=1, lease_seconds=30, max_retries=0
+        str(tmp_path),
+        max_pending_jobs=1,
+        delivery=DeliveryPolicy(lease_seconds=30, max_retries=0),
     )
     queue.put({"seed": True})
     queue.nack(queue.get_nowait())
@@ -534,7 +549,9 @@ def test_expired_lease_counts_and_reclaim_to_ready_preserves_usage(
     tmp_path: Path,
 ) -> None:
     queue = SimpleQueue(
-        str(tmp_path), max_pending_jobs=1, lease_seconds=30, max_retries=1
+        str(tmp_path),
+        max_pending_jobs=1,
+        delivery=DeliveryPolicy(lease_seconds=30, max_retries=1),
     )
     queue.put({"seed": True})
     job = queue.get_nowait()
@@ -552,7 +569,9 @@ def test_expired_lease_counts_and_reclaim_to_ready_preserves_usage(
 
 def test_reclaim_to_failed_releases_usage(tmp_path: Path) -> None:
     queue = SimpleQueue(
-        str(tmp_path), max_pending_jobs=1, lease_seconds=30, max_retries=0
+        str(tmp_path),
+        max_pending_jobs=1,
+        delivery=DeliveryPolicy(lease_seconds=30, max_retries=0),
     )
     queue.put({"seed": True})
     job = queue.get_nowait()
@@ -566,7 +585,9 @@ def test_reclaim_to_failed_releases_usage(tmp_path: Path) -> None:
 
 
 def test_delayed_job_counts_toward_capacity(tmp_path: Path) -> None:
-    queue = SimpleQueue(str(tmp_path), max_pending_jobs=1, lease_seconds=30)
+    queue = SimpleQueue(
+        str(tmp_path), max_pending_jobs=1, delivery=DeliveryPolicy(lease_seconds=30)
+    )
     queue.put({"seed": True})
     queue.nack(queue.get_nowait(), delay=60)
 
@@ -579,7 +600,9 @@ def test_delayed_job_counts_toward_capacity(tmp_path: Path) -> None:
 
 def test_retry_failed_consumes_capacity_and_preserves_not_found(tmp_path: Path) -> None:
     queue = SimpleQueue(
-        str(tmp_path / "with-slot"), max_pending_jobs=1, lease_seconds=30
+        str(tmp_path / "with-slot"),
+        max_pending_jobs=1,
+        delivery=DeliveryPolicy(lease_seconds=30),
     )
     failed_id = queue.put({"failed": True})
     queue.fail(queue.get_nowait())
@@ -587,7 +610,9 @@ def test_retry_failed_consumes_capacity_and_preserves_not_found(tmp_path: Path) 
     assert _pending(queue) == 1
     queue.close()
 
-    unlimited = SimpleQueue(str(tmp_path / "full"), lease_seconds=30)
+    unlimited = SimpleQueue(
+        str(tmp_path / "full"), delivery=DeliveryPolicy(lease_seconds=30)
+    )
     other = unlimited.put({"terminal": True})
     unlimited.fail(unlimited.get_nowait())
     unlimited.put({"pending": True})
@@ -601,7 +626,9 @@ def test_retry_failed_consumes_capacity_and_preserves_not_found(tmp_path: Path) 
 
 
 def test_purge_terminal_rows_does_not_change_pending(tmp_path: Path) -> None:
-    queue = SimpleQueue(str(tmp_path), max_pending_jobs=2, lease_seconds=30)
+    queue = SimpleQueue(
+        str(tmp_path), max_pending_jobs=2, delivery=DeliveryPolicy(lease_seconds=30)
+    )
     queue.put({"pending": True})
     queue.put({"acked": True})
     queue.ack(queue.get_nowait())
@@ -660,7 +687,9 @@ def test_duplicates_remain_available_when_queue_is_above_limit(tmp_path: Path) -
 
 
 def test_duplicates_in_all_states_never_consume_capacity(tmp_path: Path) -> None:
-    queue = SimpleQueue(str(tmp_path), max_pending_jobs=4, lease_seconds=30)
+    queue = SimpleQueue(
+        str(tmp_path), max_pending_jobs=4, delivery=DeliveryPolicy(lease_seconds=30)
+    )
     ids: dict[str, int] = {}
     ids["processing"] = queue.put({"state": "processing"}, job_id="processing")
     processing = queue.get_nowait()
@@ -674,7 +703,9 @@ def test_duplicates_in_all_states_never_consume_capacity(tmp_path: Path) -> None
 
     assert processing.id == ids["processing"]
     queue.close()
-    queue = SimpleQueue(str(tmp_path), max_pending_jobs=1, lease_seconds=30)
+    queue = SimpleQueue(
+        str(tmp_path), max_pending_jobs=1, delivery=DeliveryPolicy(lease_seconds=30)
+    )
 
     before = queue.diagnostics().pending_jobs
     returned = queue.put_many(
@@ -868,7 +899,9 @@ def test_concurrent_batches_are_all_or_nothing(tmp_path: Path) -> None:
 def test_process_waits_for_capacity_released_by_ack(tmp_path: Path) -> None:
     context = multiprocessing.get_context("spawn")
     path = str(tmp_path / "wait")
-    queue = SimpleQueue(path, max_pending_jobs=1, lease_seconds=30)
+    queue = SimpleQueue(
+        path, max_pending_jobs=1, delivery=DeliveryPolicy(lease_seconds=30)
+    )
     queue.put({"seed": True})
     job = queue.get_nowait()
     ready = context.Event()

@@ -1,13 +1,15 @@
 import time
 
 import pytest
-from localqueue import SimpleQueue
+from localqueue import DeliveryPolicy, SimpleQueue
 
 
 @pytest.fixture
 def queue(tmp_path):
     path = tmp_path / "maintenance"
-    q = SimpleQueue(str(path), lease_seconds=0.3, max_retries=1)
+    q = SimpleQueue(
+        str(path), delivery=DeliveryPolicy(lease_seconds=0.3, max_retries=1)
+    )
     yield q
     q.close()
 

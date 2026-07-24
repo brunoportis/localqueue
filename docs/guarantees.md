@@ -11,10 +11,12 @@ transaction and assigned an internal ID. The message remains in the database
 until it reaches a terminal state (`acked` or `failed`) or is removed by a
 maintenance operation such as `purge()`.
 
-With `fsync=False`, the queue uses `synchronous=NORMAL`. This protects the state
-against normal process crashes, but a power or host failure may lose recent
-transactions. For stronger durability, use `fsync=True`, which configures
-`synchronous=FULL`.
+`DurabilityMode.RELAXED`, the default, uses `synchronous=NORMAL`. This protects
+the state against normal process crashes, but abrupt host, kernel, or power
+failure may lose recent transactions. `DurabilityMode.DURABLE` configures
+`synchronous=FULL` for stronger protection of recent commits. The effective
+guarantee still depends on SQLite, the filesystem, kernel, drive cache,
+controller, and hardware.
 
 ## Delivery lifecycle
 
@@ -75,7 +77,7 @@ After `purge()` removes the record, the same `job_id` can be used again.
 - exactly-once delivery for effects outside SQLite;
 - absence of duplicate deliveries during lease expiration and recovery;
 - infinite retries after `max_retries` is reached;
-- durability against power failure with `fsync=False`;
+- survival of every recent commit under abrupt failure in `RELAXED` mode;
 - indefinite retention of messages removed by maintenance.
 
 An optional `max_pending_jobs` contract atomically bounds ready + processing

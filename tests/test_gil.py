@@ -3,7 +3,7 @@ import sqlite3
 import threading
 import time
 
-from localqueue import SimpleQueue
+from localqueue import DeliveryPolicy, SimpleQueue
 
 
 def hold_write_lock(database_path, ready):
@@ -17,7 +17,7 @@ def hold_write_lock(database_path, ready):
 
 def test_put_releases_gil_while_waiting_for_sqlite_lock(tmp_path):
     path = tmp_path / "gil"
-    queue = SimpleQueue(str(path), lease_seconds=5.0)
+    queue = SimpleQueue(str(path), delivery=DeliveryPolicy(lease_seconds=5.0))
     queue.put({"seed": True})
 
     context = multiprocessing.get_context("spawn")
@@ -54,7 +54,7 @@ def test_put_releases_gil_while_waiting_for_sqlite_lock(tmp_path):
 
 def test_put_many_releases_gil_while_waiting_for_sqlite_lock(tmp_path):
     path = tmp_path / "gil-batch"
-    queue = SimpleQueue(str(path), lease_seconds=5.0)
+    queue = SimpleQueue(str(path), delivery=DeliveryPolicy(lease_seconds=5.0))
     queue.put({"seed": True})
 
     context = multiprocessing.get_context("spawn")

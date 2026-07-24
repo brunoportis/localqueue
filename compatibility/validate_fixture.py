@@ -31,7 +31,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fixture", type=Path, required=True)
     args = parser.parse_args()
-    from localqueue import Empty, SimpleQueue
+    from localqueue import DeliveryPolicy, Empty, SimpleQueue
 
     fixture = json.loads((args.fixture / "fixture.json").read_text(encoding="utf-8"))
     result: dict[str, object] = {
@@ -39,7 +39,9 @@ def main() -> None:
         "assertions": [],
     }
     with SimpleQueue(
-        str(args.fixture), name="compat", lease_seconds=0.25, max_retries=1
+        str(args.fixture),
+        name="compat",
+        delivery=DeliveryPolicy(lease_seconds=0.25, max_retries=1),
     ) as queue:
         assertion(result, "initial_integrity", queue.check_integrity().ok)
         initial = queue.stats()
@@ -54,7 +56,9 @@ def main() -> None:
             failed[0]["last_error"] == fixture["dead_letter_error"],
         )
         with SimpleQueue(
-            str(args.fixture), name="compat-delayed", lease_seconds=0.25, max_retries=1
+            str(args.fixture),
+            name="compat-delayed",
+            delivery=DeliveryPolicy(lease_seconds=0.25, max_retries=1),
         ) as delayed_queue:
             try:
                 delayed_queue.get_nowait()
@@ -87,7 +91,9 @@ def main() -> None:
         remaining = max(0.0, fixture["delayed_available_at"] - time.time())
         time.sleep(remaining + 0.1)
         with SimpleQueue(
-            str(args.fixture), name="compat-delayed", lease_seconds=0.25, max_retries=1
+            str(args.fixture),
+            name="compat-delayed",
+            delivery=DeliveryPolicy(lease_seconds=0.25, max_retries=1),
         ) as delayed_queue:
             delayed = delayed_queue.get()
             assertion(

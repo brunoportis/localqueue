@@ -40,11 +40,14 @@ print(json.dumps({
 OPERATION_CODE = r"""
 import json
 import sys
-from localqueue import SimpleQueue
+from localqueue import DurabilityMode, SimpleQueue
 
 queue_dir, operation, payload, fsync = sys.argv[1:5]
 try:
-    queue = SimpleQueue(queue_dir, fsync=fsync == "true")
+    durability = (
+        DurabilityMode.DURABLE if fsync == "true" else DurabilityMode.RELAXED
+    )
+    queue = SimpleQueue(queue_dir, durability=durability)
     confirmed = False
     if operation == "put":
         queue.put(json.loads(payload))

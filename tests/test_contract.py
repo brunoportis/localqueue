@@ -6,11 +6,18 @@ import time
 import typing
 
 import pytest
-from localqueue import Empty, Job, LeaseExpired, LocalQueueError, SimpleQueue
+from localqueue import (
+    DeliveryPolicy,
+    Empty,
+    Job,
+    LeaseExpired,
+    LocalQueueError,
+    SimpleQueue,
+)
 
 
 def _put_job_with_same_id(path: str, result_queue) -> None:
-    q = SimpleQueue(path, lease_seconds=5.0)
+    q = SimpleQueue(path, delivery=DeliveryPolicy(lease_seconds=5.0))
     job_id = q.put({"task": "x"}, job_id="job-123")
     result_queue.put(job_id)
     q.close()
@@ -20,8 +27,12 @@ class TestContract:
     def test_two_queues_same_db(self, tmp_path):
         """Duas filas com nomes diferentes no mesmo banco."""
         path = tmp_path / "queues"
-        q1 = SimpleQueue(str(path), name="foo", lease_seconds=5.0)
-        q2 = SimpleQueue(str(path), name="bar", lease_seconds=5.0)
+        q1 = SimpleQueue(
+            str(path), name="foo", delivery=DeliveryPolicy(lease_seconds=5.0)
+        )
+        q2 = SimpleQueue(
+            str(path), name="bar", delivery=DeliveryPolicy(lease_seconds=5.0)
+        )
 
         q1.put({"task": "foo"})
         q2.put({"task": "bar"})
@@ -41,7 +52,9 @@ class TestContract:
     def test_reopen_with_processing_jobs(self, tmp_path):
         """Reabertura com jobs em processamento: não deve duplicar."""
         path = tmp_path / "reopen"
-        q1 = SimpleQueue(str(path), lease_seconds=0.2, max_retries=3)
+        q1 = SimpleQueue(
+            str(path), delivery=DeliveryPolicy(lease_seconds=0.2, max_retries=3)
+        )
         try:
             q1.put({"task": "one"})
             first_job = q1.get(block=False)
@@ -50,7 +63,9 @@ class TestContract:
 
         # Reabre sem ter dado ack/nack. O lease do claim recuperado é longo
         # para que o ACK abaixo não dependa da velocidade do runner.
-        q2 = SimpleQueue(str(path), lease_seconds=5.0, max_retries=3)
+        q2 = SimpleQueue(
+            str(path), delivery=DeliveryPolicy(lease_seconds=5.0, max_retries=3)
+        )
         try:
             deadline = time.monotonic() + 2.0
             while True:
@@ -86,9 +101,9 @@ class TestContract:
         code = f"""
 import sys
 sys.path.insert(0, {repr(str(tmp_path))})
-from localqueue import SimpleQueue
+from localqueue import DeliveryPolicy, SimpleQueue
 
-q = SimpleQueue({repr(str(path))}, lease_seconds=0.5, max_retries=3)
+q = SimpleQueue({repr(str(path))}, delivery=DeliveryPolicy(lease_seconds=0.5, max_retries=3))
 q.put({{"task": "crash"}})
 job = q.get(block=False)
 # Morre abruptamente sem ack.
@@ -110,7 +125,9 @@ os._exit(1)
             os.unlink(script)
 
         # Recupera o job abandonado.
-        q = SimpleQueue(str(path), lease_seconds=0.5, max_retries=3)
+        q = SimpleQueue(
+            str(path), delivery=DeliveryPolicy(lease_seconds=0.5, max_retries=3)
+        )
         time.sleep(0.6)
         job = q.get(block=False)
         assert job.data == {"task": "crash"}
@@ -121,7 +138,9 @@ os._exit(1)
     def test_worker_a_expires_b_reserves_a_ack_rejected(self, tmp_path):
         """Worker A expira, B reserva, ACK atrasado de A é rejeitado."""
         path = tmp_path / "fencing"
-        q = SimpleQueue(str(path), lease_seconds=0.3, max_retries=3)
+        q = SimpleQueue(
+            str(path), delivery=DeliveryPolicy(lease_seconds=0.3, max_retries=3)
+        )
         q.put({"task": "fenced"})
 
         # Worker A pega o job.
@@ -147,7 +166,7 @@ os._exit(1)
         path = tmp_path / "stats"
 
         # Produtor.
-        producer = SimpleQueue(str(path), lease_seconds=5.0)
+        producer = SimpleQueue(str(path), delivery=DeliveryPolicy(lease_seconds=5.0))
         producer.put({"id": 1})
         producer.put({"id": 2})
         producer.put({"id": 3})
@@ -156,7 +175,7 @@ os._exit(1)
         assert stats["ready"] == 3
 
         # Consumidor em outra instância.
-        consumer = SimpleQueue(str(path), lease_seconds=5.0)
+        consumer = SimpleQueue(str(path), delivery=DeliveryPolicy(lease_seconds=5.0))
         job = consumer.get(block=False)
         consumer.ack(job)
 
@@ -170,7 +189,9 @@ os._exit(1)
     def test_ack_rejected_after_expiry_before_redelivery(self, tmp_path):
         """ACK atrasado antes de outro worker reservar deve ser rejeitado."""
         path = tmp_path / "expiry"
-        q = SimpleQueue(str(path), lease_seconds=0.3, max_retries=3)
+        q = SimpleQueue(
+            str(path), delivery=DeliveryPolicy(lease_seconds=0.3, max_retries=3)
+        )
         q.put({"task": "stale"})
 
         job = q.get(block=False)
@@ -184,7 +205,9 @@ os._exit(1)
     def test_nack_rejected_after_expiry_before_redelivery(self, tmp_path):
         """NACK atrasado antes de outro worker reservar deve ser rejeitado."""
         path = tmp_path / "expiry_nack"
-        q = SimpleQueue(str(path), lease_seconds=0.3, max_retries=3)
+        q = SimpleQueue(
+            str(path), delivery=DeliveryPolicy(lease_seconds=0.3, max_retries=3)
+        )
         q.put({"task": "stale"})
 
         job = q.get(block=False)
@@ -198,7 +221,9 @@ os._exit(1)
     def test_extend_lease_rejected_after_expiry(self, tmp_path):
         """extend_lease após expiração deve ser rejeitado."""
         path = tmp_path / "expiry_extend"
-        q = SimpleQueue(str(path), lease_seconds=0.3, max_retries=3)
+        q = SimpleQueue(
+            str(path), delivery=DeliveryPolicy(lease_seconds=0.3, max_retries=3)
+        )
         q.put({"task": "stale"})
 
         job = q.get(block=False)
@@ -212,7 +237,9 @@ os._exit(1)
     def test_expired_job_does_not_exceed_max_attempts(self, tmp_path):
         """Job não é entregue mais vezes que max_attempts via reclaim."""
         path = tmp_path / "max_attempts"
-        q = SimpleQueue(str(path), lease_seconds=0.2, max_retries=2)
+        q = SimpleQueue(
+            str(path), delivery=DeliveryPolicy(lease_seconds=0.2, max_retries=2)
+        )
         q.put({"task": "doomed"})
 
         # 3 entregas: 1 inicial + 2 retries.
@@ -252,16 +279,16 @@ os._exit(1)
         for p in processes:
             assert p.exitcode == 0
 
-        q = SimpleQueue(str(path), lease_seconds=5.0)
+        q = SimpleQueue(str(path), delivery=DeliveryPolicy(lease_seconds=5.0))
         assert q.stats()["ready"] == 1
         q.close()
 
     def test_close_prevents_further_operations(self, tmp_path):
         """Após close(), operações devem levantar erro."""
-        from localqueue import LocalQueueError
+        from localqueue import DeliveryPolicy, LocalQueueError
 
         path = tmp_path / "close"
-        q = SimpleQueue(str(path), lease_seconds=5.0)
+        q = SimpleQueue(str(path), delivery=DeliveryPolicy(lease_seconds=5.0))
         q.put({"task": "x"})
         q.close()
 
@@ -274,7 +301,9 @@ os._exit(1)
     def test_lease_expires_at_updates_on_extend(self, tmp_path):
         """lease_expires_at é atualizado após extend_lease."""
         path = tmp_path / "extend"
-        q = SimpleQueue(str(path), lease_seconds=0.5, max_retries=3)
+        q = SimpleQueue(
+            str(path), delivery=DeliveryPolicy(lease_seconds=0.5, max_retries=3)
+        )
         q.put({"task": "x"})
 
         job = q.get(block=False)
@@ -289,8 +318,12 @@ os._exit(1)
     @pytest.mark.parametrize("transition", ["ack", "nack", "fail", "extend_lease"])
     def test_queue_cannot_transition_job_from_another_queue(self, tmp_path, transition):
         path = tmp_path / f"queue_isolation_{transition}"
-        owner = SimpleQueue(str(path), name="emails", lease_seconds=5.0)
-        other = SimpleQueue(str(path), name="deploys", lease_seconds=5.0)
+        owner = SimpleQueue(
+            str(path), name="emails", delivery=DeliveryPolicy(lease_seconds=5.0)
+        )
+        other = SimpleQueue(
+            str(path), name="deploys", delivery=DeliveryPolicy(lease_seconds=5.0)
+        )
         owner.put({"email": "x"})
         job = owner.get(block=False)
 

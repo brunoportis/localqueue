@@ -17,7 +17,14 @@ import pytest
 from hypothesis import HealthCheck, note, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, precondition, rule
-from localqueue import Empty, EnqueueItem, Full, LeaseExpired, SimpleQueue
+from localqueue import (
+    DeliveryPolicy,
+    Empty,
+    EnqueueItem,
+    Full,
+    LeaseExpired,
+    SimpleQueue,
+)
 
 
 class FailsBeforeNativeSerializer:
@@ -66,8 +73,9 @@ class QueueStateMachine(RuleBasedStateMachine):
         self.path = self.temp_dir.name
         self.queue = SimpleQueue(
             str(self.path),
-            lease_seconds=self.lease_seconds,
-            max_retries=self.max_retries,
+            delivery=DeliveryPolicy(
+                lease_seconds=self.lease_seconds, max_retries=self.max_retries
+            ),
             max_pending_jobs=self.max_pending_jobs,
         )
         self.jobs: dict[int, ReferenceJob] = {}
@@ -190,8 +198,9 @@ class QueueStateMachine(RuleBasedStateMachine):
         self.queue.close()
         unlimited = SimpleQueue(
             str(self.path),
-            lease_seconds=self.lease_seconds,
-            max_retries=self.max_retries,
+            delivery=DeliveryPolicy(
+                lease_seconds=self.lease_seconds, max_retries=self.max_retries
+            ),
         )
         required = self.max_pending_jobs - self._pending() + 1
         for index in range(required):
@@ -202,8 +211,9 @@ class QueueStateMachine(RuleBasedStateMachine):
         unlimited.close()
         self.queue = SimpleQueue(
             str(self.path),
-            lease_seconds=self.lease_seconds,
-            max_retries=self.max_retries,
+            delivery=DeliveryPolicy(
+                lease_seconds=self.lease_seconds, max_retries=self.max_retries
+            ),
             max_pending_jobs=self.max_pending_jobs,
         )
         self.above_limit_seeded = True
@@ -223,8 +233,9 @@ class QueueStateMachine(RuleBasedStateMachine):
         self._record(f"put_many_serializer_failure({value})")
         queue = SimpleQueue(
             str(self.path),
-            lease_seconds=self.lease_seconds,
-            max_retries=self.max_retries,
+            delivery=DeliveryPolicy(
+                lease_seconds=self.lease_seconds, max_retries=self.max_retries
+            ),
             max_pending_jobs=self.max_pending_jobs,
             serializer=FailsBeforeNativeSerializer(),
         )
@@ -331,8 +342,9 @@ class QueueStateMachine(RuleBasedStateMachine):
         self.queue.close()
         self.queue = SimpleQueue(
             str(self.path),
-            lease_seconds=self.lease_seconds,
-            max_retries=self.max_retries,
+            delivery=DeliveryPolicy(
+                lease_seconds=self.lease_seconds, max_retries=self.max_retries
+            ),
             max_pending_jobs=self.max_pending_jobs,
         )
         self._assert_stats()
@@ -346,12 +358,12 @@ class QueueStateMachine(RuleBasedStateMachine):
         queue_a = SimpleQueue(
             str(self.path),
             name=f"cross-a-{cross_index}",
-            lease_seconds=self.lease_seconds,
+            delivery=DeliveryPolicy(lease_seconds=self.lease_seconds),
         )
         queue_b = SimpleQueue(
             str(self.path),
             name=f"cross-b-{cross_index}",
-            lease_seconds=self.lease_seconds,
+            delivery=DeliveryPolicy(lease_seconds=self.lease_seconds),
         )
         try:
             id_a = queue_a.put(data, job_id=job_id)
@@ -419,7 +431,9 @@ def test_expiry_reclaim_and_stale_receipt_fencing(tmp_path):
     deliberately short lease to cover expiration, explicit reclaim, and all
     stale-receipt transitions after redelivery.
     """
-    queue = SimpleQueue(str(tmp_path), lease_seconds=0.2, max_retries=2)
+    queue = SimpleQueue(
+        str(tmp_path), delivery=DeliveryPolicy(lease_seconds=0.2, max_retries=2)
+    )
     try:
         queue.put({"task": "expire"})
         first = queue.get_nowait()
@@ -448,7 +462,9 @@ def test_expiry_reclaim_and_stale_receipt_fencing(tmp_path):
 
 def test_delayed_retry_waits_outside_generated_sequences(tmp_path):
     """Cover delayed availability with one isolated, generously-sized wait."""
-    queue = SimpleQueue(str(tmp_path), lease_seconds=30.0, max_retries=2)
+    queue = SimpleQueue(
+        str(tmp_path), delivery=DeliveryPolicy(lease_seconds=30.0, max_retries=2)
+    )
     try:
         queue.put({"task": "delayed-retry"})
         job = queue.get_nowait()

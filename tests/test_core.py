@@ -1,13 +1,15 @@
 import time
 
 import pytest
-from localqueue import Empty, SimpleQueue
+from localqueue import DeliveryPolicy, Empty, SimpleQueue
 
 
 @pytest.fixture
 def queue(tmp_path):
     path = tmp_path / "queue"
-    q = SimpleQueue(str(path), lease_seconds=0.5, max_retries=2)
+    q = SimpleQueue(
+        str(path), delivery=DeliveryPolicy(lease_seconds=0.5, max_retries=2)
+    )
     yield q
     q.close()
 
@@ -134,11 +136,11 @@ class TestSimpleQueue:
 
     def test_persistence_across_reopen(self, tmp_path):
         path = tmp_path / "persist"
-        q1 = SimpleQueue(str(path), lease_seconds=10.0)
+        q1 = SimpleQueue(str(path), delivery=DeliveryPolicy(lease_seconds=10.0))
         q1.put({"task": "survive"})
         q1.close()
 
-        q2 = SimpleQueue(str(path), lease_seconds=10.0)
+        q2 = SimpleQueue(str(path), delivery=DeliveryPolicy(lease_seconds=10.0))
         job = q2.get(block=False)
         assert job.data == {"task": "survive"}
         q2.ack(job)
@@ -207,4 +209,4 @@ class TestSimpleQueue:
     )
     def test_constructor_rejects_invalid_limits(self, tmp_path, kwargs, message):
         with pytest.raises(ValueError, match=message):
-            SimpleQueue(str(tmp_path / "invalid"), **kwargs)
+            DeliveryPolicy(**kwargs)

@@ -12,7 +12,14 @@ from dataclasses import FrozenInstanceError, fields
 from pathlib import Path
 
 import pytest
-from localqueue import BackupResult, Empty, LocalQueueError, SimpleQueue
+from localqueue import (
+    BackupResult,
+    DeliveryPolicy,
+    DurabilityMode,
+    Empty,
+    LocalQueueError,
+    SimpleQueue,
+)
 
 
 def inspect_backup(directory: Path) -> tuple[str, int]:
@@ -25,9 +32,11 @@ def inspect_backup(directory: Path) -> tuple[str, int]:
     return integrity, count
 
 
-@pytest.mark.parametrize("fsync", [False, True])
-def test_backup_creates_exclusive_typed_snapshot(tmp_path: Path, fsync: bool) -> None:
-    queue = SimpleQueue(str(tmp_path / "queue"), fsync=fsync)
+@pytest.mark.parametrize("durability", [DurabilityMode.RELAXED, DurabilityMode.DURABLE])
+def test_backup_creates_exclusive_typed_snapshot(
+    tmp_path: Path, durability: DurabilityMode
+) -> None:
+    queue = SimpleQueue(str(tmp_path / "queue"), durability=durability)
     queue.put({"task": "one"})
     queue.put({"task": "two"})
     parent = tmp_path / "exports with spaces-å"
@@ -73,7 +82,7 @@ def test_backup_opens_with_simplequeue_from_a_fresh_process(tmp_path: Path) -> N
 
     script = """
 import json, sys
-from localqueue import SimpleQueue
+from localqueue import DeliveryPolicy, SimpleQueue
 queue = SimpleQueue(sys.argv[1])
 integrity = queue.check_integrity(mode="full")
 job = queue.get(block=False)
@@ -98,7 +107,9 @@ def test_backup_preserves_complete_queue_state_without_origin_sidecars(
     tmp_path: Path,
 ) -> None:
     source_directory = tmp_path / "source"
-    alpha = SimpleQueue(str(source_directory), name="alpha", lease_seconds=300)
+    alpha = SimpleQueue(
+        str(source_directory), name="alpha", delivery=DeliveryPolicy(lease_seconds=300)
+    )
     beta = SimpleQueue(str(source_directory), name="beta")
 
     processing_id = alpha.put({"state": "processing"})
@@ -166,7 +177,7 @@ def test_backup_preserves_complete_queue_state_without_origin_sidecars(
 
     script = """
 import json, sys
-from localqueue import SimpleQueue
+from localqueue import DeliveryPolicy, SimpleQueue
 alpha = SimpleQueue(sys.argv[1], name="alpha")
 beta = SimpleQueue(sys.argv[1], name="beta")
 integrity = alpha.check_integrity(mode="full")

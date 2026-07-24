@@ -344,7 +344,11 @@ def test_counter_divergence_fails_and_writes_report(
 
 def test_real_lease_expiry_is_recorded_without_killing_consumer(tmp_path: Path) -> None:
     queue_path = tmp_path / "database"
-    queue = run_soak.SimpleQueue(str(queue_path), name="stress", lease_seconds=0.01)
+    queue = run_soak.SimpleQueue(
+        str(queue_path),
+        name="stress",
+        delivery=run_soak.DeliveryPolicy(lease_seconds=0.01),
+    )
     queue.put({"id": "expired"}, job_id="expired")
     queue.close()
     stop = _StopAfterTransition()

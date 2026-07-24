@@ -174,7 +174,7 @@ async def _heartbeat(
     queue: Any, job: Job, interval: float, state: dict[str, bool]
 ) -> None:
     """Renew the lease while the handler runs, stopping if it is lost."""
-    lease_seconds = queue.lease_seconds
+    lease_seconds = queue.delivery.lease_seconds
     while True:
         await asyncio.sleep(interval)
         try:
@@ -268,7 +268,7 @@ async def _process_delivery(
     # The heartbeat renews the lease while the handler runs. If the lease is
     # lost, discard the result because another worker may have claimed it.
     state = {"lease_lost": False}
-    interval = max(queue.lease_seconds / 3, 0.05)
+    interval = max(queue.delivery.lease_seconds / 3, 0.05)
     heartbeat: asyncio.Task[None] | None = asyncio.create_task(
         _heartbeat(queue, job, interval, state)
     )

@@ -150,6 +150,39 @@ after commit. The receipt contains the event id, event type, sorted
 subscriptions, and internal message ids. Re-dispatching the same event id is
 deduplicated independently in each subscription queue.
 
+## Delivery and durability policies
+
+EventBus shares the same immutable delivery policy and durability intent as
+`SimpleQueue`:
+
+```python
+from localqueue import DeliveryPolicy, DurabilityMode
+from localqueue.bus import EventBus
+
+
+bus = EventBus(
+    "./data",
+    name="app",
+    topology=TOPOLOGY,
+    delivery=DeliveryPolicy(
+        lease_seconds=30,
+        max_retries=5,
+    ),
+    durability=DurabilityMode.DURABLE,
+)
+```
+
+The policy applies both to the native queue used for atomic fanout and to every
+subscription queue opened for consumption. `DurabilityMode.RELAXED` is the
+throughput-oriented default and selects SQLite `synchronous=NORMAL`;
+`DurabilityMode.DURABLE` selects `synchronous=FULL` for stronger protection of
+recent commits. Neither mode promises survival across every filesystem,
+kernel, drive cache, controller, or hardware failure.
+
+`require_subscribers` remains a boolean because it controls one stable
+dispatch decision. Topology, serializer, and event registry remain explicit
+strategy objects instead of being hidden inside a generic EventBus config.
+
 If no route matches, `require_subscribers=True` raises `NoSubscribers`. With
 `require_subscribers=False`, dispatch returns an empty receipt and writes
 nothing. `await bus.dispatch_async(event)` runs dispatch outside the event-loop
