@@ -8,15 +8,20 @@ not have an in-place upgrade path to 1.x; preserve the existing 0.5.0 migration
 guidance in the changelog when moving from that release.
 
 We test forward opening and normal queue operations from published wheels
-`v1.0.0`, `v1.0.1`, `v1.1.0`, `v1.1.1`, and `v1.1.2` to the candidate wheel.
-This is not a downgrade guarantee. Copy or back up a database before upgrading,
-coordinate all processes onto one version during the upgrade, and do not run
-mixed versions concurrently.
+`v1.0.0`, `v1.0.1`, `v1.1.0`, `v1.1.1`, `v1.1.2`, and `v1.2.0` to the
+candidate wheel. Each release adds its published wheel to this baseline so a
+future candidate is checked against the real persisted formats that preceded it.
+This is release infrastructure and a tested forward-opening contract; it is not
+a promise of downgrade support, concurrent mixed-version operation, or arbitrary
+compatibility with application-defined serializers.
+
+Copy or back up a database before upgrading, coordinate all processes onto one
+version during the upgrade, and do not run mixed versions concurrently.
 
 The matrix uses real public wheels, not hand-authored SQLite fixtures. Its
 Linux x86_64 / CPython 3.14 scope creates ready, leased, ACKed, delayed,
 dead-letter, error, and deduplicated queue records. EventBus fixtures apply to
-the 1.1.x baselines. Custom serializers remain the application's
+the 1.1.x and later baselines. Custom serializers remain the application's
 responsibility: current code must still deserialize its older payloads.
 
 Run the same check locally:
@@ -39,3 +44,6 @@ lets concurrent old-database openers serialize safely without attempting the
 same schema change twice. Existing rows are not rewritten; null and
 unrecognized values are exposed as `FailureReason.LEGACY_UNKNOWN`. Older
 releases use explicit insert/select columns and tolerate the additional column.
+
+See [Migrating to v1.3](migrating-to-1.3.md) for Python API changes and the
+operational upgrade sequence.
