@@ -1,5 +1,6 @@
 """Positive examples for the public generic typing contract."""
 
+import json
 from dataclasses import dataclass
 from typing import Callable
 
@@ -52,10 +53,25 @@ class UserCreated(BaseEvent):
     user_id: str
 
 
+class EventEnvelopeSerializer:
+    def dumps(self, obj: dict[str, object], /) -> bytes:
+        return json.dumps(obj).encode("utf-8")
+
+    def loads(self, data: bytes, /) -> object:
+        return json.loads(data.decode("utf-8"))
+
+
 class CallableHandler:
     def __call__(self, event: UserCreated) -> int:
         return len(event.user_id)
 
+
+event_serializer = EventEnvelopeSerializer()
+untrusted_envelope: object = event_serializer.loads(
+    event_serializer.dumps({"event_type": "UserCreated", "payload": {}})
+)
+if isinstance(untrusted_envelope, dict):
+    narrowed_event_type = untrusted_envelope.get("event_type")
 
 bus = EventBus(
     "./typing-bus",
@@ -68,6 +84,7 @@ bus = EventBus(
             "users_string": [UserCreated],
         }
     ),
+    serializer=event_serializer,
 )
 
 

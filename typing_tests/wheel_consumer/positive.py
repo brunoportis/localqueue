@@ -1,5 +1,6 @@
 """Positive typing contract resolved exclusively from an installed wheel."""
 
+import json
 from dataclasses import dataclass
 from typing import Callable
 
@@ -41,6 +42,21 @@ class UserCreated(BaseEvent):
     user_id: str
 
 
+class EventEnvelopeSerializer:
+    def dumps(self, obj: dict[str, object], /) -> bytes:
+        return json.dumps(obj).encode("utf-8")
+
+    def loads(self, data: bytes, /) -> object:
+        return json.loads(data.decode("utf-8"))
+
+
+event_serializer = EventEnvelopeSerializer()
+untrusted_envelope: object = event_serializer.loads(
+    event_serializer.dumps({"event_type": "UserCreated", "payload": {}})
+)
+if isinstance(untrusted_envelope, dict):
+    narrowed_event_type = untrusted_envelope.get("event_type")
+
 bus = EventBus(
     "./bus",
     topology=BusTopology(
@@ -50,6 +66,7 @@ bus = EventBus(
             "users_direct": [UserCreated],
         }
     ),
+    serializer=event_serializer,
 )
 
 

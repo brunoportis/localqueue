@@ -29,6 +29,8 @@ from localqueue.benchmark.multiprocess_models import IDValidation, MultiprocessC
 from localqueue.benchmark.profiles import multiprocess_matrix
 from localqueue.benchmark.runner import _atomic_write
 
+_JSON_SERIALIZER: JsonSerializer[object] = JsonSerializer()
+
 try:  # resource is unavailable on Windows
     import resource as _resource
 except ImportError:  # pragma: no cover - exercised on Windows
@@ -61,13 +63,12 @@ def make_payload(
         "created_ns": time.monotonic_ns(),
         "padding": "",
     }
-    serializer = JsonSerializer[object]()
-    envelope = len(serializer.dumps(value))
+    envelope = len(_JSON_SERIALIZER.dumps(value))
     value["padding"] = (
         hashlib.sha256(f"{identifier}:{producer_index}".encode()).hexdigest()
         * (requested // 64 + 2)
     )[: max(0, requested - envelope)]
-    return value, len(serializer.dumps(value))
+    return value, len(_JSON_SERIALIZER.dumps(value))
 
 
 def _error_payload(exc: BaseException, *paths: str | Path) -> dict[str, str]:
@@ -105,7 +106,7 @@ def producer_target(
                 if first_put_started_ns is None:
                     first_put_started_ns = before
                 value["created_ns"] = before
-                actual = len(JsonSerializer[object]().dumps(value))
+                actual = len(_JSON_SERIALIZER.dumps(value))
                 try:
                     queue.put(value, job_id=value["id"])
                     last_put_completed_ns = time.monotonic_ns()

@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import inspect
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Optional, TypedDict, cast
 
 from pydantic import ValidationError
@@ -31,17 +32,26 @@ class _LeaseState(TypedDict):
     lease_lost: bool
 
 
-class _RequiredEventEnvelope(TypedDict):
-    event_id: object
+@dataclass(frozen=True)
+class _ParsedEnvelope:
+    raw: dict[object, object]
     event_type: str
-    event_created_at: object
-    payload: dict[str, object]
+    payload: dict[object, object]
 
 
-class _EventEnvelope(_RequiredEventEnvelope, total=False):
-    correlation_id: object
-    causation_id: object
-    event_schema: object
+@dataclass(frozen=True)
+class _EnvelopeError:
+    message: str
+
+
+@dataclass(frozen=True)
+class _ReconstructedEvent:
+    value: BaseEvent
+
+
+@dataclass(frozen=True)
+class _ReconstructionError:
+    message: str
 
 
 async def _deadline_timer(timeout: float) -> None:
@@ -237,66 +247,46 @@ async def _transition(
         )
 
 
-def _parse_envelope(
-    value: object,
-) -> tuple[_EventEnvelope | None, str | None]:
+def _parse_envelope(value: object) -> _ParsedEnvelope | _EnvelopeError:
     """Validate and narrow an untrusted subscription-queue payload."""
     if not isinstance(value, dict):
-        return None, (
+        return _EnvelopeError(
             f"malformed envelope: expected a JSON object, got {type(value).__name__}"
         )
     event_type = value.get("event_type")
     if not isinstance(event_type, str):
-        return None, "malformed envelope: missing or invalid 'event_type'"
+        return _EnvelopeError("malformed envelope: missing or invalid 'event_type'")
     payload = value.get("payload")
     if not isinstance(payload, dict):
-        return None, "malformed envelope: missing or invalid 'payload'"
-    if not all(isinstance(key, str) for key in payload):
-        return None, "malformed envelope: 'payload' keys must be strings"
-    for field in ("event_id", "event_created_at"):
-        if field not in value:
-            return None, f"malformed envelope: missing '{field}'"
-
-    typed_payload = {key: item for key, item in payload.items() if isinstance(key, str)}
-    envelope: _EventEnvelope = {
-        "event_id": value["event_id"],
-        "event_type": event_type,
-        "event_created_at": value["event_created_at"],
-        "payload": typed_payload,
-    }
-    if "correlation_id" in value:
-        envelope["correlation_id"] = value["correlation_id"]
-    if "causation_id" in value:
-        envelope["causation_id"] = value["causation_id"]
-    if "event_schema" in value:
-        envelope["event_schema"] = value["event_schema"]
-    return envelope, None
+        return _EnvelopeError("malformed envelope: missing or invalid 'payload'")
+    return _ParsedEnvelope(raw=value, event_type=event_type, payload=payload)
 
 
 def _reconstruct_event(
     bus: "EventBus",
-    envelope: _EventEnvelope,
-) -> tuple[BaseEvent | None, str | None]:
+    envelope: _ParsedEnvelope,
+) -> _ReconstructedEvent | _ReconstructionError:
     """Resolve and validate the concrete Pydantic event."""
-    event_type = envelope["event_type"]
+    event_type = envelope.event_type
     cls = bus.registry.resolve(event_type)
     if cls is None:
-        return None, f"unknown event: {event_type!r}"
+        return _ReconstructionError(f"unknown event: {event_type!r}")
 
     try:
-        event_data: dict[str, object] = {
-            **envelope["payload"],
-            "event_id": envelope["event_id"],
-            "event_created_at": envelope["event_created_at"],
+        event_data: dict[object, object] = {
+            **envelope.payload,
+            "event_id": envelope.raw["event_id"],
+            "event_created_at": envelope.raw["event_created_at"],
         }
         for field in ("correlation_id", "causation_id"):
-            if field in envelope:
-                event_data[field] = envelope[field]
+            if field in envelope.raw:
+                event_data[field] = envelope.raw[field]
         # The class is resolved at runtime and Pydantic validates this dynamic
-        # mapping. Erase value types only for that constructor call.
-        return cls(**cast(dict[str, Any], event_data)), None
+        # mapping, including rejecting non-string keyword keys. Erase key and
+        # value types only for that constructor call.
+        return _ReconstructedEvent(cls(**cast(dict[str, Any], event_data)))
     except (ValidationError, KeyError, TypeError, ValueError) as exc:
-        return None, f"invalid payload for {event_type!r}: {exc}"
+        return _ReconstructionError(f"invalid payload for {event_type!r}: {exc}")
 
 
 async def _process_delivery(
@@ -305,26 +295,23 @@ async def _process_delivery(
     queue: SimpleQueue[object],
     job: Job[object],
 ) -> None:
-    envelope, error = _parse_envelope(job.data)
-    if error is not None:
-        await _transition(queue, "fail", job, last_error=error)
+    parsed = _parse_envelope(job.data)
+    if isinstance(parsed, _EnvelopeError):
+        await _transition(queue, "fail", job, last_error=parsed.message)
         return
-    if envelope is None:
-        raise AssertionError("validated envelope is missing without an error")
 
-    event, event_error = _reconstruct_event(bus, envelope)
-    if event_error is not None:
+    reconstructed = _reconstruct_event(bus, parsed)
+    if isinstance(reconstructed, _ReconstructionError):
         await _transition(
             queue,
             "fail",
             job,
-            last_error=event_error,
+            last_error=reconstructed.message,
         )
         return
-    if event is None:
-        raise AssertionError("validated event is missing without an error")
 
-    event_type = envelope["event_type"]
+    event = reconstructed.value
+    event_type = parsed.event_type
     registration = bus._handlers.get((subscription, event_type)) or bus._handlers.get(
         (subscription, WILDCARD)
     )

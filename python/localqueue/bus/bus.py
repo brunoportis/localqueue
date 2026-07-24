@@ -39,6 +39,14 @@ _StoredEventHandler = Callable[[BaseEvent], object]
 _AsyncStoredEventHandler = Callable[[BaseEvent], Awaitable[object]]
 
 
+class _EventBusSerializer(Protocol):
+    """Directional serializer contract for the EventBus envelope boundary."""
+
+    def dumps(self, obj: dict[str, object], /) -> bytes: ...
+
+    def loads(self, data: bytes, /) -> object: ...
+
+
 class _EventHandlerDecorator(Protocol[_EventT]):
     def __call__(
         self,
@@ -94,7 +102,7 @@ class EventBus:
         delivery: DeliveryPolicy = DeliveryPolicy(),
         durability: DurabilityMode = DurabilityMode.RELAXED,
         require_subscribers: bool = True,
-        serializer: Optional[Serializer[object]] = None,
+        serializer: Optional[_EventBusSerializer] = None,
         registry: EventRegistry = EVENT_REGISTRY,
     ) -> None:
         """Initialize an EventBus with explicit routing and shared policies.
@@ -388,7 +396,7 @@ class EventBus:
 
     def serialize_envelope(self, event: BaseEvent) -> bytes:
         """Serialize the persistent envelope once per dispatch."""
-        envelope = {
+        envelope: dict[str, object] = {
             "event_id": str(event.event_id),
             "correlation_id": str(event.correlation_id),
             "causation_id": (
@@ -452,12 +460,21 @@ class EventBus:
         return await asyncio.to_thread(self.dispatch, event)
 
     def _open_subscription_queue(self, subscription: str) -> SimpleQueue[object]:
+        # EventBus is the only producer for subscription queues and always
+        # dumps a known dict envelope. SimpleQueue's invariant serializer
+        # additionally describes writes that this private queue path never
+        # performs, so erase that narrower input only at this handoff.
+        queue_serializer = (
+            cast(Serializer[object], self.serializer)
+            if self.serializer is not None
+            else None
+        )
         return SimpleQueue[object](
             str(self.path),
             name=self._queue_name(subscription),
             delivery=self.delivery,
             durability=self.durability,
-            serializer=self.serializer,
+            serializer=queue_serializer,
         )
 
     async def run(self, *, idle_timeout: Optional[float] = None) -> None:

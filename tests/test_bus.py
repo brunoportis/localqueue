@@ -1,5 +1,6 @@
 import asyncio
 import importlib
+import pickle
 import sys
 import time
 
@@ -19,6 +20,14 @@ class OrderPlaced(BaseEvent):
 class RenamedEvent(BaseEvent):
     event_name = "custom-event"
     value: int
+
+
+class PickleEnvelopeSerializer:
+    def dumps(self, obj: dict[str, object], /) -> bytes:
+        return pickle.dumps(obj)
+
+    def loads(self, data: bytes, /) -> object:
+        return pickle.loads(data)
 
 
 @pytest.fixture
@@ -502,7 +511,131 @@ class TestEnvelopeMalformed:
 
         q = bus._open_subscription_queue("s1")
         assert q.stats()["failed"] == 2
+        errors = [item["last_error"] for item in q.list_failed()]
+        assert errors == [
+            "malformed envelope: missing or invalid 'event_type'",
+            "malformed envelope: missing or invalid 'payload'",
+        ]
         q.close()
+
+    @pytest.mark.parametrize(
+        ("envelope", "expected_error"),
+        [
+            (
+                ["not", "an", "object"],
+                "malformed envelope: expected a JSON object, got list",
+            ),
+            (
+                {"event_type": 42, "payload": {}},
+                "malformed envelope: missing or invalid 'event_type'",
+            ),
+            (
+                {"event_type": "UserCreated", "payload": []},
+                "malformed envelope: missing or invalid 'payload'",
+            ),
+        ],
+    )
+    def test_minimum_envelope_errors_fail_with_stable_messages(
+        self, bus, envelope, expected_error
+    ):
+        bus.on("*", lambda event: None, subscription="s1")
+        queue = bus._open_subscription_queue("s1")
+        queue.put(envelope)
+        queue.close()
+
+        run(bus.run_subscription("s1", idle_timeout=0.2))
+
+        failed = bus._open_subscription_queue("s1")
+        try:
+            assert failed.stats()["failed"] == 1
+            assert failed.list_failed()[0]["last_error"] == expected_error
+        finally:
+            failed.close()
+
+    @pytest.mark.parametrize(
+        "envelope",
+        [
+            {
+                "event_type": "UserCreated",
+                "event_created_at": "2026-01-01T00:00:00+00:00",
+                "payload": {"user_id": "1"},
+            },
+            {
+                "event_id": "12345678-1234-1234-1234-123456789012",
+                "event_type": "UserCreated",
+                "payload": {"user_id": "1"},
+            },
+        ],
+    )
+    def test_later_envelope_errors_keep_invalid_payload_classification(
+        self, bus, envelope
+    ):
+        bus.on(UserCreated, lambda event: None, subscription="s1")
+        queue = bus._open_subscription_queue("s1")
+        queue.put(envelope)
+        queue.close()
+
+        run(bus.run_subscription("s1", idle_timeout=0.2))
+
+        failed = bus._open_subscription_queue("s1")
+        try:
+            assert failed.stats()["failed"] == 1
+            error = failed.list_failed()[0]["last_error"]
+            assert error.startswith("invalid payload for 'UserCreated':")
+        finally:
+            failed.close()
+
+    def test_non_string_payload_key_keeps_invalid_payload_classification(
+        self, tmp_path
+    ):
+        bus = EventBus(
+            str(tmp_path / "bus"),
+            name="test",
+            topology=BusTopology({"s1": ["*"]}),
+            delivery=DeliveryPolicy(lease_seconds=0.5, max_retries=1),
+            serializer=PickleEnvelopeSerializer(),
+        )
+        bus.on(UserCreated, lambda event: None, subscription="s1")
+        queue = bus._open_subscription_queue("s1")
+        queue.put(
+            {
+                "event_id": "12345678-1234-1234-1234-123456789012",
+                "event_type": "UserCreated",
+                "event_created_at": "2026-01-01T00:00:00+00:00",
+                "payload": {1: "not a string key"},
+            }
+        )
+        queue.close()
+
+        try:
+            run(bus.run_subscription("s1", idle_timeout=0.2))
+            failed = bus._open_subscription_queue("s1")
+            try:
+                assert failed.stats()["failed"] == 1
+                error = failed.list_failed()[0]["last_error"]
+                assert error.startswith("invalid payload for 'UserCreated':")
+                assert "keywords must be strings" in error
+            finally:
+                failed.close()
+        finally:
+            bus.close()
+
+    def test_missing_process_local_handler_fails_the_delivery(self, bus):
+        bus.on(UserCreated, lambda event: None, subscription="s1")
+        bus.on(OrderPlaced, lambda event: None, subscription="s1")
+        bus.dispatch(UserCreated(user_id="1"))
+        bus._handlers.pop(("s1", "UserCreated"))
+
+        run(bus.run_subscription("s1", idle_timeout=0.2))
+
+        failed = bus._open_subscription_queue("s1")
+        try:
+            assert failed.stats()["failed"] == 1
+            assert failed.list_failed()[0]["last_error"] == (
+                "no handler registered for 'UserCreated' in 's1' in this process"
+            )
+        finally:
+            failed.close()
 
 
 class TestTypedReconstruction:
