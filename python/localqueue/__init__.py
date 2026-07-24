@@ -1,6 +1,12 @@
 """localqueue: a persistent local SQLite queue with ACK, leases, and retries."""
 
-from localqueue.core import EnqueueItem, JsonSerializer, SimpleQueue
+from localqueue.core import (
+    EnqueueItem,
+    JsonSerializer,
+    QueueStats,
+    Serializer,
+    SimpleQueue,
+)
 from localqueue.diagnostics import QueueDiagnostics
 from localqueue.exceptions import Empty, Full, LeaseExpired, LocalQueueError
 from localqueue.job import Job
@@ -21,6 +27,8 @@ __all__ = [
     "LeaseExpired",
     "LocalQueueError",
     "QueueDiagnostics",
+    "QueueStats",
+    "Serializer",
     "SimpleQueue",
     "Worker",
 ]

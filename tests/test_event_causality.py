@@ -71,6 +71,18 @@ class RecordingSerializer:
         return json.loads(data.decode("utf-8"))
 
 
+class EnvelopeSerializer:
+    def __init__(self):
+        self.dumped: list[dict[str, object]] = []
+
+    def dumps(self, obj: dict[str, object], /) -> bytes:
+        self.dumped.append(obj)
+        return json.dumps(obj).encode("utf-8")
+
+    def loads(self, data: bytes, /) -> object:
+        return json.loads(data.decode("utf-8"))
+
+
 class TestRootMetadata:
     def test_root_reuses_automatic_event_id_as_correlation_id(self):
         event = CausalityRoot(user_id="42")
@@ -253,6 +265,23 @@ class TestEnvelopeSerialization:
         ]
         assert receipt.event_id == event.event_id
 
+    def test_custom_serializer_roundtrips_the_bus_envelope(self, tmp_path):
+        serializer = EnvelopeSerializer()
+        bus = make_bus(tmp_path, serializer=serializer)
+        seen = []
+        bus.on(CausalityRoot, lambda event: seen.append(event), subscription="events")
+
+        try:
+            event = CausalityRoot(user_id="42")
+            bus.dispatch(event)
+            run(bus.run_subscription("events", idle_timeout=0.2))
+        finally:
+            bus.close()
+
+        assert len(serializer.dumped) == 1
+        assert serializer.dumped[0]["event_type"] == "CausalityRoot"
+        assert [item.user_id for item in seen] == ["42"]
+
 
 class TestRoundtrip:
     def test_root_child_and_grandchild_roundtrip_exact_metadata(self, tmp_path):
@@ -336,6 +365,38 @@ class TestBackwardCompatibility:
         assert seen[0].event_id == event_id
         assert seen[0].correlation_id == event_id
         assert seen[0].causation_id is None
+
+    @pytest.mark.parametrize("include_schema", [False, True])
+    def test_event_schema_presence_does_not_change_reconstruction(
+        self, tmp_path, include_schema
+    ):
+        bus = make_bus(tmp_path)
+        seen = []
+        envelope = {
+            "event_id": "11111111-1111-1111-1111-111111111111",
+            "event_type": "TypedPayloadEvent",
+            "event_created_at": "2026-01-01T00:00:00+00:00",
+            "payload": {"count": 7},
+        }
+        if include_schema:
+            envelope["event_schema"] = "TypedPayloadEvent@1"
+        bus.on(
+            TypedPayloadEvent, lambda event: seen.append(event), subscription="events"
+        )
+        put_envelope(bus, envelope)
+
+        try:
+            run(bus.run_subscription("events", idle_timeout=0.2))
+            queue = bus._open_subscription_queue("events")
+            try:
+                assert queue.stats()["acked"] == 1
+                assert queue.stats()["failed"] == 0
+            finally:
+                queue.close()
+        finally:
+            bus.close()
+
+        assert [event.count for event in seen] == [7]
 
     @pytest.mark.parametrize(
         ("omitted", "expected_correlation", "expected_causation"),

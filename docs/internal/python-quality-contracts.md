@@ -71,7 +71,8 @@ Strict public type coverage was:
 89.83% displayed (362 of 403 typable public symbols; 89.8263% exact)
 ```
 
-The blocking command uses `89.82` so the rounded display value does not exceed the exact baseline:
+The initial blocking command used `89.82` so the rounded display value did not
+exceed the exact baseline:
 
 ```bash
 uv run pyrefly coverage check python/localqueue \
@@ -83,6 +84,16 @@ uv run pyrefly coverage check python/localqueue \
 Each public symbol is about 0.25 percentage point at the current denominator, so losing even one typed symbol still fails this threshold.
 
 The strict calculation does not count public symbols contaminated by `Any` as fully typed. This makes the coverage percentage useful as a non-regression ratchet while the generic API work removes known holes.
+
+Issue #64 raised the measured strict public coverage to:
+
+```text
+91.50% (366 of 400 typable public symbols)
+```
+
+The blocking threshold is now `91.49`, immediately below the exact measured
+value. Losing one currently typed symbol produces at most `365/400 = 91.25%`
+and therefore fails the ratchet without depending on the displayed rounding.
 
 `explicit-any` is configured as a warning and surfaced in CI:
 

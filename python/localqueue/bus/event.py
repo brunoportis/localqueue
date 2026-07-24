@@ -15,6 +15,7 @@ _DERIVED_RESERVED_FIELDS = frozenset(
 
 
 def _correlation_from_event_id(validated_data: dict[str, Any]) -> UUID:
+    """Read Pydantic's dynamically typed validated-data mapping."""
     return validated_data["event_id"]
 
 
@@ -39,6 +40,7 @@ class BaseEvent(BaseModel):
     )
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
+        # Pydantic and Python class creation own this open-ended kwargs API.
         super().__init_subclass__(**kwargs)
         if cls.event_name is not None and not (
             isinstance(cls.event_name, str) and cls.event_name.strip()
@@ -47,7 +49,11 @@ class BaseEvent(BaseModel):
 
     @classmethod
     def from_parent(cls: type[_EventT], parent: BaseEvent, /, **data: Any) -> _EventT:
-        """Create a derived event with inherited correlation and direct causation."""
+        """Create a derived event from dynamic Pydantic model input.
+
+        ``data`` intentionally follows Pydantic's open-ended field API; the
+        concrete subclass performs runtime validation.
+        """
         if not isinstance(parent, BaseEvent):
             raise TypeError("'parent' must be a BaseEvent instance")
         conflicts = _DERIVED_RESERVED_FIELDS.intersection(data)

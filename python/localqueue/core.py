@@ -10,7 +10,18 @@ import threading
 import time as _time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Literal, Optional, Protocol, TypeVar, Union
+from types import TracebackType
+from typing import (
+    Callable,
+    Generic,
+    Literal,
+    Optional,
+    Protocol,
+    TypedDict,
+    TypeVar,
+    Union,
+    cast,
+)
 
 from localqueue import localqueue as _native
 from localqueue.diagnostics import QueueDiagnostics, build_diagnostics
@@ -26,38 +37,50 @@ from localqueue.policies import DeliveryPolicy, DurabilityMode, _durability_fsyn
 
 log = logging.getLogger(__name__)
 _ResultT = TypeVar("_ResultT")
+_PayloadT = TypeVar("_PayloadT")
 
 _BACKPRESSURE_MIN_SLEEP_SECONDS = 0.01
 _BACKPRESSURE_MAX_SLEEP_SECONDS = 0.25
 
 
-class Serializer(Protocol):
+class Serializer(Protocol[_PayloadT]):
     """Protocol implemented by compatible serializers."""
 
-    def dumps(self, obj: Any) -> bytes: ...
+    def dumps(self, obj: _PayloadT, /) -> bytes: ...
 
-    def loads(self, data: bytes) -> Any: ...
+    def loads(self, data: bytes, /) -> _PayloadT: ...
 
 
-class JsonSerializer:
-    """Default JSON serializer."""
+class JsonSerializer(Generic[_PayloadT]):
+    """Default JSON serializer with a caller-selected static payload type."""
 
-    def dumps(self, obj: Any) -> bytes:
+    def dumps(self, obj: _PayloadT, /) -> bytes:
         return json.dumps(obj).encode("utf-8")
 
-    def loads(self, data: bytes) -> Any:
-        return json.loads(data.decode("utf-8"))
+    def loads(self, data: bytes, /) -> _PayloadT:
+        # json.loads cannot prove a caller-selected PayloadT. This cast is the
+        # serializer's trust boundary; it does not add runtime validation.
+        return cast(_PayloadT, json.loads(data.decode("utf-8")))
 
 
 @dataclass
-class EnqueueItem:
+class EnqueueItem(Generic[_PayloadT]):
     """A :meth:`SimpleQueue.put_many` item with an optional ``job_id``."""
 
-    data: Any
+    data: _PayloadT
     job_id: Optional[str] = None
 
 
-class SimpleQueue:
+class QueueStats(TypedDict):
+    """Counts for each persistent queue state."""
+
+    ready: int
+    processing: int
+    acked: int
+    failed: int
+
+
+class SimpleQueue(Generic[_PayloadT]):
     """Persistent SQLite queue with ACK/NACK, leases, and retries.
 
     A native Rust extension implements the transactional engine and preserves
@@ -71,7 +94,7 @@ class SimpleQueue:
         *,
         delivery: DeliveryPolicy = DeliveryPolicy(),
         durability: DurabilityMode = DurabilityMode.RELAXED,
-        serializer: Optional[Serializer] = None,
+        serializer: Optional[Serializer[_PayloadT]] = None,
         max_pending_jobs: Optional[int] = None,
     ) -> None:
         """Initialize the queue.
@@ -99,7 +122,7 @@ class SimpleQueue:
         self.delivery = delivery
         self.durability = durability
         self.max_pending_jobs = max_pending_jobs
-        self.serializer = serializer or JsonSerializer()
+        self.serializer: Serializer[_PayloadT] = serializer or JsonSerializer()
         self._closed = threading.Event()
         self._enqueue_close_lock = threading.Lock()
 
@@ -122,7 +145,7 @@ class SimpleQueue:
 
     def put(
         self,
-        data: Any,
+        data: _PayloadT,
         job_id: Optional[str] = None,
         *,
         block: bool = True,
@@ -150,7 +173,7 @@ class SimpleQueue:
 
     def put_many(
         self,
-        items: list[Union[Any, EnqueueItem]],
+        items: list[Union[_PayloadT, EnqueueItem[_PayloadT]]],
         *,
         block: bool = True,
         timeout: Optional[float] = None,
@@ -244,7 +267,9 @@ class SimpleQueue:
                 raise LocalQueueError("queue is closed")
             return operation(self._get_native(), busy_timeout_ms)
 
-    def get(self, block: bool = True, timeout: Optional[float] = None) -> Job:
+    def get(
+        self, block: bool = True, timeout: Optional[float] = None
+    ) -> Job[_PayloadT]:
         """Claim an item from the queue with a lease.
 
         :param block: wait for an available item when ``True``.
@@ -280,17 +305,17 @@ class SimpleQueue:
             _time.sleep(sleep)
             sleep = min(sleep * 1.5, max_sleep)
 
-    def get_nowait(self) -> Job:
+    def get_nowait(self) -> Job[_PayloadT]:
         """Non-blocking variant of :meth:`get`."""
         return self.get(block=False)
 
-    def ack(self, job: Job) -> None:
+    def ack(self, job: Job[_PayloadT]) -> None:
         """Acknowledge successful processing of a job."""
         self._get_native().ack(job.id, job.receipt)
 
     def nack(
         self,
-        job: Job,
+        job: Job[_PayloadT],
         *,
         delay: float = 0.0,
         last_error: Optional[str] = None,
@@ -304,11 +329,11 @@ class SimpleQueue:
         delay_ms = int(delay * 1000)
         self._get_native().nack(job.id, job.receipt, delay_ms, last_error)
 
-    def fail(self, job: Job, last_error: Optional[str] = None) -> None:
+    def fail(self, job: Job[_PayloadT], last_error: Optional[str] = None) -> None:
         """Mark a job as permanently failed and move it to dead-letter."""
         self._get_native().fail(job.id, job.receipt, last_error)
 
-    def extend_lease(self, job: Job, seconds: float) -> None:
+    def extend_lease(self, job: Job[_PayloadT], seconds: float) -> None:
         """Extend a job's lease.
 
         Raises :class:`LeaseExpired` if the lease has already expired.
@@ -326,7 +351,7 @@ class SimpleQueue:
         """
         return self._get_native().reclaim_expired(None)
 
-    def stats(self) -> dict[str, int]:
+    def stats(self) -> QueueStats:
         """Return queue statistics."""
         stats = self._get_native().stats()
         return {
@@ -391,7 +416,7 @@ class SimpleQueue:
             database_path=database_path,
         )
 
-    def _to_job(self, lease: "_native.Lease") -> Job:
+    def _to_job(self, lease: "_native.Lease") -> Job[_PayloadT]:
         data = self.serializer.loads(lease.payload)
         return Job(
             id=lease.id,
@@ -420,7 +445,7 @@ class SimpleQueue:
             removed += self._get_native().purge(older_than_ms, 3)  # failed
         return removed
 
-    def list_failed(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+    def list_failed(self, limit: int = 100, offset: int = 0) -> list[dict[str, object]]:
         """List messages in dead-letter.
 
         :param limit: maximum number of messages.
@@ -467,8 +492,13 @@ class SimpleQueue:
                 self._native.close()
                 self._native = None
 
-    def __enter__(self) -> SimpleQueue:
+    def __enter__(self) -> SimpleQueue[_PayloadT]:
         return self
 
-    def __exit__(self, *exc: Any) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         self.close()

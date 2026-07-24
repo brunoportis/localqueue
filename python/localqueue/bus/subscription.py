@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable, TypeVar, overload
 
 from localqueue.bus.topology import EventPattern
 
 if TYPE_CHECKING:
-    from localqueue.bus.bus import EventBus
+    from localqueue.bus.bus import EventBus, _EventHandlerDecorator
+    from localqueue.bus.event import BaseEvent
+
+_EventT = TypeVar("_EventT", bound="BaseEvent")
+_HandlerResultT = TypeVar("_HandlerResultT")
 
 
 class Subscription:
@@ -22,14 +26,54 @@ class Subscription:
         """Return the subscription's current process-local concurrency bound."""
         return self._bus._concurrency_for(self.name)
 
+    @overload
     def handler(
         self,
-        pattern: EventPattern,
-        handler: Callable[[Any], Any] | None = None,
+        pattern: type[_EventT],
+        handler: None = None,
         *,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
-    ) -> Callable[[Any], Any]:
+    ) -> _EventHandlerDecorator[_EventT]: ...
+
+    @overload
+    def handler(
+        self,
+        pattern: type[_EventT],
+        handler: Callable[[_EventT], _HandlerResultT],
+        *,
+        permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
+    ) -> Callable[[_EventT], _HandlerResultT]: ...
+
+    @overload
+    def handler(
+        self,
+        pattern: str,
+        handler: None = None,
+        *,
+        permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
+    ) -> _EventHandlerDecorator[BaseEvent]: ...
+
+    @overload
+    def handler(
+        self,
+        pattern: str,
+        handler: Callable[[BaseEvent], _HandlerResultT],
+        *,
+        permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
+    ) -> Callable[[BaseEvent], _HandlerResultT]: ...
+
+    def handler(
+        self,
+        pattern: EventPattern,
+        handler: object = None,
+        *,
+        permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
+    ) -> object:
         """Register a direct handler or return a handler decorator."""
         return self._bus._register_handler(
             self.name,

@@ -29,6 +29,8 @@ from localqueue.benchmark.multiprocess_models import IDValidation, MultiprocessC
 from localqueue.benchmark.profiles import multiprocess_matrix
 from localqueue.benchmark.runner import _atomic_write
 
+_JSON_SERIALIZER: JsonSerializer[object] = JsonSerializer()
+
 try:  # resource is unavailable on Windows
     import resource as _resource
 except ImportError:  # pragma: no cover - exercised on Windows
@@ -61,13 +63,12 @@ def make_payload(
         "created_ns": time.monotonic_ns(),
         "padding": "",
     }
-    serializer = JsonSerializer()
-    envelope = len(serializer.dumps(value))
+    envelope = len(_JSON_SERIALIZER.dumps(value))
     value["padding"] = (
         hashlib.sha256(f"{identifier}:{producer_index}".encode()).hexdigest()
         * (requested // 64 + 2)
     )[: max(0, requested - envelope)]
-    return value, len(serializer.dumps(value))
+    return value, len(_JSON_SERIALIZER.dumps(value))
 
 
 def _error_payload(exc: BaseException, *paths: str | Path) -> dict[str, str]:
@@ -443,7 +444,7 @@ def _file_snapshot(database: Path) -> dict[str, dict[str, int | bool | None]]:
     }
 
 
-def _sqlite_settings(queue: SimpleQueue) -> dict[str, Any]:
+def _sqlite_settings(queue: SimpleQueue[object]) -> dict[str, Any]:
     diagnostics = queue.diagnostics()
     return {
         "journal_mode": diagnostics.journal_mode,
@@ -483,10 +484,10 @@ class _ScenarioLifecycle:
         self.deadline = deadline
         self.processes: list[Any] = []
         self.output: Any | None = None
-        self.local_queues: list[SimpleQueue] = []
+        self.local_queues: list[SimpleQueue[object]] = []
         self._cleaned = False
 
-    def close_local_queue(self, queue: SimpleQueue) -> None:
+    def close_local_queue(self, queue: SimpleQueue[object]) -> None:
         try:
             queue.close()
         finally:
@@ -544,7 +545,7 @@ def run_large_database_scenario(
     path.mkdir(parents=True, exist_ok=True)
     run_path = Path(tempfile.mkdtemp(prefix="localqueue-large-db-", dir=path))
     database = run_path / "localqueue.db"
-    queue: SimpleQueue | None = None
+    queue: SimpleQueue[object] | None = None
     try:
         queue = SimpleQueue(
             str(run_path),

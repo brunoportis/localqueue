@@ -60,7 +60,11 @@ testpaths = ["tests"]
 
 [tool.pyrefly]
 preset = "strict"
-project-includes = ["python/localqueue/**/*.py", "python/localqueue/**/*.pyi"]
+project-includes = [
+    "python/localqueue/**/*.py",
+    "python/localqueue/**/*.pyi",
+    "typing_tests/positive.py",
+]
 disable-project-excludes-heuristics = true
 errors = { explicit-any = "warn" }
 

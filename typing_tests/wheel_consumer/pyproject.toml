@@ -1,0 +1,4 @@
+[tool.pyrefly]
+preset = "strict"
+project-includes = ["positive.py"]
+disable-project-excludes-heuristics = true

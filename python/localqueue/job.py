@@ -3,22 +3,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 if TYPE_CHECKING:
     from localqueue.core import SimpleQueue
 
+_PayloadT = TypeVar("_PayloadT")
+
 
 @dataclass
-class Job:
+class Job(Generic[_PayloadT]):
     """An item leased from the queue for processing."""
 
     id: int
-    data: Any
+    data: _PayloadT
     attempts: int
     receipt: str
     lease_expires_at: float
-    queue: SimpleQueue
+    queue: SimpleQueue[_PayloadT]
 
     def extend_lease(self, seconds: float) -> None:
         """Extend this job's lease.
