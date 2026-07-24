@@ -6,6 +6,7 @@ import logging
 from typing import Callable, Generic, Optional, TypeVar
 
 from localqueue.core import SimpleQueue
+from localqueue.deadletter import FailureReason, _exception_message
 from localqueue.exceptions import Empty, LeaseExpired
 from localqueue.job import Job
 
@@ -96,12 +97,27 @@ class Worker(Generic[_PayloadT]):
                 job.id,
             )
             return
-        except self.permanent_errors:
+        except self.permanent_errors as error:
             log.exception("Permanent failure processing job %s", job.id)
-            self._transition(self.queue.fail, job)
-        except Exception:
+            error_message = _exception_message(error)
+            self._transition(
+                lambda current: self.queue._fail_with_reason(
+                    current,
+                    last_error=error_message,
+                    reason=FailureReason.PERMANENT_HANDLER_ERROR,
+                ),
+                job,
+            )
+        except Exception as error:
             log.exception("Transient failure processing job %s; requeueing", job.id)
-            self._transition(self.queue.nack, job)
+            error_message = _exception_message(error)
+            self._transition(
+                lambda current: self.queue._nack_with_reason(
+                    current,
+                    last_error=error_message,
+                ),
+                job,
+            )
         else:
             log.debug("Job %s processed successfully: %s", job.id, result)
             self._transition(self.queue.ack, job)

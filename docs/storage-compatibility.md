@@ -29,3 +29,13 @@ The report records verified wheel names and hashes, isolation paths, fixture and
 operation assertions, SQLite integrity, schema fingerprint, and explicit
 limitations. A future schema change must update the policy, matrix or
 incompatibility rationale, and tests together.
+
+The v1.3 schema adds nullable `messages.failure_reason TEXT`. Opening an older
+database first checks the column read-only. Already-migrated databases return
+through that fast path without acquiring SQLite's writer lock. `BEGIN
+IMMEDIATE` is acquired only when the column appears absent; after acquiring the
+lock, the migration checks again before running `ALTER TABLE`. This double-check
+lets concurrent old-database openers serialize safely without attempting the
+same schema change twice. Existing rows are not rewritten; null and
+unrecognized values are exposed as `FailureReason.LEGACY_UNKNOWN`. Older
+releases use explicit insert/select columns and tolerate the additional column.

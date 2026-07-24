@@ -139,7 +139,7 @@ def test_backup_preserves_complete_queue_state_without_origin_sidecars(
             row["id"]: row
             for row in connection.execute(
                 "SELECT id, queue, payload, status, attempts, lease_until, receipt, "
-                "last_error, job_id FROM messages"
+                "last_error, failure_reason, job_id FROM messages"
             )
         }
         indexes = {
@@ -166,6 +166,7 @@ def test_backup_preserves_complete_queue_state_without_origin_sidecars(
     assert rows[failed_id]["status"] == 3
     assert rows[failed_id]["attempts"] == 1
     assert rows[failed_id]["last_error"] == "controlled failure"
+    assert rows[failed_id]["failure_reason"] == "explicit_permanent_failure"
     assert json.loads(rows[failed_id]["payload"]) == {"state": "failed"}
     assert {"idx_messages_job_id", "idx_messages_queue_status"} <= indexes
     assert result.verification_messages == ("ok",)

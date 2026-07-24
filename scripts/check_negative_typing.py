@@ -14,6 +14,12 @@ EXPECTED_DIAGNOSTICS = (
     "localqueue.worker.Worker.__init__",
     "localqueue.bus.bus.EventBus.on",
     "localqueue.bus.subscription.Subscription.handler",
+    "`list[FailedMessage[Task]]`",
+    "`bytes` is not assignable to `str`",
+    "Cannot set field `reason`",
+    "`list[FailedDelivery]`",
+    "localqueue.core.SimpleQueue.retry_failed",
+    "localqueue.bus.subscription.Subscription.retry_failed",
 )
 
 
@@ -54,7 +60,9 @@ def main() -> int:
         )
         return 1
 
-    print("negative typing fixture produced the 5 expected incompatibility diagnostics")
+    print(
+        "negative typing fixture produced the 11 expected incompatibility diagnostics"
+    )
     return 0
 
 

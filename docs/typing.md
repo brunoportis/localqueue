@@ -19,6 +19,11 @@ These relationships are checked statically. A type annotation does not inspect
 existing database rows, validate serialized bytes, or convert a decoded value
 into an arbitrary Python class.
 
+`SimpleQueue[PayloadT].list_failed()` returns
+`list[FailedMessage[PayloadT]]`. Since valid payloads may be `None`, use
+`record.decoded` instead of `record.data is not None` to detect decode errors.
+EventBus subscription inspection returns `FailedDelivery`.
+
 ## Strongly typed payloads
 
 Use a serializer that reconstructs the application type:

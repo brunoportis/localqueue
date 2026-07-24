@@ -34,7 +34,7 @@ pub struct Storage {
 impl Storage {
     pub fn new(path: &str, fsync: bool) -> Result<Self> {
         let path = stable_database_path(path)?;
-        let conn = Connection::open_with_flags(
+        let mut conn = Connection::open_with_flags(
             &path,
             OpenFlags::SQLITE_OPEN_READ_WRITE
                 | OpenFlags::SQLITE_OPEN_CREATE
@@ -47,6 +47,7 @@ impl Storage {
         conn.pragma_update(None, "foreign_keys", "ON")?;
 
         conn.execute_batch(SCHEMA_SQL)?;
+        migrate_failure_reason(&mut conn)?;
 
         Ok(Self {
             conn: Mutex::new(Some(conn)),
@@ -160,6 +161,7 @@ impl Storage {
                 receipt = NULL,
                 lease_until = NULL,
                 last_error = NULL,
+                failure_reason = NULL,
                 updated_at = ?2
              WHERE id = ?3 AND queue = ?4 AND status = 3",
             params![now, now, id, queue_name],
@@ -170,6 +172,33 @@ impl Storage {
         tx.commit()?;
         Ok(())
     }
+}
+
+fn migrate_failure_reason(conn: &mut Connection) -> Result<()> {
+    if has_failure_reason_column(conn)? {
+        return Ok(());
+    }
+
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if !has_failure_reason_column(&tx)? {
+        tx.execute("ALTER TABLE messages ADD COLUMN failure_reason TEXT", [])?;
+    }
+    if !has_failure_reason_column(&tx)? {
+        return Err(QueueError::Sqlite(rusqlite::Error::InvalidQuery));
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn has_failure_reason_column(conn: &Connection) -> Result<bool> {
+    let mut statement = conn.prepare("PRAGMA table_info(messages)")?;
+    let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+    for column in columns {
+        if column? == "failure_reason" {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn enqueue_batch_on_connection(
@@ -322,6 +351,24 @@ mod tests {
         let path = dir.path().join("test.db");
         let storage = Storage::new(path.to_str().unwrap(), false).unwrap();
         (dir, storage)
+    }
+
+    #[test]
+    fn failure_reason_migration_fast_path_does_not_take_writer_lock() {
+        let dir = tempfile_guard::TempDir::new();
+        let path = dir.path().join("migrated.db");
+        let setup = Connection::open(&path).unwrap();
+        setup.execute_batch(SCHEMA_SQL).unwrap();
+        drop(setup);
+
+        let blocker = Connection::open(&path).unwrap();
+        blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+        let mut tested = Connection::open(&path).unwrap();
+        tested.pragma_update(None, "busy_timeout", 1).unwrap();
+
+        migrate_failure_reason(&mut tested).unwrap();
+        blocker.execute_batch("ROLLBACK").unwrap();
     }
 
     #[test]

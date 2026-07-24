@@ -7,6 +7,7 @@ from localqueue.core import (
     Serializer,
     SimpleQueue,
 )
+from localqueue.deadletter import FailedMessage, FailureReason
 from localqueue.diagnostics import QueueDiagnostics
 from localqueue.exceptions import Empty, Full, LeaseExpired, LocalQueueError
 from localqueue.job import Job
@@ -21,6 +22,8 @@ __all__ = [
     "DeliveryPolicy",
     "DurabilityMode",
     "EnqueueItem",
+    "FailedMessage",
+    "FailureReason",
     "Job",
     "JsonSerializer",
     "IntegrityCheckResult",

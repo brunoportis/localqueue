@@ -417,7 +417,7 @@ def test_repeated_diagnostics_does_not_mutate_queue_or_wal(tmp_path: Path) -> No
     queue.close()
 
 
-def test_existing_schema_database_requires_no_migration(tmp_path: Path) -> None:
+def test_existing_schema_database_is_migrated_additively(tmp_path: Path) -> None:
     database = tmp_path / "localqueue.db"
     with sqlite3.connect(database) as connection:
         connection.executescript(
@@ -453,6 +453,9 @@ def test_existing_schema_database_requires_no_migration(tmp_path: Path) -> None:
     queue = SimpleQueue(str(tmp_path), name="legacy")
 
     assert queue.diagnostics().ready == 1
+    with sqlite3.connect(database) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(messages)")}
+        assert "failure_reason" in columns
     queue.close()
 
 

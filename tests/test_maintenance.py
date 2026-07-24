@@ -70,10 +70,10 @@ class TestMaintenance:
 
         failed = queue.list_failed()
         assert len(failed) == 2
-        assert failed[0]["data"] == {"task": "bad1"}
-        assert failed[0]["last_error"] == "error1"
-        assert failed[1]["data"] == {"task": "bad2"}
-        assert failed[1]["last_error"] == "error2"
+        assert failed[0].data == {"task": "bad1"}
+        assert failed[0].last_error == "error1"
+        assert failed[1].data == {"task": "bad2"}
+        assert failed[1].last_error == "error2"
 
     def test_retry_failed(self, queue):
         queue.put({"task": "bad"})
@@ -84,7 +84,7 @@ class TestMaintenance:
         assert queue.stats()["ready"] == 0
 
         failed = queue.list_failed()
-        message_id = failed[0]["id"]
+        message_id = failed[0].id
 
         queue.retry_failed(message_id)
 

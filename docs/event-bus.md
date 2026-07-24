@@ -1,5 +1,20 @@
 # Event bus
 
+Failed deliveries are inspectable and replayable without discovering internal
+queue names:
+
+```python
+subscription = bus.subscription("payments")
+for delivery in subscription.list_failed():
+    print(delivery.reason, delivery.event_type, delivery.raw_payload)
+    if delivery.inspection_error is not None:
+        print(delivery.inspection_error)
+    subscription.retry_failed(delivery.id)
+```
+
+See [Dead-letter inspection and replay](dead-letters.md) for the structured
+failure reasons, corrupt-envelope behavior, and at-least-once replay warning.
+
 For deployment boundaries and operational limits, see the
 [operational envelope](operational-envelope.md).
 

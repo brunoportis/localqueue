@@ -24,6 +24,11 @@ from typing import (
 )
 
 from localqueue import localqueue as _native
+from localqueue.deadletter import (
+    FailedMessage,
+    FailureReason,
+    _exception_message,
+)
 from localqueue.diagnostics import QueueDiagnostics, build_diagnostics
 from localqueue.exceptions import Empty, Full, LocalQueueError
 from localqueue.job import Job
@@ -324,14 +329,40 @@ class SimpleQueue(Generic[_PayloadT]):
 
         A job that has exhausted ``max_retries`` moves to dead-letter.
         """
+        self._nack_with_reason(job, delay=delay, last_error=last_error)
+
+    def _nack_with_reason(
+        self,
+        job: Job[_PayloadT],
+        *,
+        delay: float = 0.0,
+        last_error: str | None = None,
+        reason: FailureReason | None = None,
+    ) -> None:
         if not delay >= 0:
             raise ValueError("'delay' must be non-negative")
         delay_ms = int(delay * 1000)
-        self._get_native().nack(job.id, job.receipt, delay_ms, last_error)
+        stored_reason = None if reason is None else reason.value
+        self._get_native().nack(
+            job.id, job.receipt, delay_ms, last_error, stored_reason
+        )
 
     def fail(self, job: Job[_PayloadT], last_error: Optional[str] = None) -> None:
         """Mark a job as permanently failed and move it to dead-letter."""
-        self._get_native().fail(job.id, job.receipt, last_error)
+        self._fail_with_reason(
+            job,
+            last_error=last_error,
+            reason=FailureReason.EXPLICIT_PERMANENT_FAILURE,
+        )
+
+    def _fail_with_reason(
+        self,
+        job: Job[_PayloadT],
+        *,
+        last_error: str | None = None,
+        reason: FailureReason,
+    ) -> None:
+        self._get_native().fail(job.id, job.receipt, last_error, reason.value)
 
     def extend_lease(self, job: Job[_PayloadT], seconds: float) -> None:
         """Extend a job's lease.
@@ -445,36 +476,55 @@ class SimpleQueue(Generic[_PayloadT]):
             removed += self._get_native().purge(older_than_ms, 3)  # failed
         return removed
 
-    def list_failed(self, limit: int = 100, offset: int = 0) -> list[dict[str, object]]:
+    def list_failed(
+        self, limit: int = 100, offset: int = 0
+    ) -> list[FailedMessage[_PayloadT]]:
         """List messages in dead-letter.
 
         :param limit: maximum number of messages.
         :param offset: pagination offset.
-        :return: dictionaries containing message information.
+        Results are ordered by increasing message ID. Offset pagination is
+        deterministic while the failed set remains stable.
         """
+        if not isinstance(limit, int) or isinstance(limit, bool):
+            raise TypeError("'limit' must be an integer")
+        if not isinstance(offset, int) or isinstance(offset, bool):
+            raise TypeError("'offset' must be an integer")
         if limit < 0:
             raise ValueError("'limit' must be non-negative")
         if offset < 0:
             raise ValueError("'offset' must be non-negative")
 
-        failed = self._get_native().list_failed(limit, offset)
-        return [
-            {
-                "id": msg.id,
-                "data": self.serializer.loads(msg.payload),
-                "attempts": msg.attempts,
-                "last_error": msg.last_error,
-                "created_at": msg.created_at / 1000.0,
-                "updated_at": msg.updated_at / 1000.0,
-            }
-            for msg in failed
-        ]
+        records: list[FailedMessage[_PayloadT]] = []
+        for message in self._get_native().list_failed(limit, offset):
+            decode_error = None
+            data: _PayloadT | None = None
+            try:
+                data = self.serializer.loads(message.payload)
+            except Exception as error:
+                decode_error = _exception_message(error)
+            records.append(
+                FailedMessage(
+                    id=message.id,
+                    data=data,
+                    raw_payload=message.payload,
+                    attempts=message.attempts,
+                    reason=FailureReason._from_stored(message.failure_reason),
+                    last_error=message.last_error,
+                    created_at=message.created_at / 1000.0,
+                    updated_at=message.updated_at / 1000.0,
+                    decode_error=decode_error,
+                )
+            )
+        return records
 
     def retry_failed(self, message_id: int) -> None:
         """Move a dead-letter message back to the queue.
 
         :param message_id: ID of the message to retry.
         """
+        if not isinstance(message_id, int) or isinstance(message_id, bool):
+            raise TypeError("'message_id' must be an integer")
         self._get_native().retry_failed(message_id)
 
     def vacuum(self) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Callable, TypeVar, overload
 
+from localqueue.bus.deadletter import FailedDelivery, inspect_delivery
 from localqueue.bus.topology import EventPattern
 
 if TYPE_CHECKING:
@@ -82,3 +83,22 @@ class Subscription:
             permanent_errors=permanent_errors,
             timeout=timeout,
         )
+
+    def list_failed(self, limit: int = 100, offset: int = 0) -> list[FailedDelivery]:
+        """Inspect this subscription's failed deliveries by increasing ID."""
+        queue = self._bus._open_subscription_queue(self.name)
+        try:
+            return [
+                inspect_delivery(self.name, message, self._bus.registry)
+                for message in queue.list_failed(limit=limit, offset=offset)
+            ]
+        finally:
+            queue.close()
+
+    def retry_failed(self, message_id: int) -> None:
+        """Replay one failed delivery from this subscription only."""
+        queue = self._bus._open_subscription_queue(self.name)
+        try:
+            queue.retry_failed(message_id)
+        finally:
+            queue.close()

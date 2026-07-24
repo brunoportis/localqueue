@@ -8,6 +8,7 @@ except ImportError as error:  # pragma: no cover
     ) from error
 
 from localqueue.bus.bus import DispatchReceipt, EventBus, NoSubscribers
+from localqueue.bus.deadletter import FailedDelivery
 from localqueue.bus.event import BaseEvent
 from localqueue.bus.registry import EVENT_REGISTRY, EventRegistry
 from localqueue.bus.subscription import Subscription
@@ -19,6 +20,7 @@ __all__ = [
     "BusTopology",
     "DispatchReceipt",
     "EventBus",
+    "FailedDelivery",
     "EventRegistry",
     "NoSubscribers",
     "Subscription",

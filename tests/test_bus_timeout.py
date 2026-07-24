@@ -6,7 +6,7 @@ import asyncio
 import functools
 
 import pytest
-from localqueue import DeliveryPolicy
+from localqueue import DeliveryPolicy, FailureReason
 from localqueue.bus import BaseEvent, BusTopology, EventBus
 
 
@@ -123,8 +123,9 @@ class TestAsyncHandlerTimeout:
             assert queue.stats()["failed"] == 1
             assert (
                 "handler timeout after 0.02 seconds"
-                in queue.list_failed()[0]["last_error"]
+                in queue.list_failed()[0].last_error
             )
+            assert queue.list_failed()[0].reason is FailureReason.HANDLER_TIMEOUT
         finally:
             queue.close()
         assert cancelled.is_set()
@@ -149,8 +150,10 @@ class TestAsyncHandlerTimeout:
         try:
             assert queue.stats()["failed"] == 1
             assert (
-                "permanent failure: do not retry"
-                in queue.list_failed()[0]["last_error"]
+                "permanent failure: do not retry" in queue.list_failed()[0].last_error
+            )
+            assert (
+                queue.list_failed()[0].reason is FailureReason.PERMANENT_HANDLER_ERROR
             )
         finally:
             queue.close()
@@ -235,7 +238,7 @@ class TestTimeoutPrecedenceAndCleanup:
         queue = bus._open_subscription_queue("email")
         try:
             assert queue.stats()["failed"] == 1
-            assert queue.list_failed()[0]["last_error"] == "upstream timeout"
+            assert queue.list_failed()[0].last_error == "upstream timeout"
         finally:
             queue.close()
 
@@ -255,7 +258,7 @@ class TestTimeoutPrecedenceAndCleanup:
         queue = bus._open_subscription_queue("email")
         try:
             assert queue.stats()["failed"] == 1
-            assert queue.list_failed()[0]["last_error"] == (
+            assert queue.list_failed()[0].last_error == (
                 "permanent failure: upstream timeout"
             )
         finally:
@@ -282,7 +285,7 @@ class TestTimeoutPrecedenceAndCleanup:
 
         queue = bus._open_subscription_queue("email")
         try:
-            assert queue.list_failed()[0]["last_error"] == (
+            assert queue.list_failed()[0].last_error == (
                 "handler timeout after 0.01 seconds"
             )
         finally:
@@ -316,7 +319,7 @@ class TestTimeoutPrecedenceAndCleanup:
         try:
             assert queue.stats()["acked"] == 0
             assert queue.stats()["failed"] == 1
-            assert queue.list_failed()[0]["last_error"] == (
+            assert queue.list_failed()[0].last_error == (
                 "handler timeout after 0.01 seconds"
             )
         finally:
@@ -336,7 +339,7 @@ class TestTimeoutPrecedenceAndCleanup:
         queue = bus._open_subscription_queue("email")
         try:
             assert queue.stats()["failed"] == 1
-            assert queue.list_failed()[0]["last_error"] == (
+            assert queue.list_failed()[0].last_error == (
                 "handler timeout after 0.01 seconds"
             )
         finally:
@@ -490,7 +493,7 @@ class TestControlledTimeoutLifecycle:
         heartbeat_started = asyncio.Event()
         heartbeat_cancelled = asyncio.Event()
         nack_after_heartbeat = []
-        original_nack = SimpleQueue.nack
+        original_nack = SimpleQueue._nack_with_reason
 
         async def heartbeat(queue, job, interval, state):
             heartbeat_started.set()
@@ -505,7 +508,7 @@ class TestControlledTimeoutLifecycle:
             return original_nack(self, job, **kwargs)
 
         monkeypatch.setattr(consumer, "_heartbeat", heartbeat)
-        monkeypatch.setattr(SimpleQueue, "nack", nack)
+        monkeypatch.setattr(SimpleQueue, "_nack_with_reason", nack)
 
         @bus.on(WorkSubmitted, subscription="email", timeout=1.0)
         async def handle(event):
@@ -702,14 +705,14 @@ class TestControlledTimeoutLifecycle:
 
         from localqueue.core import SimpleQueue
 
-        original_nack = SimpleQueue.nack
+        original_nack = SimpleQueue._nack_with_reason
 
         def nack(self, job, **kwargs):
             nacked.set()
             return original_nack(self, job, **kwargs)
 
         monkeypatch.setattr("localqueue.bus.consumer._deadline_timer", timer)
-        monkeypatch.setattr(SimpleQueue, "nack", nack)
+        monkeypatch.setattr(SimpleQueue, "_nack_with_reason", nack)
 
         @instance.subscription("email", concurrency=2).handler(
             WorkSubmitted, timeout=1.0

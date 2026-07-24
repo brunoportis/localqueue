@@ -5,7 +5,7 @@ import sys
 import time
 
 import pytest
-from localqueue import DeliveryPolicy, DurabilityMode
+from localqueue import DeliveryPolicy, DurabilityMode, FailureReason
 from localqueue.bus import BaseEvent, BusTopology, EventBus, NoSubscribers
 
 
@@ -292,7 +292,7 @@ class TestConsumption:
         q = bus._open_subscription_queue("s1")
         assert q.stats()["failed"] == 1
         failed = q.list_failed()
-        assert "não adianta retentar" in failed[0]["last_error"]
+        assert "não adianta retentar" in failed[0].last_error
         q.close()
 
     def test_dead_letter_apos_estourar_retries(self, bus):
@@ -347,7 +347,9 @@ class TestConsumption:
 
         q = bus._open_subscription_queue("s1")
         assert q.stats()["failed"] == 1
-        assert "invalid payload" in q.list_failed()[0]["last_error"]
+        record = q.list_failed()[0]
+        assert "invalid payload" in record.last_error
+        assert record.reason is FailureReason.INVALID_PAYLOAD
         q.close()
 
     def test_evento_desconhecido_vai_para_dead_letter(self, bus):
@@ -368,7 +370,9 @@ class TestConsumption:
 
         q = bus._open_subscription_queue("s1")
         assert q.stats()["failed"] == 1
-        assert "unknown event" in q.list_failed()[0]["last_error"]
+        record = q.list_failed()[0]
+        assert "unknown event" in record.last_error
+        assert record.reason is FailureReason.UNKNOWN_EVENT_TYPE
         q.close()
 
     def test_duas_subscriptions_recebem_o_mesmo_evento(self, tmp_path):
@@ -520,7 +524,9 @@ class TestEnvelopeMalformed:
 
         q = bus._open_subscription_queue("s1")
         assert q.stats()["failed"] == 1
-        assert "malformed envelope" in q.list_failed()[0]["last_error"]
+        record = q.list_failed()[0]
+        assert "malformed envelope" in record.last_error
+        assert record.reason is FailureReason.INVALID_ENVELOPE
         q.close()
 
     def test_envelope_sem_chaves_obrigatorias(self, bus):
@@ -534,11 +540,14 @@ class TestEnvelopeMalformed:
 
         q = bus._open_subscription_queue("s1")
         assert q.stats()["failed"] == 2
-        errors = [item["last_error"] for item in q.list_failed()]
+        errors = [item.last_error for item in q.list_failed()]
         assert errors == [
             "malformed envelope: missing or invalid 'event_type'",
             "malformed envelope: missing or invalid 'payload'",
         ]
+        assert all(
+            item.reason is FailureReason.INVALID_ENVELOPE for item in q.list_failed()
+        )
         q.close()
 
     @pytest.mark.parametrize(
@@ -571,7 +580,9 @@ class TestEnvelopeMalformed:
         failed = bus._open_subscription_queue("s1")
         try:
             assert failed.stats()["failed"] == 1
-            assert failed.list_failed()[0]["last_error"] == expected_error
+            record = failed.list_failed()[0]
+            assert record.last_error == expected_error
+            assert record.reason is FailureReason.INVALID_ENVELOPE
         finally:
             failed.close()
 
@@ -603,8 +614,9 @@ class TestEnvelopeMalformed:
         failed = bus._open_subscription_queue("s1")
         try:
             assert failed.stats()["failed"] == 1
-            error = failed.list_failed()[0]["last_error"]
+            error = failed.list_failed()[0].last_error
             assert error.startswith("invalid payload for 'UserCreated':")
+            assert failed.list_failed()[0].reason is FailureReason.INVALID_PAYLOAD
         finally:
             failed.close()
 
@@ -635,7 +647,7 @@ class TestEnvelopeMalformed:
             failed = bus._open_subscription_queue("s1")
             try:
                 assert failed.stats()["failed"] == 1
-                error = failed.list_failed()[0]["last_error"]
+                error = failed.list_failed()[0].last_error
                 assert error.startswith("invalid payload for 'UserCreated':")
                 assert "keywords must be strings" in error
             finally:
@@ -654,9 +666,10 @@ class TestEnvelopeMalformed:
         failed = bus._open_subscription_queue("s1")
         try:
             assert failed.stats()["failed"] == 1
-            assert failed.list_failed()[0]["last_error"] == (
+            assert failed.list_failed()[0].last_error == (
                 "no handler registered for 'UserCreated' in 's1' in this process"
             )
+            assert failed.list_failed()[0].reason is FailureReason.NO_HANDLER
         finally:
             failed.close()
 

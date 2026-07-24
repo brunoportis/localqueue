@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from localqueue import Job, Serializer, SimpleQueue, Worker
+from localqueue import FailedMessage, Job, Serializer, SimpleQueue, Worker
 from localqueue.bus import BaseEvent, BusTopology, EventBus
 
 
@@ -48,3 +48,7 @@ def wrong_event_handler(event: OtherEvent) -> None:
 
 
 bus.on(UserCreated, wrong_event_handler, subscription="users")
+wrong_failed: list[FailedMessage[str]] = queue.list_failed()
+wrong_raw: str = queue.list_failed()[0].raw_payload
+queue.retry_failed("1")
+bus.subscription("users").retry_failed("1")

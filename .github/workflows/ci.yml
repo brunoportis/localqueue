@@ -786,7 +786,7 @@ jobs:
           negative_status=$?
           set -e
           test "$negative_status" -ne 0
-          test "$(grep -c '^ERROR negative.py:' <<<"$negative_output")" -eq 4
+          test "$(grep -c '^ERROR negative.py:' <<<"$negative_output")" -eq 8
           grep -Fq 'SimpleQueue.put' <<<"$negative_output"
           grep -Fq 'Job[str]' <<<"$negative_output"
           grep -Fq 'Worker.__init__' <<<"$negative_output"
