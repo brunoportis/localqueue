@@ -1,4 +1,4 @@
-# Exists only long enough to migrate this branch, then deletes itself.
+# Exists only long enough to migrate this branch; the assistant deletes it afterward.
 name: One-shot v1.3 branch migration
 
 on:
@@ -85,12 +85,11 @@ jobs:
           fi
           grep -q 'Migrating to v1.3' zensical.toml
 
-      - name: Commit migration and remove this one-shot workflow
+      - name: Commit campaign migration
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm .github/workflows/prepare-v13-branch.yml
           git add \
             .github/workflows/release-candidate.yml \
             .github/workflows/wheels.yml \
