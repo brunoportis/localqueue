@@ -287,7 +287,11 @@ def command_stamp_report(args: argparse.Namespace) -> None:
 def command_issue_audit(args: argparse.Namespace) -> None:
     issues = read_json(args.issues)
     policy = read_json(args.exceptions)
-    result = audit_open_issues(issues, policy["exceptions"])
+    result = audit_open_issues(
+        issues,
+        policy["exceptions"],
+        release_program_meta=policy["release_program_meta"],
+    )
     if args.dependency_issues:
         dependency_policy = read_json(args.dependency_policy)
         dependency_issues = read_json(args.dependency_issues)
