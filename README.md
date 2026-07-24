@@ -291,6 +291,18 @@ SimpleQueue(
 ```
 
 The same `delivery=` and `durability=` arguments apply to `EventBus`.
+Public configuration attributes move under the corresponding semantic object:
+
+```python
+# before                                  # after
+queue.lease_seconds                       queue.delivery.lease_seconds
+queue.max_retries                         queue.delivery.max_retries
+bus.lease_seconds                         bus.delivery.lease_seconds
+bus.max_retries                           bus.delivery.max_retries
+bus.fsync                                 bus.durability
+```
+
+The removed attributes have no properties, aliases, or compatibility shims.
 This is a Python API break only; it does not change the SQLite schema or
 serialized payload format.
 
