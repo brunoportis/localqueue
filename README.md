@@ -12,6 +12,10 @@ A persistent, multiprocess-safe local queue for Python, backed by SQLite and Rus
 bounded retries, and dead-letter handling—without a server, daemon, or external
 service.
 
+> **API stability:** localqueue is evolving quickly. Minor releases may include
+> breaking changes to the Python API. Persisted database compatibility is
+> treated separately and documented for each release.
+
 - **Durable:** jobs survive process restarts in a local SQLite database.
 - **Safe under concurrency:** multiple Python threads and processes can share a
   queue on the same machine.
@@ -31,6 +35,7 @@ service.
 [Backpressure](#bounded-backlog-and-backpressure) ·
 [Diagnostics](#runtime-diagnostics) · [API](#api-overview) ·
 [Storage compatibility](docs/storage-compatibility.md) ·
+[Migrating to 1.3](docs/migrating-to-1.3.md) ·
 [Operational envelope](docs/operational-envelope.md) ·
 [Changelog](CHANGELOG.md) ·
 [Development](#development)
