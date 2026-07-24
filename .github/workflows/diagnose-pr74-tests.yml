@@ -1,0 +1,59 @@
+name: Diagnose PR74 Python coverage
+
+on:
+  pull_request:
+    branches: [main]
+    paths: [.github/workflows/diagnose-pr74-tests.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release preparation branch
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: chore/66-release-v1.3.0
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+
+      - name: Build extension and capture the complete coverage log
+        shell: bash
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          python -m pip install --upgrade \
+            "maturin>=1.14,<2" \
+            "hypothesis>=6,<7" \
+            "pytest>=8,<10" \
+            "pytest-cov>=7,<8" \
+            "pydantic>=2,<3"
+          maturin develop --locked
+          set +e
+          pytest -ra \
+            --cov=localqueue \
+            --cov-branch \
+            --cov-report=term-missing \
+            --cov-report=xml \
+            --cov-fail-under=80 \
+            > "$RUNNER_TEMP/pytest-coverage.log" 2>&1
+          status=$?
+          set -e
+          printf '%s\n' "$status" > "$RUNNER_TEMP/pytest-status.txt"
+          tail -n 200 "$RUNNER_TEMP/pytest-coverage.log"
+
+      - name: Upload complete diagnostic log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pr74-python-coverage-diagnostic
+          path: |
+            ${{ runner.temp }}/pytest-coverage.log
+            ${{ runner.temp }}/pytest-status.txt
+          if-no-files-found: error
+          retention-days: 3
