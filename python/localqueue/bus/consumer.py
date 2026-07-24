@@ -6,11 +6,17 @@ import asyncio
 import contextlib
 import inspect
 import logging
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional, TypedDict, cast
 
 from pydantic import ValidationError
 
-from localqueue.bus.bus import WILDCARD, _is_async_callable
+from localqueue.bus.bus import (
+    WILDCARD,
+    _AsyncStoredEventHandler,
+    _is_async_callable,
+)
+from localqueue.bus.event import BaseEvent
+from localqueue.core import SimpleQueue
 from localqueue.exceptions import Empty, LeaseExpired
 from localqueue.job import Job
 
@@ -21,13 +27,30 @@ log = logging.getLogger(__name__)
 _POLL_INTERVAL = 0.1
 
 
+class _LeaseState(TypedDict):
+    lease_lost: bool
+
+
+class _RequiredEventEnvelope(TypedDict):
+    event_id: object
+    event_type: str
+    event_created_at: object
+    payload: dict[str, object]
+
+
+class _EventEnvelope(_RequiredEventEnvelope, total=False):
+    correlation_id: object
+    causation_id: object
+    event_schema: object
+
+
 async def _deadline_timer(timeout: float) -> None:
     """Complete after an individual handler's configured deadline."""
     await asyncio.sleep(timeout)
 
 
 async def _observe_cancelled_handler(
-    handler_task: asyncio.Task[Any],
+    handler_task: asyncio.Future[object],
 ) -> tuple[str, Exception | None]:
     """Observe a timed-out handler without conflating consumer cancellation."""
     try:
@@ -39,14 +62,18 @@ async def _observe_cancelled_handler(
     return "returned", None
 
 
-async def _run_async_handler(handler: Any, event: Any, timeout: float | None) -> bool:
+async def _run_async_handler(
+    handler: _AsyncStoredEventHandler,
+    event: BaseEvent,
+    timeout: float | None,
+) -> bool:
     """Run an async handler and return whether its internal deadline elapsed.
 
     A completed handler wins a simultaneous timer completion. Once the timer
     wins, the deadline remains authoritative even when cancellation is
     suppressed or cleanup raises.
     """
-    handler_task = asyncio.create_task(handler(event))
+    handler_task = asyncio.ensure_future(handler(event))
     if timeout is None:
         await handler_task
         return False
@@ -104,7 +131,7 @@ async def run_consumer(
     closed, and ``CancelledError`` propagates to the caller.
     """
     bus._begin_consuming(subscription)
-    queue: Any | None = None
+    queue: SimpleQueue[object] | None = None
     active: set[asyncio.Task[None]] = set()
     delivery_order: dict[asyncio.Task[None], int] = {}
     next_delivery_order = 0
@@ -171,7 +198,10 @@ async def run_consumer(
 
 
 async def _heartbeat(
-    queue: Any, job: Job, interval: float, state: dict[str, bool]
+    queue: SimpleQueue[object],
+    job: Job[object],
+    interval: float,
+    state: _LeaseState,
 ) -> None:
     """Renew the lease while the handler runs, stopping if it is lost."""
     lease_seconds = queue.delivery.lease_seconds
@@ -185,10 +215,21 @@ async def _heartbeat(
             return
 
 
-async def _transition(queue: Any, operation: Any, job: Job, **kwargs: Any) -> None:
+async def _transition(
+    queue: SimpleQueue[object],
+    operation: Literal["ack", "nack", "fail"],
+    job: Job[object],
+    *,
+    last_error: str | None = None,
+) -> None:
     """Apply ACK/NACK/fail without letting LeaseExpired stop the consumer."""
     try:
-        await asyncio.to_thread(operation, job, **kwargs)
+        if operation == "ack":
+            await asyncio.to_thread(queue.ack, job)
+        elif operation == "nack":
+            await asyncio.to_thread(queue.nack, job, last_error=last_error)
+        else:
+            await asyncio.to_thread(queue.fail, job, last_error=last_error)
     except LeaseExpired:
         log.warning(
             "Job %s lost its lease before the transition; discarding the result",
@@ -196,42 +237,54 @@ async def _transition(queue: Any, operation: Any, job: Job, **kwargs: Any) -> No
         )
 
 
-def _envelope_error(envelope: Any) -> Optional[str]:
-    """Validate the minimum structure of a deserialized envelope."""
-    if not isinstance(envelope, dict):
-        return (
-            f"malformed envelope: expected a JSON object, got {type(envelope).__name__}"
+def _parse_envelope(
+    value: object,
+) -> tuple[_EventEnvelope | None, str | None]:
+    """Validate and narrow an untrusted subscription-queue payload."""
+    if not isinstance(value, dict):
+        return None, (
+            f"malformed envelope: expected a JSON object, got {type(value).__name__}"
         )
-    if not isinstance(envelope.get("event_type"), str):
-        return "malformed envelope: missing or invalid 'event_type'"
-    if not isinstance(envelope.get("payload"), dict):
-        return "malformed envelope: missing or invalid 'payload'"
-    return None
+    event_type = value.get("event_type")
+    if not isinstance(event_type, str):
+        return None, "malformed envelope: missing or invalid 'event_type'"
+    payload = value.get("payload")
+    if not isinstance(payload, dict):
+        return None, "malformed envelope: missing or invalid 'payload'"
+    if not all(isinstance(key, str) for key in payload):
+        return None, "malformed envelope: 'payload' keys must be strings"
+    for field in ("event_id", "event_created_at"):
+        if field not in value:
+            return None, f"malformed envelope: missing '{field}'"
+
+    typed_payload = {key: item for key, item in payload.items() if isinstance(key, str)}
+    envelope: _EventEnvelope = {
+        "event_id": value["event_id"],
+        "event_type": event_type,
+        "event_created_at": value["event_created_at"],
+        "payload": typed_payload,
+    }
+    if "correlation_id" in value:
+        envelope["correlation_id"] = value["correlation_id"]
+    if "causation_id" in value:
+        envelope["causation_id"] = value["causation_id"]
+    if "event_schema" in value:
+        envelope["event_schema"] = value["event_schema"]
+    return envelope, None
 
 
-async def _process_delivery(
-    bus: "EventBus", subscription: str, queue: Any, job: Job
-) -> None:
-    envelope = job.data
-    error = _envelope_error(envelope)
-    if error is not None:
-        await _transition(queue, queue.fail, job, last_error=error)
-        return
-
+def _reconstruct_event(
+    bus: "EventBus",
+    envelope: _EventEnvelope,
+) -> tuple[BaseEvent | None, str | None]:
+    """Resolve and validate the concrete Pydantic event."""
     event_type = envelope["event_type"]
     cls = bus.registry.resolve(event_type)
     if cls is None:
-        # An unknown type is a permanent failure; retrying cannot fix it.
-        await _transition(
-            queue,
-            queue.fail,
-            job,
-            last_error=f"unknown event: {event_type!r}",
-        )
-        return
+        return None, f"unknown event: {event_type!r}"
 
     try:
-        event_data = {
+        event_data: dict[str, object] = {
             **envelope["payload"],
             "event_id": envelope["event_id"],
             "event_created_at": envelope["event_created_at"],
@@ -239,24 +292,46 @@ async def _process_delivery(
         for field in ("correlation_id", "causation_id"):
             if field in envelope:
                 event_data[field] = envelope[field]
-        event = cls(**event_data)
+        # The class is resolved at runtime and Pydantic validates this dynamic
+        # mapping. Erase value types only for that constructor call.
+        return cls(**cast(dict[str, Any], event_data)), None
     except (ValidationError, KeyError, TypeError, ValueError) as exc:
-        # An invalid payload is a permanent failure; retrying cannot fix it.
+        return None, f"invalid payload for {event_type!r}: {exc}"
+
+
+async def _process_delivery(
+    bus: "EventBus",
+    subscription: str,
+    queue: SimpleQueue[object],
+    job: Job[object],
+) -> None:
+    envelope, error = _parse_envelope(job.data)
+    if error is not None:
+        await _transition(queue, "fail", job, last_error=error)
+        return
+    if envelope is None:
+        raise AssertionError("validated envelope is missing without an error")
+
+    event, event_error = _reconstruct_event(bus, envelope)
+    if event_error is not None:
         await _transition(
             queue,
-            queue.fail,
+            "fail",
             job,
-            last_error=f"invalid payload for {event_type!r}: {exc}",
+            last_error=event_error,
         )
         return
+    if event is None:
+        raise AssertionError("validated event is missing without an error")
 
+    event_type = envelope["event_type"]
     registration = bus._handlers.get((subscription, event_type)) or bus._handlers.get(
         (subscription, WILDCARD)
     )
     if registration is None:
         await _transition(
             queue,
-            queue.fail,
+            "fail",
             job,
             last_error=(
                 f"no handler registered for {event_type!r} "
@@ -274,7 +349,6 @@ async def _process_delivery(
     )
     try:
         handler = registration.handler
-        result: Any = None
         if _is_async_callable(handler):
             timed_out = await _run_async_handler(handler, event, registration.timeout)
             if timed_out:
@@ -294,20 +368,18 @@ async def _process_delivery(
                     return
                 timeout_error = f"handler timeout after {registration.timeout} seconds"
                 log.warning("Job %s %s", job.id, timeout_error)
-                await _transition(queue, queue.nack, job, last_error=timeout_error)
+                await _transition(queue, "nack", job, last_error=timeout_error)
                 return
         else:
             # Run synchronous handlers outside the event-loop thread.
             result = await asyncio.to_thread(handler, event)
-        if result is not None and inspect.isawaitable(result):
-            # Safety net for a synchronous handler that returned an awaitable.
-            await result
+            if result is not None and inspect.isawaitable(result):
+                # Safety net for a synchronous handler that returned an awaitable.
+                await result
     except registration.permanent_errors as exc:
-        await _transition(
-            queue, queue.fail, job, last_error=f"permanent failure: {exc}"
-        )
+        await _transition(queue, "fail", job, last_error=f"permanent failure: {exc}")
     except Exception as exc:  # noqa: BLE001 - transient failure, retry it
-        await _transition(queue, queue.nack, job, last_error=str(exc))
+        await _transition(queue, "nack", job, last_error=str(exc))
     else:
         if state["lease_lost"]:
             log.warning(
@@ -315,7 +387,7 @@ async def _process_delivery(
                 job.id,
             )
             return
-        await _transition(queue, queue.ack, job)
+        await _transition(queue, "ack", job)
     finally:
         if heartbeat is not None:
             heartbeat.cancel()

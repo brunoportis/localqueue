@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Optional
+from typing import Callable, Generic, Optional, TypeVar
 
 from localqueue.core import SimpleQueue
 from localqueue.exceptions import Empty, LeaseExpired
 from localqueue.job import Job
 
 log = logging.getLogger(__name__)
+_PayloadT = TypeVar("_PayloadT")
 
 
-class Worker:
+class Worker(Generic[_PayloadT]):
     """Simple worker that consumes jobs from a :class:`SimpleQueue`.
 
     The handler receives the complete ``Job`` and can raise exceptions to
@@ -25,8 +26,8 @@ class Worker:
 
     def __init__(
         self,
-        queue: SimpleQueue,
-        handler: Callable[[Job], Any],
+        queue: SimpleQueue[_PayloadT],
+        handler: Callable[[Job[_PayloadT]], object],
         *,
         permanent_errors: Optional[tuple[type[BaseException], ...]] = None,
         poll_interval: float = 1.0,
@@ -82,7 +83,7 @@ class Worker:
         self._process(job)
         return True
 
-    def _process(self, job: Job) -> None:
+    def _process(self, job: Job[_PayloadT]) -> None:
         log.info("Processing job %s (attempt %d)", job.id, job.attempts)
         try:
             if self.heartbeat_interval is not None:
@@ -105,7 +106,11 @@ class Worker:
             log.debug("Job %s processed successfully: %s", job.id, result)
             self._transition(self.queue.ack, job)
 
-    def _transition(self, operation: Callable[[Job], None], job: Job) -> None:
+    def _transition(
+        self,
+        operation: Callable[[Job[_PayloadT]], None],
+        job: Job[_PayloadT],
+    ) -> None:
         try:
             operation(job)
         except LeaseExpired:
@@ -114,11 +119,11 @@ class Worker:
                 job.id,
             )
 
-    def _run_with_heartbeat(self, job: Job) -> Any:
+    def _run_with_heartbeat(self, job: Job[_PayloadT]) -> object:
         """Run the handler while periodically renewing the lease."""
         import threading
 
-        result: list[Any] = []
+        result: list[object] = []
         error: list[BaseException] = []
         done = threading.Event()
         lease_lost = False

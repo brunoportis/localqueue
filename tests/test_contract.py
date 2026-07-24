@@ -338,7 +338,10 @@ os._exit(1)
         owner.close()
         other.close()
 
-    def test_get_nowait_return_annotation_is_job(self):
+    def test_get_nowait_return_annotation_preserves_job_payload(self):
         hints = typing.get_type_hints(SimpleQueue.get_nowait)
+        return_annotation = hints["return"]
 
-        assert hints["return"] is Job
+        assert typing.get_origin(return_annotation) is Job
+        (payload_type,) = typing.get_args(return_annotation)
+        assert payload_type.__name__ == "_PayloadT"

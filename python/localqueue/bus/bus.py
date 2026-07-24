@@ -7,7 +7,16 @@ import inspect
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import (
+    Awaitable,
+    Callable,
+    Optional,
+    Protocol,
+    TypeGuard,
+    TypeVar,
+    cast,
+    overload,
+)
 from uuid import UUID
 
 from localqueue import localqueue as _native
@@ -23,6 +32,19 @@ from localqueue.bus.topology import (
 )
 from localqueue.core import JsonSerializer, Serializer, SimpleQueue
 from localqueue.policies import DeliveryPolicy, DurabilityMode, _durability_fsync
+
+_EventT = TypeVar("_EventT", bound=BaseEvent)
+_HandlerResultT = TypeVar("_HandlerResultT")
+_StoredEventHandler = Callable[[BaseEvent], object]
+_AsyncStoredEventHandler = Callable[[BaseEvent], Awaitable[object]]
+
+
+class _EventHandlerDecorator(Protocol[_EventT]):
+    def __call__(
+        self,
+        handler: Callable[[_EventT], _HandlerResultT],
+        /,
+    ) -> Callable[[_EventT], _HandlerResultT]: ...
 
 
 class NoSubscribers(Exception):
@@ -41,12 +63,14 @@ class DispatchReceipt:
 
 @dataclass(frozen=True)
 class _HandlerRegistration:
-    handler: Callable[[Any], Any]
+    handler: _StoredEventHandler
     permanent_errors: tuple[type[BaseException], ...]
     timeout: float | None
 
 
-def _is_async_callable(handler: Callable[[Any], Any]) -> bool:
+def _is_async_callable(
+    handler: _StoredEventHandler,
+) -> TypeGuard[_AsyncStoredEventHandler]:
     """Return whether ``handler`` can be invoked as an async callable."""
     return inspect.iscoroutinefunction(handler) or inspect.iscoroutinefunction(
         getattr(handler, "__call__", None)
@@ -70,7 +94,7 @@ class EventBus:
         delivery: DeliveryPolicy = DeliveryPolicy(),
         durability: DurabilityMode = DurabilityMode.RELAXED,
         require_subscribers: bool = True,
-        serializer: Optional[Serializer] = None,
+        serializer: Optional[Serializer[object]] = None,
         registry: EventRegistry = EVENT_REGISTRY,
     ) -> None:
         """Initialize an EventBus with explicit routing and shared policies.
@@ -131,17 +155,63 @@ class EventBus:
                 "'pattern' must be a BaseEvent subclass, a non-empty event type, or '*'"
             ) from error
 
+    @overload
     def on(
         self,
-        pattern: EventPattern,
-        handler: Optional[Callable[[Any], Any]] = None,
+        pattern: type[_EventT],
+        handler: None = None,
         *,
         subscription: str,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
-    ) -> Callable[[Any], Any]:
+    ) -> _EventHandlerDecorator[_EventT]: ...
+
+    @overload
+    def on(
+        self,
+        pattern: type[_EventT],
+        handler: Callable[[_EventT], _HandlerResultT],
+        *,
+        subscription: str,
+        permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
+    ) -> Callable[[_EventT], _HandlerResultT]: ...
+
+    @overload
+    def on(
+        self,
+        pattern: str,
+        handler: None = None,
+        *,
+        subscription: str,
+        permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
+    ) -> _EventHandlerDecorator[BaseEvent]: ...
+
+    @overload
+    def on(
+        self,
+        pattern: str,
+        handler: Callable[[BaseEvent], _HandlerResultT],
+        *,
+        subscription: str,
+        permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
+    ) -> Callable[[BaseEvent], _HandlerResultT]: ...
+
+    def on(
+        self,
+        pattern: EventPattern,
+        handler: object = None,
+        *,
+        subscription: str,
+        permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
+    ) -> object:
         """Register a handler through a declared subscription."""
-        return self.subscription(subscription).handler(
+        self.subscription(subscription)
+        return self._register_handler(
+            subscription,
             pattern,
             handler,
             permanent_errors=permanent_errors,
@@ -189,15 +259,70 @@ class EventBus:
         """Release the local runner while retaining frozen configuration."""
         self._running_subscriptions.discard(subscription)
 
+    @overload
+    def _register_handler(
+        self,
+        subscription: str,
+        pattern: type[_EventT],
+        handler: None = None,
+        *,
+        permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
+    ) -> _EventHandlerDecorator[_EventT]: ...
+
+    @overload
+    def _register_handler(
+        self,
+        subscription: str,
+        pattern: type[_EventT],
+        handler: Callable[[_EventT], _HandlerResultT],
+        *,
+        permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
+    ) -> Callable[[_EventT], _HandlerResultT]: ...
+
+    @overload
+    def _register_handler(
+        self,
+        subscription: str,
+        pattern: str,
+        handler: None = None,
+        *,
+        permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
+    ) -> _EventHandlerDecorator[BaseEvent]: ...
+
+    @overload
+    def _register_handler(
+        self,
+        subscription: str,
+        pattern: str,
+        handler: Callable[[BaseEvent], _HandlerResultT],
+        *,
+        permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
+    ) -> Callable[[BaseEvent], _HandlerResultT]: ...
+
+    @overload
     def _register_handler(
         self,
         subscription: str,
         pattern: EventPattern,
-        handler: Optional[Callable[[Any], Any]] = None,
+        handler: object = None,
         *,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
-    ) -> Callable[[Any], Any]:
+    ) -> object: ...
+
+    def _register_handler(
+        self,
+        subscription: str,
+        pattern: EventPattern,
+        handler: object = None,
+        *,
+        permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
+    ) -> object:
         """Register a process-local handler without changing bus topology."""
         if not self.topology.has_subscription(subscription):
             raise ValueError(
@@ -221,10 +346,14 @@ class EventBus:
             if not math.isfinite(timeout) or timeout <= 0:
                 raise ValueError("'timeout' must be a positive finite number")
 
-        def decorator(fn: Callable[[Any], Any]) -> Callable[[Any], Any]:
+        def decorator(fn: object) -> object:
             if not callable(fn):
                 raise TypeError("'handler' must be callable")
-            if timeout is not None and not _is_async_callable(fn):
+            # The registry is heterogeneous. The pattern key retains the
+            # EventT relationship validated by the public overloads, so erase
+            # that parameter type exactly once when storing the callable.
+            stored_handler = cast(_StoredEventHandler, fn)
+            if timeout is not None and not _is_async_callable(stored_handler):
                 raise TypeError("'timeout' is only supported for async handlers")
             combo = (subscription, key)
             if combo in self._handlers:
@@ -234,7 +363,7 @@ class EventBus:
             if isinstance(pattern, type) and issubclass(pattern, BaseEvent):
                 self.registry.register(pattern)
             self._handlers[combo] = _HandlerRegistration(
-                handler=fn,
+                handler=stored_handler,
                 permanent_errors=tuple(permanent_errors),
                 timeout=float(timeout) if timeout is not None else None,
             )
@@ -244,7 +373,7 @@ class EventBus:
             return decorator
         return decorator(handler)
 
-    def register(self, cls: type[BaseEvent]) -> type[BaseEvent]:
+    def register(self, cls: type[_EventT]) -> type[_EventT]:
         """Register an event class without attaching a handler."""
         return self.registry.register(cls)
 
@@ -278,7 +407,7 @@ class EventBus:
                 },
             ),
         }
-        serializer = self.serializer or JsonSerializer()
+        serializer = self.serializer or JsonSerializer[object]()
         return serializer.dumps(envelope)
 
     def dispatch(self, event: BaseEvent) -> DispatchReceipt:
@@ -322,8 +451,8 @@ class EventBus:
         """Asynchronous variant of :meth:`dispatch`."""
         return await asyncio.to_thread(self.dispatch, event)
 
-    def _open_subscription_queue(self, subscription: str) -> SimpleQueue:
-        return SimpleQueue(
+    def _open_subscription_queue(self, subscription: str) -> SimpleQueue[object]:
+        return SimpleQueue[object](
             str(self.path),
             name=self._queue_name(subscription),
             delivery=self.delivery,

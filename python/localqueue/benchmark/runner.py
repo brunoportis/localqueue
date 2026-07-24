@@ -30,7 +30,7 @@ except ImportError:  # EventBus remains optional until a fan-out scenario runs.
 
 
 def _payload(size: int) -> tuple[dict[str, Any], int]:
-    serializer = JsonSerializer()
+    serializer = JsonSerializer[object]()
     base = len(serializer.dumps({"id": 0, "padding": ""}))
     padding = "x" * max(0, size - base)
     value = {"id": 0, "padding": padding}
@@ -89,9 +89,9 @@ def _scenario(
     parameters: dict[str, Any],
     work_units: dict[str, int],
     workdir: Path | None,
-    operation_fn: Callable[[SimpleQueue, Any], None],
+    operation_fn: Callable[[SimpleQueue[object], Any], None],
     *,
-    preload: Callable[[SimpleQueue, Any, int], None] | None = None,
+    preload: Callable[[SimpleQueue[object], Any, int], None] | None = None,
 ) -> ScenarioResult:
     samples: list[int] = []
     warmup_total = 0
@@ -107,7 +107,7 @@ def _scenario(
     with tempfile.TemporaryDirectory(
         prefix="localqueue-benchmark-", dir=str(workdir) if workdir else None
     ) as directory:
-        queue: SimpleQueue | None = None
+        queue: SimpleQueue[object] | None = None
         try:
             queue = SimpleQueue(
                 directory,
@@ -193,27 +193,27 @@ def _scenario(
                 queue.close()
 
 
-def _put(queue: SimpleQueue, payload: Any) -> None:
+def _put(queue: SimpleQueue[object], payload: Any) -> None:
     queue.put(payload)
 
 
-def _get_ack(queue: SimpleQueue, _payload: Any) -> None:
+def _get_ack(queue: SimpleQueue[object], _payload: Any) -> None:
     queue.ack(queue.get_nowait())
 
 
-def _roundtrip(queue: SimpleQueue, payload: Any) -> None:
+def _roundtrip(queue: SimpleQueue[object], payload: Any) -> None:
     queue.put(payload)
     queue.ack(queue.get_nowait())
 
 
-def _put_many(size: int) -> Callable[[SimpleQueue, Any], None]:
-    def run(queue: SimpleQueue, payload: Any) -> None:
+def _put_many(size: int) -> Callable[[SimpleQueue[object], Any], None]:
+    def run(queue: SimpleQueue[object], payload: Any) -> None:
         queue.put_many([payload] * size)
 
     return run
 
 
-def _preload(queue: SimpleQueue, payload: Any, count: int) -> None:
+def _preload(queue: SimpleQueue[object], payload: Any, count: int) -> None:
     queue.put_many([payload] * count)
 
 

@@ -61,7 +61,7 @@ def make_payload(
         "created_ns": time.monotonic_ns(),
         "padding": "",
     }
-    serializer = JsonSerializer()
+    serializer = JsonSerializer[object]()
     envelope = len(serializer.dumps(value))
     value["padding"] = (
         hashlib.sha256(f"{identifier}:{producer_index}".encode()).hexdigest()
@@ -105,7 +105,7 @@ def producer_target(
                 if first_put_started_ns is None:
                     first_put_started_ns = before
                 value["created_ns"] = before
-                actual = len(JsonSerializer().dumps(value))
+                actual = len(JsonSerializer[object]().dumps(value))
                 try:
                     queue.put(value, job_id=value["id"])
                     last_put_completed_ns = time.monotonic_ns()
@@ -443,7 +443,7 @@ def _file_snapshot(database: Path) -> dict[str, dict[str, int | bool | None]]:
     }
 
 
-def _sqlite_settings(queue: SimpleQueue) -> dict[str, Any]:
+def _sqlite_settings(queue: SimpleQueue[object]) -> dict[str, Any]:
     diagnostics = queue.diagnostics()
     return {
         "journal_mode": diagnostics.journal_mode,
@@ -483,10 +483,10 @@ class _ScenarioLifecycle:
         self.deadline = deadline
         self.processes: list[Any] = []
         self.output: Any | None = None
-        self.local_queues: list[SimpleQueue] = []
+        self.local_queues: list[SimpleQueue[object]] = []
         self._cleaned = False
 
-    def close_local_queue(self, queue: SimpleQueue) -> None:
+    def close_local_queue(self, queue: SimpleQueue[object]) -> None:
         try:
             queue.close()
         finally:
@@ -544,7 +544,7 @@ def run_large_database_scenario(
     path.mkdir(parents=True, exist_ok=True)
     run_path = Path(tempfile.mkdtemp(prefix="localqueue-large-db-", dir=path))
     database = run_path / "localqueue.db"
-    queue: SimpleQueue | None = None
+    queue: SimpleQueue[object] | None = None
     try:
         queue = SimpleQueue(
             str(run_path),
