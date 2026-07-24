@@ -25,11 +25,11 @@ def test_manifest_is_parseable_and_unique() -> None:
     assert [item["version"] for item in manifest["baseline"]] == [
         "1.0.0",
         "1.0.1",
-            "1.1.0",
-            "1.1.1",
-            "1.1.2",
-            "1.2.0",
-        ]
+        "1.1.0",
+        "1.1.1",
+        "1.1.2",
+        "1.2.0",
+    ]
 
 
 def test_manifest_rejects_duplicate_versions(tmp_path: Path) -> None:

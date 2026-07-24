@@ -82,7 +82,7 @@ stable `FailureReason`. A decoding failure is isolated to that record: its
 ```python
 failed = queue.list_failed()
 record = failed[0]
-print(record.id, record.job_id, record.reason, record.raw_payload)
+print(record.id, record.reason, record.raw_payload)
 queue.retry_failed(record.id)
 ```
 

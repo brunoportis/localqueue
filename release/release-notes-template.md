@@ -1,6 +1,6 @@
 # localqueue v{{ version }}
 
-This candidate consolidates the changes since v1.1.2. The final public claim is
+This candidate consolidates the changes since v1.2.0. The final public claim is
 deliberately left to the human promotion gate and must not exceed the collected
 evidence.
 
@@ -39,7 +39,7 @@ See the [operational envelope](../docs/operational-envelope.md) and
 
 ## Replay guarantees and limitations
 
-Upgrade from v1.1.2 using the wheel matching the supported Python and platform
+Upgrade from v1.2.0 using the wheel matching the supported Python and platform
 matrix. Back up queue databases before upgrading and follow the documented
 compatibility procedure. Replay is at-least-once; handlers must remain idempotent
 when duplicate external effects matter.
