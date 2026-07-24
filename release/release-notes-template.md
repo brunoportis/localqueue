@@ -42,7 +42,7 @@ Opening an older 1.x database performs an idempotent migration; existing rows ar
 not rewritten and missing, future, or unrecognized reasons surface as
 `FailureReason.LEGACY_UNKNOWN`.
 
-The candidate matrix opens and exercises real databases created by published
+The release matrix opens and exercises real databases created by published
 1.0.0, 1.0.1, 1.1.0, 1.1.1, 1.1.2, and 1.2.0 wheels. This is a forward-opening
 release check and foundation for later releases, not a downgrade, mixed-version,
 or arbitrary custom-serializer guarantee. Back up the database and coordinate all
