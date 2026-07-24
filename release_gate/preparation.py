@@ -20,9 +20,7 @@ class PreparationError(ValueError):
     pass
 
 
-def require_campaign_version(
-    calculated: str, expected: str = CAMPAIGN_VERSION
-) -> None:
+def require_campaign_version(calculated: str, expected: str = CAMPAIGN_VERSION) -> None:
     if calculated != expected:
         raise PreparationError(
             f"calculated version {calculated!r} differs from campaign version {expected!r}"
