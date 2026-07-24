@@ -24,12 +24,17 @@ service.
 - **Event-driven:** optional durable pub/sub with explicit static topology,
   atomic fan-out, consumer groups, retries, and dead-letter handling.
 
+> **API stability:** localqueue is evolving quickly. Minor releases may include
+> breaking changes to the Python API. Persisted database compatibility is treated
+> separately and documented for each release.
+
 [Installation](#installation) · [Quick start](#quick-start) ·
 [Worker](#worker) · [Static typing](#static-typing) · [Dead letters](#dead-letters) · [Event bus](#event-bus) ·
 [Benchmarks](#benchmarks) ·
 [Guarantees](#delivery-guarantees) ·
 [Backpressure](#bounded-backlog-and-backpressure) ·
 [Diagnostics](#runtime-diagnostics) · [API](#api-overview) ·
+[Migrating to v1.3](docs/migrating-to-1.3.md) ·
 [Storage compatibility](docs/storage-compatibility.md) ·
 [Operational envelope](docs/operational-envelope.md) ·
 [Changelog](CHANGELOG.md) ·
@@ -50,6 +55,9 @@ python -m pip install localqueue
 ```
 
 `localqueue` requires Python 3.10 or newer.
+
+Upgrading from v1.2 requires mechanical Python API changes and a tested additive
+SQLite migration. See [Migrating to v1.3](docs/migrating-to-1.3.md).
 
 Upgrading from 0.5.0 requires code and storage changes because 1.x is a
 backward-incompatible reimplementation. See
@@ -325,8 +333,10 @@ bus.fsync                                 bus.durability
 ```
 
 The removed attributes have no properties, aliases, or compatibility shims.
-This is a Python API break only; it does not change the SQLite schema or
-serialized payload format.
+This is a Python API break only; it does not change the serialized payload
+format. v1.3 separately adds the tested nullable `failure_reason` storage column.
+See [Migrating to v1.3](docs/migrating-to-1.3.md) for the complete API and
+persisted-database upgrade notes.
 
 ## Bounded backlog and backpressure
 
