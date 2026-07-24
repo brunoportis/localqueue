@@ -4,6 +4,168 @@ All notable changes to `localqueue` are documented here.
 
 <!-- version list -->
 
+## v1.3.0 (2026-07-24)
+
+### Bug Fixes
+
+- Close smoke sqlite connection on Windows
+  ([#76](https://github.com/brunoportis/localqueue/pull/76),
+  [`b28ea31`](https://github.com/brunoportis/localqueue/commit/b28ea31de90ccf34180805d35608f879ae216bc4))
+
+- Configure release program issue metadata
+  ([#77](https://github.com/brunoportis/localqueue/pull/77),
+  [`ff7eb8a`](https://github.com/brunoportis/localqueue/commit/ff7eb8a3cbfeed2e398a3aedf7f8917aa1e359c1))
+
+- Cover optional package descendants in facade contract
+  ([#73](https://github.com/brunoportis/localqueue/pull/73),
+  [`4eff5b9`](https://github.com/brunoportis/localqueue/commit/4eff5b9439616ec166ea54625e8c0b2ba3df5743))
+
+- Gate type coverage below rounded baseline
+  ([#67](https://github.com/brunoportis/localqueue/pull/67),
+  [`ab970b1`](https://github.com/brunoportis/localqueue/commit/ab970b1d1ba117ef3adf96b2f8de1413656bed0e))
+
+- Keep migrated storage opens read-only ([#70](https://github.com/brunoportis/localqueue/pull/70),
+  [`d60c968`](https://github.com/brunoportis/localqueue/commit/d60c9688b3e2f81959b49c967905a573ad71b737))
+
+- Preserve EventBus envelope error semantics
+  ([#69](https://github.com/brunoportis/localqueue/pull/69),
+  [`62b8d15`](https://github.com/brunoportis/localqueue/commit/62b8d15fd9c387448f6061c75a49c05a3a8ee982))
+
+- Use supported pyrefly diagnostics ([#67](https://github.com/brunoportis/localqueue/pull/67),
+  [`ab970b1`](https://github.com/brunoportis/localqueue/commit/ab970b1d1ba117ef3adf96b2f8de1413656bed0e))
+
+### Chores
+
+- Add quality baseline tooling ([#67](https://github.com/brunoportis/localqueue/pull/67),
+  [`ab970b1`](https://github.com/brunoportis/localqueue/commit/ab970b1d1ba117ef3adf96b2f8de1413656bed0e))
+
+- Add v1.2 storage compatibility baseline ([#75](https://github.com/brunoportis/localqueue/pull/75),
+  [`eef09e0`](https://github.com/brunoportis/localqueue/commit/eef09e0bda74f26565330dab28dd807299e22c09))
+
+- Enforce architectural import contracts ([#73](https://github.com/brunoportis/localqueue/pull/73),
+  [`4eff5b9`](https://github.com/brunoportis/localqueue/commit/4eff5b9439616ec166ea54625e8c0b2ba3df5743))
+
+- Establish strict quality baselines ([#67](https://github.com/brunoportis/localqueue/pull/67),
+  [`ab970b1`](https://github.com/brunoportis/localqueue/commit/ab970b1d1ba117ef3adf96b2f8de1413656bed0e))
+
+- Prepare v1.3 release campaign ([#75](https://github.com/brunoportis/localqueue/pull/75),
+  [`eef09e0`](https://github.com/brunoportis/localqueue/commit/eef09e0bda74f26565330dab28dd807299e22c09))
+
+- Prepare v1.3.0 release ([#75](https://github.com/brunoportis/localqueue/pull/75),
+  [`eef09e0`](https://github.com/brunoportis/localqueue/commit/eef09e0bda74f26565330dab28dd807299e22c09))
+
+- Ratchet Python quality thresholds after v1.3 API work
+  ([#72](https://github.com/brunoportis/localqueue/pull/72),
+  [`f7178e8`](https://github.com/brunoportis/localqueue/commit/f7178e8d0de8bd538a15e8dbd7709b125eb0411e))
+
+### Code Style
+
+- Format v1.3 migration guide ([#75](https://github.com/brunoportis/localqueue/pull/75),
+  [`eef09e0`](https://github.com/brunoportis/localqueue/commit/eef09e0bda74f26565330dab28dd807299e22c09))
+
+### Continuous Integration
+
+- Add measured runtime complexity thresholds
+  ([#67](https://github.com/brunoportis/localqueue/pull/67),
+  [`ab970b1`](https://github.com/brunoportis/localqueue/commit/ab970b1d1ba117ef3adf96b2f8de1413656bed0e))
+
+- Capture detailed Ruff findings ([#67](https://github.com/brunoportis/localqueue/pull/67),
+  [`ab970b1`](https://github.com/brunoportis/localqueue/commit/ab970b1d1ba117ef3adf96b2f8de1413656bed0e))
+
+- Collect quality baselines ([#67](https://github.com/brunoportis/localqueue/pull/67),
+  [`ab970b1`](https://github.com/brunoportis/localqueue/commit/ab970b1d1ba117ef3adf96b2f8de1413656bed0e))
+
+- Enforce measured Python quality contracts
+  ([#67](https://github.com/brunoportis/localqueue/pull/67),
+  [`ab970b1`](https://github.com/brunoportis/localqueue/commit/ab970b1d1ba117ef3adf96b2f8de1413656bed0e))
+
+- Enforce scoped runtime complexity gate ([#67](https://github.com/brunoportis/localqueue/pull/67),
+  [`ab970b1`](https://github.com/brunoportis/localqueue/commit/ab970b1d1ba117ef3adf96b2f8de1413656bed0e))
+
+- Promote quality baselines to blocking contracts
+  ([#67](https://github.com/brunoportis/localqueue/pull/67),
+  [`ab970b1`](https://github.com/brunoportis/localqueue/commit/ab970b1d1ba117ef3adf96b2f8de1413656bed0e))
+
+- Report explicit Any without blocking follow-up work
+  ([#67](https://github.com/brunoportis/localqueue/pull/67),
+  [`ab970b1`](https://github.com/brunoportis/localqueue/commit/ab970b1d1ba117ef3adf96b2f8de1413656bed0e))
+
+- Split quality baseline measurements ([#67](https://github.com/brunoportis/localqueue/pull/67),
+  [`ab970b1`](https://github.com/brunoportis/localqueue/commit/ab970b1d1ba117ef3adf96b2f8de1413656bed0e))
+
+- Upload quality baseline reports ([#67](https://github.com/brunoportis/localqueue/pull/67),
+  [`ab970b1`](https://github.com/brunoportis/localqueue/commit/ab970b1d1ba117ef3adf96b2f8de1413656bed0e))
+
+### Documentation
+
+- Document removed configuration attributes
+  ([#68](https://github.com/brunoportis/localqueue/pull/68),
+  [`9390c07`](https://github.com/brunoportis/localqueue/commit/9390c07391601c82c967823022e97efa6c18b299))
+
+- Document v1.3 API migration and storage policy
+  ([#75](https://github.com/brunoportis/localqueue/pull/75),
+  [`eef09e0`](https://github.com/brunoportis/localqueue/commit/eef09e0bda74f26565330dab28dd807299e22c09))
+
+- Explain generic payload typing contracts
+  ([#69](https://github.com/brunoportis/localqueue/pull/69),
+  [`62b8d15`](https://github.com/brunoportis/localqueue/commit/62b8d15fd9c387448f6061c75a49c05a3a8ee982))
+
+- Explain strict coverage rounding ([#67](https://github.com/brunoportis/localqueue/pull/67),
+  [`ab970b1`](https://github.com/brunoportis/localqueue/commit/ab970b1d1ba117ef3adf96b2f8de1413656bed0e))
+
+- Record Python quality baseline ([#67](https://github.com/brunoportis/localqueue/pull/67),
+  [`ab970b1`](https://github.com/brunoportis/localqueue/commit/ab970b1d1ba117ef3adf96b2f8de1413656bed0e))
+
+### Features
+
+- Expose typed dead-letter inspection and replay APIs
+  ([#70](https://github.com/brunoportis/localqueue/pull/70),
+  [`d60c968`](https://github.com/brunoportis/localqueue/commit/d60c9688b3e2f81959b49c967905a573ad71b737))
+
+- Make payload and handler APIs generically typed
+  ([#69](https://github.com/brunoportis/localqueue/pull/69),
+  [`62b8d15`](https://github.com/brunoportis/localqueue/commit/62b8d15fd9c387448f6061c75a49c05a3a8ee982))
+
+- Make queue payload and handler APIs generically typed
+  ([#69](https://github.com/brunoportis/localqueue/pull/69),
+  [`62b8d15`](https://github.com/brunoportis/localqueue/commit/62b8d15fd9c387448f6061c75a49c05a3a8ee982))
+
+- Redesign queue configuration around semantic policies
+  ([#68](https://github.com/brunoportis/localqueue/pull/68),
+  [`9390c07`](https://github.com/brunoportis/localqueue/commit/9390c07391601c82c967823022e97efa6c18b299))
+
+### Refactoring
+
+- Scope structural lint to runtime package
+  ([#67](https://github.com/brunoportis/localqueue/pull/67),
+  [`ab970b1`](https://github.com/brunoportis/localqueue/commit/ab970b1d1ba117ef3adf96b2f8de1413656bed0e))
+
+### Testing
+
+- Close generic API patch coverage gaps ([#69](https://github.com/brunoportis/localqueue/pull/69),
+  [`62b8d15`](https://github.com/brunoportis/localqueue/commit/62b8d15fd9c387448f6061c75a49c05a3a8ee982))
+
+- Cover benchmark durability mode conversion
+  ([#68](https://github.com/brunoportis/localqueue/pull/68),
+  [`9390c07`](https://github.com/brunoportis/localqueue/commit/9390c07391601c82c967823022e97efa6c18b299))
+
+- Cover v1.2 compatibility baseline ([#75](https://github.com/brunoportis/localqueue/pull/75),
+  [`eef09e0`](https://github.com/brunoportis/localqueue/commit/eef09e0bda74f26565330dab28dd807299e22c09))
+
+- Enforce generic typing contracts ([#69](https://github.com/brunoportis/localqueue/pull/69),
+  [`62b8d15`](https://github.com/brunoportis/localqueue/commit/62b8d15fd9c387448f6061c75a49c05a3a8ee982))
+
+- Extend installed-wheel v1.3 smoke coverage
+  ([#75](https://github.com/brunoportis/localqueue/pull/75),
+  [`eef09e0`](https://github.com/brunoportis/localqueue/commit/eef09e0bda74f26565330dab28dd807299e22c09))
+
+- Keep wheel isolation check standalone ([#76](https://github.com/brunoportis/localqueue/pull/76),
+  [`b28ea31`](https://github.com/brunoportis/localqueue/commit/b28ea31de90ccf34180805d35608f879ae216bc4))
+
+- Retarget v1.3 release fixtures ([#75](https://github.com/brunoportis/localqueue/pull/75),
+  [`eef09e0`](https://github.com/brunoportis/localqueue/commit/eef09e0bda74f26565330dab28dd807299e22c09))
+
+
 ## v1.2.0 (2026-07-23)
 
 ### Bug Fixes
