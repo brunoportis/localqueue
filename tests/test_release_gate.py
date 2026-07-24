@@ -672,11 +672,26 @@ def test_open_issue_audit_blocks_p0_p1_and_treats_31_as_limitation() -> None:
             issue(31, "Priority: P2\nphysical ARM64"),
         ],
         [],
+        release_program_meta=[14, 32],
     )
     assert result["status"] == "passed"
     assert result["limitations"][0]["issue"] == 31
     with pytest.raises(AuditError, match="#31"):
         audit_open_issues([issue(31, "Priority: P1\nsecurity blocker")], [])
+
+
+def test_release_program_metadata_comes_from_campaign_policy() -> None:
+    policy = json.loads(
+        (Path(__file__).parents[1] / "release" / "issue-exceptions.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    result = audit_open_issues(
+        [issue(66, "Priority: P1\nrelease campaign tracking")],
+        policy["exceptions"],
+        release_program_meta=policy["release_program_meta"],
+    )
+    assert result["reviewed"][0]["disposition"] == "release-program-meta"
 
 
 def test_issue_exception_requires_rationale_evidence_and_approver() -> None:

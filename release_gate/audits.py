@@ -40,8 +40,18 @@ def _priority(issue: Mapping[str, object]) -> str | None:
 
 
 def audit_open_issues(
-    issues: Iterable[Mapping[str, object]], exceptions: Iterable[Mapping[str, object]]
+    issues: Iterable[Mapping[str, object]],
+    exceptions: Iterable[Mapping[str, object]],
+    *,
+    release_program_meta: Iterable[int] = (),
 ) -> dict[str, object]:
+    metadata_issues: set[int] = set()
+    for number in release_program_meta:
+        if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
+            raise AuditError(
+                "release-program metadata issue numbers must be positive integers"
+            )
+        metadata_issues.add(number)
     valid_exceptions: dict[int, Mapping[str, object]] = {}
     for exception in exceptions:
         required = {"issue", "rationale", "evidence", "approver_requirement"}
@@ -71,7 +81,7 @@ def audit_open_issues(
             "categories": categories,
         }
         reviewed.append(entry)
-        if number in {14, 32}:
+        if number in metadata_issues:
             entry["disposition"] = "release-program-meta"
         elif number == 31 and priority == "P2":
             entry["disposition"] = "known-limitation"
