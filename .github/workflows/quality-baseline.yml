@@ -45,6 +45,13 @@ jobs:
           PYTHONPATH: python
         run: pyrefly check --progress-bar no --min-severity warn
 
+      - name: Enforce positive and negative typing examples
+        env:
+          PYTHONPATH: python
+        run: |
+          pyrefly check --progress-bar no
+          python scripts/check_negative_typing.py
+
       - name: Enforce strict public type coverage
         env:
           PYTHONPATH: python
@@ -52,7 +59,7 @@ jobs:
           pyrefly coverage check python/localqueue
           --strict
           --public-only
-          --fail-under 89.82
+          --fail-under 91.49
 
       - name: Generate Radon reports
         shell: bash
