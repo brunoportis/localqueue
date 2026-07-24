@@ -50,14 +50,18 @@ from dataclasses import dataclass
 
 from localqueue import Job, SimpleQueue, Worker
 
+
 @dataclass(frozen=True)
 class Payload:
     value: str
 
+
 queue: SimpleQueue[Payload] = SimpleQueue("./data", serializer=payload_serializer)
+
 
 def handle(job: Job[Payload]) -> None:
     print(job.data.value)
+
 
 worker: Worker[Payload] = Worker(queue, handle)
 ```
