@@ -4,9 +4,11 @@ from typing import Any
 
 import localqueue.benchmark.multiprocess as multiprocess
 import pytest
+from localqueue import DurabilityMode
 from localqueue.benchmark.errors import BenchmarkExecutionError
 from localqueue.benchmark.multiprocess import (
     _cleanup_children,
+    _durability_mode,
     _sanitize_worker_results,
     _throughput_intervals,
     _unavailable_series,
@@ -24,6 +26,19 @@ from localqueue.benchmark.multiprocess_models import (
     ThroughputResult,
 )
 from localqueue.benchmark.render import render_markdown
+
+
+@pytest.mark.parametrize(
+    ("full", "expected"),
+    [
+        (False, DurabilityMode.RELAXED),
+        (True, DurabilityMode.DURABLE),
+    ],
+)
+def test_durability_mode_maps_technical_flag_to_public_policy(
+    full: bool, expected: DurabilityMode
+) -> None:
+    assert _durability_mode(full) is expected
 
 
 class _FailingOutput:
