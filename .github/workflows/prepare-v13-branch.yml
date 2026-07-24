@@ -1,3 +1,4 @@
+# Exists only long enough to migrate this branch, then deletes itself.
 name: One-shot v1.3 branch migration
 
 on:
