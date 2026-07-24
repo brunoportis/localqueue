@@ -1,0 +1,35 @@
+target-version = "py310"
+
+[lint]
+select = [
+    "C901",
+    "PLR0911",
+    "PLR0912",
+    "PLR0913",
+    "PLR0915",
+    "PLR1702",
+]
+preview = true
+explicit-preview-rules = true
+
+[lint.mccabe]
+max-complexity = 17
+
+[lint.pylint]
+max-args = 9
+max-branches = 18
+max-nested-blocks = 5
+max-returns = 7
+max-statements = 56
+
+[lint.per-file-ignores]
+"python/localqueue/benchmark/cli.py" = ["C901"]
+"python/localqueue/benchmark/metrics.py" = ["PLR0913"]
+"python/localqueue/benchmark/multiprocess.py" = [
+    "C901",
+    "PLR0912",
+    "PLR0913",
+    "PLR0915",
+]
+"python/localqueue/benchmark/render.py" = ["C901"]
+"python/localqueue/benchmark/runner.py" = ["C901", "PLR0912", "PLR0913"]

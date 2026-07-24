@@ -62,6 +62,7 @@ testpaths = ["tests"]
 preset = "strict"
 project-includes = ["python/localqueue/**/*.py", "python/localqueue/**/*.pyi"]
 disable-project-excludes-heuristics = true
+errors = { explicit-any = "warn" }
 
 [tool.coverage.run]
 branch = true
