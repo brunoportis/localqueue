@@ -175,6 +175,10 @@ impl Storage {
 }
 
 fn migrate_failure_reason(conn: &mut Connection) -> Result<()> {
+    if has_failure_reason_column(conn)? {
+        return Ok(());
+    }
+
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     if !has_failure_reason_column(&tx)? {
         tx.execute("ALTER TABLE messages ADD COLUMN failure_reason TEXT", [])?;
@@ -347,6 +351,24 @@ mod tests {
         let path = dir.path().join("test.db");
         let storage = Storage::new(path.to_str().unwrap(), false).unwrap();
         (dir, storage)
+    }
+
+    #[test]
+    fn failure_reason_migration_fast_path_does_not_take_writer_lock() {
+        let dir = tempfile_guard::TempDir::new();
+        let path = dir.path().join("migrated.db");
+        let setup = Connection::open(&path).unwrap();
+        setup.execute_batch(SCHEMA_SQL).unwrap();
+        drop(setup);
+
+        let blocker = Connection::open(&path).unwrap();
+        blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+        let mut tested = Connection::open(&path).unwrap();
+        tested.pragma_update(None, "busy_timeout", 1).unwrap();
+
+        migrate_failure_reason(&mut tested).unwrap();
+        blocker.execute_batch("ROLLBACK").unwrap();
     }
 
     #[test]

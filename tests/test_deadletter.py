@@ -188,26 +188,30 @@ def test_final_lease_expiration_is_retries_exhausted(tmp_path):
 
 def test_retry_preserves_identity_bytes_and_creation_metadata(tmp_path):
     queue = SimpleQueue(str(tmp_path), serializer=BytesSerializer())
-    message_id = _failed(queue, "exact")
+    message_id = queue.put("exact", job_id="replay-job")
+    job = queue.get(block=False)
+    assert job is not None
+    queue.fail(job, last_error="failed")
     before = queue.list_failed()[0]
 
     queue.retry_failed(message_id)
 
     with sqlite3.connect(tmp_path / "localqueue.db") as connection:
         row = connection.execute(
-            "SELECT id, payload, attempts, last_error, failure_reason, created_at, "
-            "updated_at FROM messages WHERE id = ?",
+            "SELECT id, payload, attempts, last_error, failure_reason, job_id, "
+            "created_at, updated_at FROM messages WHERE id = ?",
             (message_id,),
         ).fetchone()
-    assert row[:6] == (
+    assert row[:7] == (
         message_id,
         b"exact",
         0,
         None,
         None,
+        "replay-job",
         int(before.created_at * 1000),
     )
-    assert row[6] >= int(before.updated_at * 1000)
+    assert row[7] >= int(before.updated_at * 1000)
     with pytest.raises(LocalQueueError, match="job not found"):
         queue.retry_failed(message_id)
     queue.close()
