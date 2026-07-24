@@ -29,11 +29,23 @@ jobs:
 
       - name: Report complexity findings
         continue-on-error: true
-        run: >-
-          ruff check python/localqueue
-          --preview
-          --select C901,PLR0911,PLR0912,PLR0913,PLR0915,PLR1702
-          --statistics
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          set -o pipefail
+          ruff check python/localqueue \
+            --preview \
+            --select C901,PLR0911,PLR0912,PLR0913,PLR0915,PLR1702 \
+            --statistics 2>&1 | tee artifacts/ruff.txt
+
+      - name: Upload Ruff baseline
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: quality-ruff-${{ github.run_id }}
+          path: artifacts/ruff.txt
+          if-no-files-found: error
+          retention-days: 7
 
   pyrefly-baseline:
     name: Measure strict public typing baseline
@@ -56,18 +68,33 @@ jobs:
 
       - name: Report explicit Any findings
         continue-on-error: true
+        shell: bash
         env:
           PYTHONPATH: python
-        run: pyrefly check --progress-bar no --min-severity warn
+        run: |
+          mkdir -p artifacts
+          set -o pipefail
+          pyrefly check --progress-bar no --min-severity warn 2>&1 | tee artifacts/pyrefly-check.txt
 
       - name: Report strict public type coverage
+        shell: bash
         env:
           PYTHONPATH: python
-        run: >-
-          pyrefly coverage check python/localqueue
-          --strict
-          --public-only
-          --fail-under 0
+        run: |
+          set -o pipefail
+          pyrefly coverage check python/localqueue \
+            --strict \
+            --public-only \
+            --fail-under 0 2>&1 | tee artifacts/pyrefly-coverage.txt
+
+      - name: Upload Pyrefly baseline
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: quality-pyrefly-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 7
 
   radon-baseline:
     name: Measure Radon baseline
@@ -85,11 +112,19 @@ jobs:
       - name: Install Radon
         run: python -m pip install --upgrade "radon>=6,<7"
 
-      - name: Report cyclomatic complexity
-        run: radon cc python/localqueue -s -a
+      - name: Report metrics
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          radon cc python/localqueue -s -a | tee artifacts/radon-cc.txt
+          radon mi python/localqueue -s | tee artifacts/radon-mi.txt
+          radon raw python/localqueue -s | tee artifacts/radon-raw.txt
 
-      - name: Report maintainability index
-        run: radon mi python/localqueue -s
-
-      - name: Report raw metrics
-        run: radon raw python/localqueue -s
+      - name: Upload Radon baseline
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: quality-radon-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 7
