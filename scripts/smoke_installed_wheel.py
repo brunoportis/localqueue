@@ -6,6 +6,7 @@ import importlib.metadata
 import os
 import sqlite3
 import tempfile
+from contextlib import closing
 from pathlib import Path
 
 import localqueue
@@ -17,6 +18,14 @@ from localqueue.bus import BaseEvent, BusTopology, EventBus, FailedDelivery
 class SmokeEvent(BaseEvent):
     event_name = "release.smoke"
     value: str
+
+
+def _replay_identity(directory: str, message_id: int) -> tuple[str | None, int] | None:
+    """Read replay invariants without retaining a SQLite handle on Windows."""
+    with closing(sqlite3.connect(Path(directory) / "localqueue.db")) as connection:
+        return connection.execute(
+            "SELECT job_id, created_at FROM messages WHERE id = ?", (message_id,)
+        ).fetchone()
 
 
 def main() -> None:
@@ -67,10 +76,7 @@ def main() -> None:
         replayed = queue.get(block=False)
         assert replayed.id == record.id
         assert replayed.data == "retry"
-        with sqlite3.connect(Path(directory) / "localqueue.db") as connection:
-            identity = connection.execute(
-                "SELECT job_id, created_at FROM messages WHERE id = ?", (record.id,)
-            ).fetchone()
+        identity = _replay_identity(directory, record.id)
         assert identity == ("wheel-smoke-retry", int(record.created_at * 1000))
         queue.ack(replayed)
         assert queue.stats()["acked"] == 3
