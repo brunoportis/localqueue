@@ -225,6 +225,29 @@ class TestConsumption:
             q.close()
         bus.close()
 
+    def test_sync_handler_returning_awaitable_is_awaited_before_ack(self, bus):
+        seen = []
+
+        async def complete(event):
+            await asyncio.sleep(0)
+            seen.append(event.user_id)
+
+        def handler(event):
+            return complete(event)
+
+        bus.on(UserCreated, handler, subscription="s1")
+        bus.dispatch(UserCreated(user_id="42"))
+
+        run(bus.run_subscription("s1", idle_timeout=0.2))
+
+        queue = bus._open_subscription_queue("s1")
+        try:
+            assert seen == ["42"]
+            assert queue.stats()["acked"] == 1
+            assert queue.stats()["failed"] == 0
+        finally:
+            queue.close()
+
     def test_uma_delivery_por_subscription_exato_vence_wildcard(self, bus):
         seen = []
         bus.on(UserCreated, lambda e: seen.append("exact"), subscription="s1")

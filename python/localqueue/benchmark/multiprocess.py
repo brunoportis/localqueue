@@ -106,7 +106,7 @@ def producer_target(
                 if first_put_started_ns is None:
                     first_put_started_ns = before
                 value["created_ns"] = before
-                actual = len(_JSON_SERIALIZER.dumps(value))
+                actual = len(JsonSerializer().dumps(value))
                 try:
                     queue.put(value, job_id=value["id"])
                     last_put_completed_ns = time.monotonic_ns()
