@@ -68,17 +68,19 @@ uv run ruff check python/localqueue --config ruff-runtime.toml
 Strict public type coverage was:
 
 ```text
-89.83% (362 of 403 typable public symbols)
+89.83% displayed (362 of 403 typable public symbols; 89.8263% exact)
 ```
 
-The blocking command is:
+The blocking command uses `89.82` so the rounded display value does not exceed the exact baseline:
 
 ```bash
 uv run pyrefly coverage check python/localqueue \
   --strict \
   --public-only \
-  --fail-under 89.83
+  --fail-under 89.82
 ```
+
+Each public symbol is about 0.25 percentage point at the current denominator, so losing even one typed symbol still fails this threshold.
 
 The strict calculation does not count public symbols contaminated by `Any` as fully typed. This makes the coverage percentage useful as a non-regression ratchet while the generic API work removes known holes.
 
