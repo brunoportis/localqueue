@@ -19,7 +19,7 @@ package = "localqueue"
 version = "1.0.1"
 release_tag = "v1.0.1"
 wheel = "localqueue-1.0.1-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
-sha256 = "912624c767b8140fa1f7da7f5d7dd065d5eba29a8f754a63afbf004700da7220"
+sha256 = "912624c767b8140fa1f7d28ef908b24e0cba91c476c31cb876a00a0986ce2c"
 simple_queue = true
 event_bus = false
 batch_enqueue = false
@@ -50,6 +50,16 @@ version = "1.1.2"
 release_tag = "v1.1.2"
 wheel = "localqueue-1.1.2-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
 sha256 = "87eff60c79a08dbb7e67a03cebe439fc1cf81f0f2ed1e6fcfc2523302c2f7a56"
+simple_queue = true
+event_bus = true
+batch_enqueue = true
+
+[[baseline]]
+package = "localqueue"
+version = "1.2.0"
+release_tag = "v1.2.0"
+wheel = "localqueue-1.2.0-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+sha256 = "93f88636e9863838df716ab0af8694eccb302729466a97f2dde68b3b86c16d1b"
 simple_queue = true
 event_bus = true
 batch_enqueue = true
