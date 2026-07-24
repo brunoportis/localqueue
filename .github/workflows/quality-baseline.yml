@@ -31,10 +31,13 @@ jobs:
             "radon>=6,<7" \
             "pyrefly>=1.1,<2"
 
-      - name: Enforce Ruff contracts
+      - name: Enforce repository lint and formatting
         run: |
           ruff check .
           ruff format --check .
+
+      - name: Enforce runtime complexity contracts
+        run: ruff check python/localqueue --config ruff-runtime.toml
 
       - name: Surface explicit Any diagnostics
         env:
