@@ -818,7 +818,7 @@ def minimal_manifest(tmp_path: Path) -> tuple[dict[str, object], Path]:
     for python_tag in ("cp310", "cp311", "cp312", "cp313", "cp314"):
         for job, platform in platforms.items():
             wheel_path = bundle / (
-                f"localqueue-1.2.0-{python_tag}-{python_tag}-{platform}.whl"
+                f"localqueue-1.3.0-{python_tag}-{python_tag}-{platform}.whl"
             )
             wheel_path.write_bytes(wheel_path.name.encode())
             default = (
@@ -830,7 +830,7 @@ def minimal_manifest(tmp_path: Path) -> tuple[dict[str, object], Path]:
                 build_inventory(
                     [wheel_path],
                     SHA,
-                    VERSION,
+                    "1.3.0",
                     job,
                     default,
                     smoke_passed_filenames=[wheel_path.name]
@@ -838,9 +838,9 @@ def minimal_manifest(tmp_path: Path) -> tuple[dict[str, object], Path]:
                     else [],
                 )
             )
-    distribution = bundle / "localqueue-1.2.0.tar.gz"
+    distribution = bundle / "localqueue-1.3.0.tar.gz"
     distribution.write_bytes(b"sdist")
-    inventory.extend(build_inventory([distribution], SHA, VERSION, "sdist", "passed"))
+    inventory.extend(build_inventory([distribution], SHA, "1.3.0", "sdist", "passed"))
     report = bundle / "ci-summary.json"
     report.write_text(
         json.dumps(
@@ -848,9 +848,9 @@ def minimal_manifest(tmp_path: Path) -> tuple[dict[str, object], Path]:
                 "status": "passed",
                 "subject": {
                     "candidate_sha": SHA,
-                    "package_version": VERSION,
-                    "native_version": VERSION,
-                    "candidate_ref": REF,
+                    "package_version": "1.3.0",
+                    "native_version": "1.3.0",
+                    "candidate_ref": "release-candidate/v1.3.0",
                 },
             }
         ),
@@ -859,10 +859,10 @@ def minimal_manifest(tmp_path: Path) -> tuple[dict[str, object], Path]:
     manifest: dict[str, object] = {
         "schema_version": 1,
         "repository": "brunoportis/localqueue",
-        "candidate_version": VERSION,
+        "candidate_version": "1.3.0",
         "candidate_sha": SHA,
         "candidate_parent_main_sha": PARENT,
-        "candidate_ref": REF,
+        "candidate_ref": "release-candidate/v1.3.0",
         "created_at": "2026-07-22T00:00:00Z",
         "workflow": {
             "run_id": 42,
@@ -870,10 +870,10 @@ def minimal_manifest(tmp_path: Path) -> tuple[dict[str, object], Path]:
             "actor": "maintainer",
         },
         "versions": {
-            "python": VERSION,
-            "cargo": VERSION,
-            "native": VERSION,
-            "uv": VERSION,
+            "python": "1.3.0",
+            "cargo": "1.3.0",
+            "native": "1.3.0",
+            "uv": "1.3.0",
         },
         "distributions": inventory,
         "reports": [
@@ -898,7 +898,7 @@ def minimal_manifest(tmp_path: Path) -> tuple[dict[str, object], Path]:
         ],
         "selected_claim": None,
         "overall_status": "passed",
-        "release_notes": {"path": "release-notes/v1.2.0.md", "sha256": "0" * 64},
+        "release_notes": {"path": "release-notes/v1.3.0.md", "sha256": "0" * 64},
         "source_documents": {
             "changelog_sha256": "1" * 64,
             "operational_envelope_sha256": "2" * 64,
@@ -917,7 +917,7 @@ def test_manifest_roundtrip_summary_and_utf8(tmp_path: Path) -> None:
     encoded = json.dumps(manifest, ensure_ascii=False, sort_keys=True)
     assert json.loads(encoded) == manifest
     summary = render_summary(manifest)
-    assert "v1.2.0" in summary and "Candidate SHA" in summary
+    assert "v1.3.0" in summary and "Candidate SHA" in summary
     assert "Distribution smoke status" in summary
     assert "built-not-smoke-tested" in summary
 
@@ -1059,7 +1059,7 @@ def test_prepare_candidate_requires_uv_lock_in_the_single_release_diff() -> None
         "Cargo.toml",
         "CHANGELOG.md",
         "pyproject.toml",
-        "release-notes/v1.2.0.md",
+        "release-notes/v1.3.0.md",
     }
     with pytest.raises(PreparationError, match="candidate release files differ"):
         validate_candidate_release_files(files)
@@ -1149,7 +1149,7 @@ def test_complete_promotion_gate_runs_against_spies_only(tmp_path: Path) -> None
         required_jobs=list(manifest["required_jobs"]),
         state=state,
         claim="production-ready for documented single-host workloads",
-        confirmation="publish v1.2.0",
+        confirmation="publish v1.3.0",
         spy=spy,
     )
     assert "atomic-push-main-and-tag" in operations

@@ -1,7 +1,7 @@
-# v1.2.0 release evidence and promotion gate
+# v1.3.0 release evidence and promotion gate
 
-The v1.2.0 release uses three explicit phases. A candidate is a single immutable
-commit on `release-candidate/v1.2.0`; its SHA, versions, distributions, reports,
+The v1.3.0 release uses three explicit phases. A candidate is a single immutable
+commit on `release-candidate/v1.3.0`; its SHA, versions, distributions, reports,
 release notes, and evidence manifest must remain identical from collection through
 publication. Neither candidate preparation nor evidence collection updates `main`,
 creates the final tag, creates a GitHub Release, or publishes to PyPI.
@@ -10,22 +10,22 @@ creates the final tag, creates a GitHub Release, or publishes to PyPI.
 
 1. Open **Actions → Prepare release candidate → Run workflow** on `main`.
 2. Select `dry-run` (the default). Confirm that the latest declared, tagged, and
-   PyPI versions are all v1.1.2 and that the calculated next version is v1.2.0.
+   PyPI versions are all v1.2.0 and that the calculated next version is v1.3.0.
 3. Run the workflow again with `prepare-candidate`.
 4. Record the base main SHA, candidate SHA, candidate branch, release-notes path,
    changelog section, and evidence-run URL from the job summary.
 
 Preparation runs Python Semantic Release locally, creates the version/changelog
 commit, updates `uv.lock` with pinned `uv==0.11.6`, generates
-`release-notes/v1.2.0.md`, and amends all of those files into that same commit.
+`release-notes/v1.3.0.md`, and amends all of those files into that same commit.
 The lock update is accepted only when the editable `localqueue` entry changes to
-v1.2.0; any third-party resolution change fails. A final `uv lock --check` and
+v1.3.0; any third-party resolution change fails. A final `uv lock --check` and
 four-way Python/Cargo/native/uv version check are required before the workflow
 removes Semantic Release's local tag and pushes only the candidate branch. The
 branch must be exactly one commit above the base `main`. An existing branch at a
 different SHA is a hard failure and is never force-pushed.
 
-Do not create `release-candidate/v1.2.0` by hand. If the candidate needs a fix,
+Do not create `release-candidate/v1.3.0` by hand. If the candidate needs a fix,
 emit **NO-GO**, merge the fix into `main`, remove the obsolete candidate branch
 through normal maintainer review, and run phase A again. Because `main` changed,
 the old evidence cannot be reused.
@@ -48,7 +48,7 @@ benchmarks, documentation checks, an open-issue audit, and a security audit. Whe
 consumers use the exact Linux wheel produced by the distribution build; promotion
 does not rebuild it.
 
-Download `release-evidence-v1.2.0` from the run. Review
+Download `release-evidence-v1.3.0` from the run. Review
 `release-evidence-summary.md`, then validate that:
 
 - every report and distribution identifies the recorded candidate SHA/ref/version;
@@ -77,7 +77,7 @@ workflow** on `main` and provide:
 - `public_claim`: one exact phrase from `release/claims-policy.json`;
 - `private_vulnerability_reporting_confirmed`: true only after checking the
   repository setting when the evidence could not read it;
-- `confirmation`: exactly `publish v1.2.0`.
+- `confirmation`: exactly `publish v1.3.0`.
 
 The repository administrator must keep the `pypi` environment restricted to the
 `main` deployment branch with required human reviewers. The PyPI Trusted Publisher
@@ -93,7 +93,7 @@ and proves the version/tag/Release/PyPI state is safe. Only then does the `pypi`
 environment request approval.
 
 After approval, `promote-and-publish` repeats mutable checks, pushes the approved
-SHA to `main` and `refs/tags/v1.2.0` atomically on the initial run, creates or reuses
+SHA to `main` and `refs/tags/v1.3.0` atomically on the initial run, creates or reuses
 a draft GitHub Release, uploads the already-tested bytes, downloads and hashes the
 assets again, and runs `uv publish --trusted-publishing always`. It verifies every
 PyPI filename/hash before making the GitHub Release public and latest.
@@ -119,7 +119,9 @@ release, replace a tag, or use `--clobber`.
 
 ## Completion checklist
 
-After the workflow succeeds, independently confirm v1.2.0 and all 26 files on PyPI,
+After the workflow succeeds, independently confirm v1.3.0 and all 26 files on PyPI,
 confirm the public/latest GitHub Release and attached evidence, and confirm `main`
-and `v1.2.0` resolve to the approved SHA. Only then close #32. Close the parent epic
+and `v1.3.0` resolve to the approved SHA. Record the campaign start, candidate
+commit, and epic-close timestamps here; compare them with the 22h30 and 23h34
+targets without inventing future timestamps. Only then close #66. Close the parent epic
 only after its own definition of done is also satisfied.

@@ -14,7 +14,7 @@ def test_release_notes_template_contains_required_scope_and_limits() -> None:
         "diagnostics",
         "Integrity",
         "benchmarks",
-        "Storage compatibility",
+        "Persisted database compatibility",
         "correlation/causality",
         "bounded per-subscription concurrency",
         "timeout behavior",
@@ -198,8 +198,8 @@ def test_release_gate_runbook_documents_go_no_go_and_recovery() -> None:
         "Recovery after a partial failure",
         "editable `localqueue` entry",
         "uv lock --check",
-        "confirm v1.2.0",
-        "Only then close #32",
+        "publish v1.3.0",
+        "Only then close #66",
     ):
         assert phrase in text
 
