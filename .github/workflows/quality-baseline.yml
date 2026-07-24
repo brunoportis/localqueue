@@ -1,0 +1,64 @@
+name: Quality baseline
+
+on:
+  pull_request:
+  push:
+    branches:
+      - agent/issue-61-quality-baselines
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality-baseline:
+    name: Measure Python quality baselines
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+          cache: pip
+
+      - name: Install quality tools
+        run: |
+          python -m pip install --upgrade \
+            "pydantic>=2,<3" \
+            "ruff>=0.15,<1" \
+            "radon>=6,<7" \
+            "pyrefly>=1.1,<2"
+
+      - name: Report Ruff complexity findings
+        continue-on-error: true
+        run: >-
+          ruff check python/localqueue
+          --preview
+          --select C901,PLR0911,PLR0912,PLR0913,PLR0915,PLR1702
+          --statistics
+
+      - name: Report explicit Any findings
+        env:
+          PYTHONPATH: python
+        run: pyrefly check --progress-bar no --min-severity warn
+
+      - name: Report strict public type coverage
+        env:
+          PYTHONPATH: python
+        run: >-
+          pyrefly coverage check python/localqueue
+          --strict
+          --public-only
+          --fail-under 0
+
+      - name: Report Radon cyclomatic complexity
+        run: radon cc python/localqueue -s -a
+
+      - name: Report Radon maintainability index
+        run: radon mi python/localqueue -s
+
+      - name: Report Radon raw metrics
+        run: radon raw python/localqueue -s
