@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from . import CAMPAIGN_VERSION
+
 RELEASE_CANDIDATE_FILES = frozenset(
     {
         "Cargo.lock",
         "Cargo.toml",
         "CHANGELOG.md",
         "pyproject.toml",
-        "release-notes/v1.2.0.md",
+        f"release-notes/v{CAMPAIGN_VERSION}.md",
         "uv.lock",
     }
 )
@@ -18,7 +20,9 @@ class PreparationError(ValueError):
     pass
 
 
-def require_campaign_version(calculated: str, expected: str = "1.2.0") -> None:
+def require_campaign_version(
+    calculated: str, expected: str = CAMPAIGN_VERSION
+) -> None:
     if calculated != expected:
         raise PreparationError(
             f"calculated version {calculated!r} differs from campaign version {expected!r}"
