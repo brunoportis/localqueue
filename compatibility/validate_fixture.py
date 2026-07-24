@@ -31,7 +31,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fixture", type=Path, required=True)
     args = parser.parse_args()
-    from localqueue import DeliveryPolicy, Empty, SimpleQueue
+    from localqueue import DeliveryPolicy, Empty, FailureReason, SimpleQueue
 
     fixture = json.loads((args.fixture / "fixture.json").read_text(encoding="utf-8"))
     result: dict[str, object] = {
@@ -48,13 +48,25 @@ def main() -> None:
         assertion(result, "initial_counts", initial == fixture["expected_counts"])
         failed = queue.list_failed()
         assertion(
-            result, "failed_payload", failed[0]["data"] == fixture["payloads"]["failed"]
+            result, "failed_payload", failed[0].data == fixture["payloads"]["failed"]
         )
         assertion(
             result,
             "failed_error",
-            failed[0]["last_error"] == fixture["dead_letter_error"],
+            failed[0].last_error == fixture["dead_letter_error"],
         )
+        assertion(
+            result,
+            "failed_legacy_reason",
+            failed[0].reason is FailureReason.LEGACY_UNKNOWN,
+        )
+        assertion(
+            result,
+            "failed_raw_payload",
+            failed[0].raw_payload
+            == json.dumps(fixture["payloads"]["failed"]).encode("utf-8"),
+        )
+        assertion(result, "failed_decoded", failed[0].decoded)
         with SimpleQueue(
             str(args.fixture),
             name="compat-delayed",
@@ -103,7 +115,7 @@ def main() -> None:
             )
             assertion(result, "delayed_attempt", delayed.attempts == 1)
             delayed_queue.ack(delayed)
-        queue.retry_failed(failed[0]["id"])
+        queue.retry_failed(failed[0].id)
         retried = queue.get()
         assertion(
             result,
@@ -135,6 +147,10 @@ def main() -> None:
         assertion(result, "final_integrity", queue.check_integrity().ok)
         assertion(result, "no_processing", queue.stats()["processing"] == 0)
     with sqlite3.connect(args.fixture / "localqueue.db") as db:
+        columns = {
+            row[1] for row in db.execute("PRAGMA table_info(messages)").fetchall()
+        }
+        assertion(result, "failure_reason_migrated", "failure_reason" in columns)
         assertion(
             result,
             "sqlite_integrity",

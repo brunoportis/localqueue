@@ -386,7 +386,7 @@ class QueueStateMachine(RuleBasedStateMachine):
     def retry_failed(self) -> None:
         reference = next(job for job in self.jobs.values() if job.status == "failed")
         failed = self.queue.list_failed()
-        assert any(message["id"] == self._reference_id(reference) for message in failed)
+        assert any(message.id == self._reference_id(reference) for message in failed)
         self._record(f"retry_failed({self._reference_id(reference)})")
         if self._pending() >= self.max_pending_jobs:
             with pytest.raises(Full):

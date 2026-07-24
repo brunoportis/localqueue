@@ -4,8 +4,17 @@ import json
 from dataclasses import dataclass
 from typing import Callable
 
-from localqueue import EnqueueItem, Job, QueueStats, Serializer, SimpleQueue, Worker
-from localqueue.bus import BaseEvent, BusTopology, EventBus
+from localqueue import (
+    EnqueueItem,
+    FailedMessage,
+    FailureReason,
+    Job,
+    QueueStats,
+    Serializer,
+    SimpleQueue,
+    Worker,
+)
+from localqueue.bus import BaseEvent, BusTopology, EventBus, FailedDelivery
 
 
 @dataclass(frozen=True)
@@ -47,6 +56,14 @@ def process(task_job: Job[Task]) -> None:
 
 worker: Worker[Task] = Worker(queue, process)
 worker_queue: SimpleQueue[Task] = worker.queue
+failed_messages: list[FailedMessage[Task]] = queue.list_failed()
+failed_message = failed_messages[0]
+failed_raw: bytes = failed_message.raw_payload
+failed_reason: FailureReason = failed_message.reason
+if failed_message.decoded:
+    failed_task: Task | None = failed_message.data
+else:
+    failed_error: str | None = failed_message.decode_error
 
 
 class UserCreated(BaseEvent):
@@ -122,3 +139,6 @@ def handle_string_pattern(event: BaseEvent) -> None:
 
 
 registered_event: type[UserCreated] = bus.register(UserCreated)
+failed_delivery: FailedDelivery = bus.subscription("users_sync").list_failed()[0]
+failed_event: BaseEvent | None = failed_delivery.event
+failed_event_type: str | None = failed_delivery.event_type

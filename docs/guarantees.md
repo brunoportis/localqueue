@@ -36,6 +36,9 @@ The `max_retries` limit is finite. At-least-once delivery therefore does not
 mean that a message is attempted indefinitely: after the limit, it moves to the
 dead-letter state (`failed`) and can be inspected or explicitly requeued.
 
+See [Dead-letter inspection and replay](dead-letters.md) for typed inspection,
+raw evidence, and replay safety.
+
 ## Why delivery is not exactly once
 
 There is no single transaction that covers both the queue and the handler's

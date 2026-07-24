@@ -26,6 +26,7 @@ class FailedMessage:
     payload: bytes
     attempts: int
     last_error: Optional[str]
+    failure_reason: Optional[str]
     created_at: int
     updated_at: int
 
@@ -108,8 +109,15 @@ class NativeQueue:
         receipt: str,
         delay_ms: int = 0,
         last_error: Optional[str] = None,
+        failure_reason: Optional[str] = None,
     ) -> None: ...
-    def fail(self, id: int, receipt: str, last_error: Optional[str] = None) -> None: ...
+    def fail(
+        self,
+        id: int,
+        receipt: str,
+        last_error: Optional[str] = None,
+        failure_reason: Optional[str] = None,
+    ) -> None: ...
     def extend_lease(self, id: int, receipt: str, extend_ms: int) -> int: ...
     def reclaim_expired(self, now: Optional[int] = None) -> int: ...
     def stats(self) -> Stats: ...

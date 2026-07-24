@@ -471,9 +471,9 @@ class TestBackwardCompatibility:
 
         assert handled == []
         assert len(failed) == 1
-        assert "invalid payload" in failed[0]["last_error"]
-        assert field in failed[0]["last_error"]
-        assert failed[0]["attempts"] == 1
+        assert "invalid payload" in failed[0].last_error
+        assert field in failed[0].last_error
+        assert failed[0].attempts == 1
 
 
 class TestDeduplicationAndRegressions:

@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from localqueue import Job, Serializer, SimpleQueue, Worker
+from localqueue import FailedMessage, Job, Serializer, SimpleQueue, Worker
 from localqueue.bus import BaseEvent, BusTopology, EventBus
 
 
@@ -57,3 +57,13 @@ def wrong_event_handler(event: OrderPlaced) -> None:
 
 bus.on(UserCreated, wrong_event_handler, subscription="users")
 bus.subscription("users").handler(UserCreated, wrong_event_handler)
+
+wrong_failed_messages: list[FailedMessage[str]] = task_queue.list_failed()
+failed = task_queue.list_failed()[0]
+wrong_raw: str = failed.raw_payload
+failed.reason = "free-form"
+wrong_subscription_result: list[FailedMessage[object]] = bus.subscription(
+    "users"
+).list_failed()
+task_queue.retry_failed("1")
+bus.subscription("users").retry_failed("1")

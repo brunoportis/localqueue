@@ -6,18 +6,21 @@ import asyncio
 import contextlib
 import inspect
 import logging
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, Optional, TypedDict, cast
-
-from pydantic import ValidationError
+from typing import TYPE_CHECKING, Literal, Optional, TypedDict
 
 from localqueue.bus.bus import (
     WILDCARD,
     _AsyncStoredEventHandler,
     _is_async_callable,
 )
+from localqueue.bus.envelope import (
+    EnvelopeError,
+    parse_envelope,
+    reconstruct_event,
+)
 from localqueue.bus.event import BaseEvent
 from localqueue.core import SimpleQueue
+from localqueue.deadletter import FailureReason
 from localqueue.exceptions import Empty, LeaseExpired
 from localqueue.job import Job
 
@@ -30,28 +33,6 @@ _POLL_INTERVAL = 0.1
 
 class _LeaseState(TypedDict):
     lease_lost: bool
-
-
-@dataclass(frozen=True)
-class _ParsedEnvelope:
-    raw: dict[object, object]
-    event_type: str
-    payload: dict[object, object]
-
-
-@dataclass(frozen=True)
-class _EnvelopeError:
-    message: str
-
-
-@dataclass(frozen=True)
-class _ReconstructedEvent:
-    value: BaseEvent
-
-
-@dataclass(frozen=True)
-class _ReconstructionError:
-    message: str
 
 
 async def _deadline_timer(timeout: float) -> None:
@@ -231,62 +212,31 @@ async def _transition(
     job: Job[object],
     *,
     last_error: str | None = None,
+    reason: FailureReason | None = None,
 ) -> None:
     """Apply ACK/NACK/fail without letting LeaseExpired stop the consumer."""
     try:
         if operation == "ack":
             await asyncio.to_thread(queue.ack, job)
         elif operation == "nack":
-            await asyncio.to_thread(queue.nack, job, last_error=last_error)
+            await asyncio.to_thread(
+                queue._nack_with_reason,
+                job,
+                last_error=last_error,
+                reason=reason,
+            )
         else:
-            await asyncio.to_thread(queue.fail, job, last_error=last_error)
+            await asyncio.to_thread(
+                queue._fail_with_reason,
+                job,
+                last_error=last_error,
+                reason=reason or FailureReason.EXPLICIT_PERMANENT_FAILURE,
+            )
     except LeaseExpired:
         log.warning(
             "Job %s lost its lease before the transition; discarding the result",
             job.id,
         )
-
-
-def _parse_envelope(value: object) -> _ParsedEnvelope | _EnvelopeError:
-    """Validate and narrow an untrusted subscription-queue payload."""
-    if not isinstance(value, dict):
-        return _EnvelopeError(
-            f"malformed envelope: expected a JSON object, got {type(value).__name__}"
-        )
-    event_type = value.get("event_type")
-    if not isinstance(event_type, str):
-        return _EnvelopeError("malformed envelope: missing or invalid 'event_type'")
-    payload = value.get("payload")
-    if not isinstance(payload, dict):
-        return _EnvelopeError("malformed envelope: missing or invalid 'payload'")
-    return _ParsedEnvelope(raw=value, event_type=event_type, payload=payload)
-
-
-def _reconstruct_event(
-    bus: "EventBus",
-    envelope: _ParsedEnvelope,
-) -> _ReconstructedEvent | _ReconstructionError:
-    """Resolve and validate the concrete Pydantic event."""
-    event_type = envelope.event_type
-    cls = bus.registry.resolve(event_type)
-    if cls is None:
-        return _ReconstructionError(f"unknown event: {event_type!r}")
-
-    try:
-        event_data: dict[object, object] = {
-            **envelope.payload,
-            "event_id": envelope.raw["event_id"],
-            "event_created_at": envelope.raw["event_created_at"],
-        }
-        for field in ("correlation_id", "causation_id"):
-            if field in envelope.raw:
-                event_data[field] = envelope.raw[field]
-        # The class is resolved at runtime and Pydantic validates this dynamic
-        # mapping, including rejecting non-string keyword keys. Erase key and
-        # value types only for that constructor call.
-        return _ReconstructedEvent(cls(**cast(dict[str, Any], event_data)))
-    except (ValidationError, KeyError, TypeError, ValueError) as exc:
-        return _ReconstructionError(f"invalid payload for {event_type!r}: {exc}")
 
 
 async def _process_delivery(
@@ -295,18 +245,21 @@ async def _process_delivery(
     queue: SimpleQueue[object],
     job: Job[object],
 ) -> None:
-    parsed = _parse_envelope(job.data)
-    if isinstance(parsed, _EnvelopeError):
-        await _transition(queue, "fail", job, last_error=parsed.message)
+    parsed = parse_envelope(job.data)
+    if isinstance(parsed, EnvelopeError):
+        await _transition(
+            queue, "fail", job, last_error=parsed.message, reason=parsed.reason
+        )
         return
 
-    reconstructed = _reconstruct_event(bus, parsed)
-    if isinstance(reconstructed, _ReconstructionError):
+    reconstructed = reconstruct_event(bus.registry, parsed)
+    if isinstance(reconstructed, EnvelopeError):
         await _transition(
             queue,
             "fail",
             job,
             last_error=reconstructed.message,
+            reason=reconstructed.reason,
         )
         return
 
@@ -324,6 +277,7 @@ async def _process_delivery(
                 f"no handler registered for {event_type!r} "
                 f"in {subscription!r} in this process"
             ),
+            reason=FailureReason.NO_HANDLER,
         )
         return
 
@@ -355,7 +309,13 @@ async def _process_delivery(
                     return
                 timeout_error = f"handler timeout after {registration.timeout} seconds"
                 log.warning("Job %s %s", job.id, timeout_error)
-                await _transition(queue, "nack", job, last_error=timeout_error)
+                await _transition(
+                    queue,
+                    "nack",
+                    job,
+                    last_error=timeout_error,
+                    reason=FailureReason.HANDLER_TIMEOUT,
+                )
                 return
         else:
             # Run synchronous handlers outside the event-loop thread.
@@ -364,7 +324,13 @@ async def _process_delivery(
                 # Safety net for a synchronous handler that returned an awaitable.
                 await result
     except registration.permanent_errors as exc:
-        await _transition(queue, "fail", job, last_error=f"permanent failure: {exc}")
+        await _transition(
+            queue,
+            "fail",
+            job,
+            last_error=f"permanent failure: {exc}",
+            reason=FailureReason.PERMANENT_HANDLER_ERROR,
+        )
     except Exception as exc:  # noqa: BLE001 - transient failure, retry it
         await _transition(queue, "nack", job, last_error=str(exc))
     else:

@@ -59,8 +59,9 @@ The native counter increments on claim. `SimpleQueue` configures
 zero-based, so the first delivery has `attempts == 0`.
 `DeliveryPolicy(max_retries=3)` permits up to four total claims. NACK or lease
 expiration after the limit moves the record to failed. `retry_failed()` starts
-processing again under the current contract; it does not promise to erase
-history that the API does not erase. See [`SimpleQueue.__init__`](../python/localqueue/core.py),
+processing again under the current contract, resets attempts, and clears the
+failure reason and human diagnostic while preserving the row ID and exact
+payload bytes. See [`SimpleQueue.__init__`](../python/localqueue/core.py),
 [`claim_next`](../src/queue.rs), and [`test_contract.py`](../tests/test_contract.py).
 
 `job_id` deduplicates within a logical queue. A duplicate returns the original internal id and does not replace its payload; it remains deduplicated while its record exists, including ACKed and failed states, until applicable `purge()`. It does not mean one processing execution. Evidence: [`test_contract.py`](../tests/test_contract.py) and [`test_batch.py`](../tests/test_batch.py).

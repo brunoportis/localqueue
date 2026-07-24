@@ -4,9 +4,16 @@ import json
 from dataclasses import dataclass
 from typing import Callable
 
-from localqueue import Job, Serializer, SimpleQueue, Worker
+from localqueue import (
+    FailedMessage,
+    FailureReason,
+    Job,
+    Serializer,
+    SimpleQueue,
+    Worker,
+)
 from localqueue import localqueue as native
-from localqueue.bus import BaseEvent, BusTopology, EventBus
+from localqueue.bus import BaseEvent, BusTopology, EventBus, FailedDelivery
 
 
 @dataclass(frozen=True)
@@ -34,6 +41,9 @@ def process(task_job: Job[Task]) -> None:
 
 
 worker: Worker[Task] = Worker(queue, process)
+failed: list[FailedMessage[Task]] = queue.list_failed()
+reason: FailureReason = failed[0].reason
+raw_payload: bytes = failed[0].raw_payload
 native_version: str = native.__version__
 native_queue_type: type[native.NativeQueue] = native.NativeQueue
 
@@ -87,3 +97,5 @@ registered_handler: Callable[[UserCreated], None] = bus.on(
     handle_user_created,
     subscription="users_direct",
 )
+delivery: FailedDelivery = bus.subscription("users_sync").list_failed()[0]
+failed_event: BaseEvent | None = delivery.event

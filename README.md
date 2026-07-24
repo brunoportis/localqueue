@@ -25,7 +25,7 @@ service.
   atomic fan-out, consumer groups, retries, and dead-letter handling.
 
 [Installation](#installation) · [Quick start](#quick-start) ·
-[Worker](#worker) · [Static typing](#static-typing) · [Event bus](#event-bus) ·
+[Worker](#worker) · [Static typing](#static-typing) · [Dead letters](#dead-letters) · [Event bus](#event-bus) ·
 [Benchmarks](#benchmarks) ·
 [Guarantees](#delivery-guarantees) ·
 [Backpressure](#bounded-backlog-and-backpressure) ·
@@ -146,6 +146,15 @@ classes.
 See the [static typing guide](docs/typing.md) for a custom serializer, typed
 workers, concrete sync/async event handlers, string/wildcard handlers, and
 installed-wheel verification.
+
+## Dead letters
+
+`queue.list_failed()` returns immutable typed records with stable
+`FailureReason`, exact `raw_payload` bytes, and per-record decode errors.
+Replay one record with `queue.retry_failed(record.id)`. EventBus exposes the
+same workflow through `bus.subscription("payments").list_failed()` and
+`.retry_failed(id)` without internal queue names. See the
+[dead-letter guide](docs/dead-letters.md) for at-least-once replay safety.
 
 ## Event bus
 
