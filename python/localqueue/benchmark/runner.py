@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import UUID
 
-from localqueue import JsonSerializer, SimpleQueue
+from localqueue import DeliveryPolicy, JsonSerializer, SimpleQueue
 from localqueue.benchmark.config import BenchmarkConfig
 from localqueue.benchmark.environment import environment, subject
 from localqueue.benchmark.errors import BenchmarkExecutionError, sanitize_error_message
@@ -111,9 +111,11 @@ def _scenario(
         try:
             queue = SimpleQueue(
                 directory,
-                lease_seconds=config.lease_seconds,
-                max_retries=config.max_retries,
-                fsync=config.fsync,
+                delivery=DeliveryPolicy(
+                    lease_seconds=config.lease_seconds,
+                    max_retries=config.max_retries,
+                ),
+                durability=config.durability_mode,
             )
             diagnostics = queue.diagnostics()
             sqlite = {
@@ -239,9 +241,11 @@ def _fanout(
             directory,
             name="benchmark",
             topology=topology,
-            fsync=config.fsync,
-            lease_seconds=config.lease_seconds,
-            max_retries=config.max_retries,
+            delivery=DeliveryPolicy(
+                lease_seconds=config.lease_seconds,
+                max_retries=config.max_retries,
+            ),
+            durability=config.durability_mode,
         )
         try:
             fixed_time = datetime(2020, 1, 1, tzinfo=timezone.utc)

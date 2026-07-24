@@ -62,10 +62,11 @@ producer before starting the worker.
 
 ```python
 # producer.py
-from localqueue import SimpleQueue
+from localqueue import DeliveryPolicy, SimpleQueue
 
 
-with SimpleQueue("./data", lease_seconds=30, max_retries=3) as queue:
+delivery = DeliveryPolicy(lease_seconds=30, max_retries=3)
+with SimpleQueue("./data", delivery=delivery) as queue:
     queue.put(
         {"task": "send-email", "to": "hello@example.com"},
         job_id="welcome-email-42",
@@ -77,9 +78,10 @@ The producer can stop here. `put()` commits the job to
 
 ```python
 # worker.py — run this later, in another process
-from localqueue import SimpleQueue
+from localqueue import DeliveryPolicy, SimpleQueue
 
-with SimpleQueue("./data", lease_seconds=30, max_retries=3) as queue:
+delivery = DeliveryPolicy(lease_seconds=30, max_retries=3)
+with SimpleQueue("./data", delivery=delivery) as queue:
     job = queue.get()
 
     try:
@@ -92,9 +94,9 @@ with SimpleQueue("./data", lease_seconds=30, max_retries=3) as queue:
 
 The path passed to `SimpleQueue` is a directory. The queue creates and manages
 `localqueue.db` inside it. Payloads are JSON-serialized by default. Jobs
-survive normal process restarts; use `fsync=True` when the stronger SQLite
-durability setting documented in [Delivery guarantees](#delivery-guarantees) is
-required.
+survive normal process restarts. Select `DurabilityMode.DURABLE` when the
+stronger SQLite durability setting documented in
+[Delivery guarantees](#delivery-guarantees) is required.
 
 ## Worker
 
@@ -103,7 +105,7 @@ acknowledged, an unexpected exception is retried, and an exception listed in
 `permanent_errors` is sent directly to the dead-letter state.
 
 ```python
-from localqueue import SimpleQueue, Worker
+from localqueue import DeliveryPolicy, SimpleQueue, Worker
 
 
 class InvalidDeployment(Exception):
@@ -114,7 +116,10 @@ def deploy(job):
     print(f"Deploying {job.data['app']}@{job.data['revision']}")
 
 
-with SimpleQueue("./data", lease_seconds=30, max_retries=3) as queue:
+with SimpleQueue(
+    "./data",
+    delivery=DeliveryPolicy(lease_seconds=30, max_retries=3),
+) as queue:
     worker = Worker(
         queue,
         deploy,
@@ -218,10 +223,12 @@ put() ──> ready ──> leased ──> acked
 | Deduplication | A `job_id` is unique within a named queue while its record exists. |
 | Ordering | Ready jobs are claimed by insertion ID, but completion order is best effort under concurrency. |
 
-By default, SQLite uses `synchronous=NORMAL`, which protects against normal
-process crashes but may lose recent transactions after an operating-system or
-power failure. Pass `fsync=True` to use `synchronous=FULL` for stronger
-durability.
+`DurabilityMode.RELAXED` is the default and selects SQLite
+`synchronous=NORMAL`, prioritizing throughput. Recent transactions may be lost
+after abrupt operating-system, host, kernel, or power failure.
+`DurabilityMode.DURABLE` selects `synchronous=FULL` and prioritizes stronger
+protection for recent commits. Neither mode is an absolute guarantee across
+every filesystem, kernel, drive cache, controller, or hardware failure.
 
 See [Delivery guarantees](https://github.com/brunoportis/localqueue/blob/main/docs/guarantees.md)
 for the complete durability, lease, retry, fencing, and deduplication contract.
@@ -229,12 +236,17 @@ for the complete durability, lease, retry, fencing, and deduplication contract.
 ## Configuration
 
 ```python
+from localqueue import DeliveryPolicy, DurabilityMode, SimpleQueue
+
+
 queue = SimpleQueue(
     "./data",
     name="emails",
-    lease_seconds=60,
-    max_retries=3,
-    fsync=False,
+    delivery=DeliveryPolicy(
+        lease_seconds=60,
+        max_retries=3,
+    ),
+    durability=DurabilityMode.RELAXED,
     serializer=None,
     max_pending_jobs=None,
 )
@@ -244,11 +256,55 @@ queue = SimpleQueue(
 | --- | ---: | --- |
 | `path` | required | Directory containing the shared `localqueue.db` file. |
 | `name` | `"default"` | Logical queue name; several queues can share one database. |
-| `lease_seconds` | `60.0` | Time a worker owns a delivery before it can be reclaimed. |
-| `max_retries` | `3` | Retries allowed after the first delivery. |
-| `fsync` | `False` | Use SQLite `synchronous=FULL` when enabled. |
+| `delivery` | `DeliveryPolicy()` | Immutable lease duration and retry policy. |
+| `durability` | `DurabilityMode.RELAXED` | Throughput-oriented `RELAXED` or stronger `DURABLE` synchronization intent. |
 | `serializer` | JSON | Object implementing `dumps(obj) -> bytes` and `loads(bytes) -> obj`. |
 | `max_pending_jobs` | `None` | Optional positive limit for ready + processing jobs in this logical queue. |
+
+`require_subscribers` remains a boolean on `EventBus`: it is one stable
+dispatch decision, not a group of related invariants. `serializer`, EventBus
+`topology`, and event `registry` remain explicit strategy objects.
+
+### Migrating configuration in v1.3
+
+The old Python constructor parameters are removed without aliases or
+deprecation shims:
+
+```python
+# before
+SimpleQueue(path, fsync=True)
+
+# after
+SimpleQueue(path, durability=DurabilityMode.DURABLE)
+
+# before
+SimpleQueue(path, lease_seconds=30, max_retries=5)
+
+# after
+SimpleQueue(
+    path,
+    delivery=DeliveryPolicy(
+        lease_seconds=30,
+        max_retries=5,
+    ),
+)
+```
+
+The same `delivery=` and `durability=` arguments apply to `EventBus`.
+Public configuration attributes move under the corresponding semantic object:
+
+```python
+# before                                  # after
+queue.lease_seconds                       queue.delivery.lease_seconds
+queue.max_retries                         queue.delivery.max_retries
+bus.lease_seconds                         bus.delivery.lease_seconds
+bus.max_retries                           bus.delivery.max_retries
+bus.fsync                                 bus.durability
+```
+
+The removed attributes have no properties, aliases, or compatibility shims.
+This is a Python API break only; it does not change the SQLite schema or
+serialized payload format.
 
 ## Bounded backlog and backpressure
 

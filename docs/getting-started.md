@@ -14,10 +14,11 @@ The queue path is a directory. `localqueue` creates and manages
 Create `producer.py`:
 
 ```python
-from localqueue import SimpleQueue
+from localqueue import DeliveryPolicy, SimpleQueue
 
 
-with SimpleQueue("./data", lease_seconds=30, max_retries=3) as queue:
+delivery = DeliveryPolicy(lease_seconds=30, max_retries=3)
+with SimpleQueue("./data", delivery=delivery) as queue:
     queue.put(
         {"task": "send-email", "to": "hello@example.com"},
         job_id="welcome-email-42",
@@ -38,10 +39,11 @@ The producer can now exit. The job has been committed to
 Create `worker.py`:
 
 ```python
-from localqueue import SimpleQueue
+from localqueue import DeliveryPolicy, SimpleQueue
 
 
-with SimpleQueue("./data", lease_seconds=30, max_retries=3) as queue:
+delivery = DeliveryPolicy(lease_seconds=30, max_retries=3)
+with SimpleQueue("./data", delivery=delivery) as queue:
     job = queue.get()
 
     try:
@@ -63,13 +65,20 @@ it eligible for retry; after the retry limit it moves to the dead-letter state.
 
 ## Durability settings
 
-The default SQLite setting protects committed jobs from ordinary process crashes.
-For stronger protection against operating-system or power failure, create the
-queue with `fsync=True`:
+`DurabilityMode.RELAXED` is the default and prioritizes throughput with
+SQLite `synchronous=NORMAL`. For stronger protection of recent commits during
+abrupt failures, select `DurabilityMode.DURABLE`, which requests
+`synchronous=FULL`:
 
 ```python
-SimpleQueue("./data", fsync=True)
+from localqueue import DurabilityMode, SimpleQueue
+
+
+SimpleQueue("./data", durability=DurabilityMode.DURABLE)
 ```
+
+Neither mode promises survival across every filesystem, kernel, drive cache,
+controller, or hardware failure.
 
 See [Delivery guarantees](guarantees.md) for the full lease, retry,
 deduplication, ordering, and durability contract.

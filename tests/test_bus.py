@@ -4,6 +4,7 @@ import sys
 import time
 
 import pytest
+from localqueue import DeliveryPolicy, DurabilityMode
 from localqueue.bus import BaseEvent, BusTopology, EventBus, NoSubscribers
 
 
@@ -26,8 +27,7 @@ def bus(tmp_path):
         str(tmp_path / "bus"),
         name="test",
         topology=BusTopology({"s1": ["*"]}),
-        lease_seconds=0.5,
-        max_retries=1,
+        delivery=DeliveryPolicy(lease_seconds=0.5, max_retries=1),
     )
     yield b
     b.close()
@@ -192,8 +192,7 @@ class TestConsumption:
         bus = EventBus(
             str(tmp_path / "bus"),
             topology=BusTopology({"sync": [UserCreated], "async": [UserCreated]}),
-            lease_seconds=0.5,
-            max_retries=1,
+            delivery=DeliveryPolicy(lease_seconds=0.5, max_retries=1),
         )
         seen = []
         bus.on(
@@ -344,8 +343,7 @@ class TestConsumption:
         bus = EventBus(
             str(tmp_path / "bus"),
             topology=BusTopology({"sa": [UserCreated], "sb": [UserCreated]}),
-            lease_seconds=0.5,
-            max_retries=1,
+            delivery=DeliveryPolicy(lease_seconds=0.5, max_retries=1),
         )
         seen = []
         bus.on(UserCreated, lambda e: seen.append("a"), subscription="sa")
@@ -363,8 +361,7 @@ class TestConsumption:
             path,
             name="test",
             topology=topology,
-            lease_seconds=0.5,
-            max_retries=1,
+            delivery=DeliveryPolicy(lease_seconds=0.5, max_retries=1),
         )
         bus.on(UserCreated, lambda e: None, subscription="s1")
         bus.dispatch(UserCreated(user_id="sobrevive"))
@@ -375,8 +372,7 @@ class TestConsumption:
             path,
             name="test",
             topology=topology,
-            lease_seconds=0.5,
-            max_retries=1,
+            delivery=DeliveryPolicy(lease_seconds=0.5, max_retries=1),
         )
         bus2.on(UserCreated, lambda e: seen.append(e.user_id), subscription="s1")
         run(bus2.run_subscription("s1", idle_timeout=0.5))
@@ -420,8 +416,7 @@ def _consumer_group_worker(
         path,
         name="test",
         topology=BusTopology({"x": [GroupEvent]}),
-        lease_seconds=5.0,
-        max_retries=1,
+        delivery=DeliveryPolicy(lease_seconds=5.0, max_retries=1),
     )
 
     def handle(event):
@@ -446,17 +441,13 @@ def _consumer_group_worker(
 
 
 class TestValidations:
-    @pytest.mark.parametrize(
-        "kwargs",
-        [{"lease_seconds": 0}, {"lease_seconds": -1}, {"max_retries": -1}],
-    )
-    def test_constructor_rejeita_limites_invalidos(self, tmp_path, kwargs):
-        with pytest.raises(ValueError):
+    def test_constructor_rejeita_delivery_invalida(self, tmp_path):
+        with pytest.raises(TypeError, match="delivery.*DeliveryPolicy"):
             EventBus(
                 str(tmp_path / "b"),
                 name="t",
                 topology=BusTopology({}),
-                **kwargs,
+                delivery=object(),
             )
 
     @pytest.mark.parametrize(
@@ -472,12 +463,12 @@ class TestValidations:
                 permanent_errors=permanent_errors,
             )
 
-    def test_fsync_repassado_para_subscription_queue(self, tmp_path):
+    def test_durability_repassada_para_subscription_queue(self, tmp_path):
         bus = EventBus(
             str(tmp_path / "b"),
             name="t",
             topology=BusTopology({"s1": ["*"]}),
-            fsync=True,
+            durability=DurabilityMode.DURABLE,
         )
         queue = bus._open_subscription_queue("s1")
         _, synchronous = queue._native.pragma_settings()
@@ -620,8 +611,7 @@ class TestLeaseSafety:
             str(tmp_path / "b"),
             name="t",
             topology=BusTopology({"s1": [UserCreated]}),
-            lease_seconds=0.5,
-            max_retries=1,
+            delivery=DeliveryPolicy(lease_seconds=0.5, max_retries=1),
         )
         seen = []
 
@@ -639,8 +629,7 @@ class TestLeaseSafety:
             str(tmp_path / "b"),
             name="t",
             topology=BusTopology({"s1": [UserCreated]}),
-            lease_seconds=0.5,
-            max_retries=1,
+            delivery=DeliveryPolicy(lease_seconds=0.5, max_retries=1),
         )
         q = bus2._open_subscription_queue("s1")
         assert q.stats()["acked"] == 1
@@ -714,8 +703,7 @@ class TestConsumerGroup:
             path,
             name="test",
             topology=topology,
-            lease_seconds=5.0,
-            max_retries=1,
+            delivery=DeliveryPolicy(lease_seconds=5.0, max_retries=1),
         )
         for i in range(num_events):
             event = GroupEvent(seq=i)

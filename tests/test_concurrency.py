@@ -4,20 +4,22 @@ import threading
 import time
 
 import pytest
-from localqueue import Empty, SimpleQueue
+from localqueue import DeliveryPolicy, Empty, SimpleQueue
 
 
 @pytest.fixture
 def queue(tmp_path):
     path = tmp_path / "concurrent"
-    q = SimpleQueue(str(path), lease_seconds=2.0, max_retries=1)
+    q = SimpleQueue(
+        str(path), delivery=DeliveryPolicy(lease_seconds=2.0, max_retries=1)
+    )
     yield q
     q.close()
 
 
 def worker_process(path, num_jobs, result_queue):
     """Worker em processo separado."""
-    q = SimpleQueue(path, lease_seconds=2.0, max_retries=1)
+    q = SimpleQueue(path, delivery=DeliveryPolicy(lease_seconds=2.0, max_retries=1))
     processed = []
     while len(processed) < num_jobs:
         try:
@@ -33,9 +35,11 @@ def worker_process(path, num_jobs, result_queue):
 
 def producer_process(path, name, num_jobs, result_queue):
     """Produtor em processo separado usando put_many com job_ids."""
-    from localqueue import EnqueueItem
+    from localqueue import DeliveryPolicy, EnqueueItem
 
-    q = SimpleQueue(path, name=name, lease_seconds=2.0, max_retries=1)
+    q = SimpleQueue(
+        path, name=name, delivery=DeliveryPolicy(lease_seconds=2.0, max_retries=1)
+    )
     ids = q.put_many(
         [EnqueueItem(data={"id": i}, job_id=f"job-{i}") for i in range(num_jobs)]
     )
@@ -125,7 +129,9 @@ class TestConcurrency:
     def test_multiple_processes_do_not_duplicate_jobs(self, tmp_path):
         """Dois processos reservando mil mensagens, sem entregas simultâneas."""
         path = tmp_path / "multiproc"
-        q = SimpleQueue(str(path), lease_seconds=2.0, max_retries=1)
+        q = SimpleQueue(
+            str(path), delivery=DeliveryPolicy(lease_seconds=2.0, max_retries=1)
+        )
         num_jobs = 100
         for i in range(num_jobs):
             q.put({"id": i})
@@ -153,7 +159,9 @@ class TestConcurrency:
         assert len(all_processed) == num_jobs
         assert len(set(all_processed)) == num_jobs
 
-        q = SimpleQueue(str(path), lease_seconds=2.0, max_retries=1)
+        q = SimpleQueue(
+            str(path), delivery=DeliveryPolicy(lease_seconds=2.0, max_retries=1)
+        )
         stats = q.stats()
         q.close()
         assert stats["acked"] == num_jobs
@@ -163,7 +171,9 @@ class TestConcurrency:
     def test_concurrent_put_many_deduplicates_across_processes(self, tmp_path):
         """Dois processos produzindo em lote com os mesmos job_ids."""
         path = tmp_path / "multiproc-batch"
-        q = SimpleQueue(str(path), lease_seconds=2.0, max_retries=1)
+        q = SimpleQueue(
+            str(path), delivery=DeliveryPolicy(lease_seconds=2.0, max_retries=1)
+        )
         q.close()
 
         num_jobs = 50
@@ -189,6 +199,10 @@ class TestConcurrency:
         assert len(all_ids) == 2 * num_jobs
         assert len(set(all_ids)) == num_jobs
 
-        q = SimpleQueue(str(path), name="batch", lease_seconds=2.0, max_retries=1)
+        q = SimpleQueue(
+            str(path),
+            name="batch",
+            delivery=DeliveryPolicy(lease_seconds=2.0, max_retries=1),
+        )
         assert q.stats()["ready"] == num_jobs
         q.close()

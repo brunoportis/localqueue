@@ -19,7 +19,7 @@ def test_operational_envelope_is_complete_and_links_exist():
         "## How to read claims",
         "## Supported deployment model",
         "## Delivery, leases, and deduplication",
-        "## Durability: NORMAL and FULL",
+        "## Durability policy",
         "## EventBus operations",
         "## Performance and practical concurrency",
         "## Backup, restore, and corruption response",

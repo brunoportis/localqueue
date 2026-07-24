@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Literal
 
+from localqueue.policies import DurabilityMode
+
 Durability = Literal["normal", "full"]
 
 
@@ -62,8 +64,12 @@ class BenchmarkConfig:
             raise ValueError("fanout_sizes must contain positive integers")
 
     @property
-    def fsync(self) -> bool:
-        return self.durability == "full"
+    def durability_mode(self) -> DurabilityMode:
+        return (
+            DurabilityMode.DURABLE
+            if self.durability == "full"
+            else DurabilityMode.RELAXED
+        )
 
     @classmethod
     def from_profile(

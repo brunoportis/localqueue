@@ -6,6 +6,7 @@ import asyncio
 import functools
 
 import pytest
+from localqueue import DeliveryPolicy
 from localqueue.bus import BaseEvent, BusTopology, EventBus
 
 
@@ -45,8 +46,7 @@ def bus(tmp_path):
         str(tmp_path / "bus"),
         name="test",
         topology=BusTopology({"email": [WorkSubmitted]}),
-        lease_seconds=0.15,
-        max_retries=0,
+        delivery=DeliveryPolicy(lease_seconds=0.15, max_retries=0),
     )
     yield instance
     instance.close()
@@ -582,7 +582,7 @@ class TestControlledTimeoutLifecycle:
             str(tmp_path / "retry"),
             name="retry",
             topology=BusTopology({"email": [WorkSubmitted]}),
-            max_retries=1,
+            delivery=DeliveryPolicy(max_retries=1),
         )
         timer_started, release_timer, _ = controlled_deadline(monkeypatch)
         attempts = 0
@@ -633,7 +633,7 @@ class TestControlledTimeoutLifecycle:
             str(tmp_path / "patterns"),
             name="patterns",
             topology=BusTopology({"email": [WorkSubmitted, OtherWork]}),
-            max_retries=0,
+            delivery=DeliveryPolicy(max_retries=0),
         )
         timer_values = []
         release_timer = asyncio.Event()
@@ -679,7 +679,7 @@ class TestControlledTimeoutLifecycle:
             str(tmp_path / "concurrent"),
             name="concurrent",
             topology=BusTopology({"email": [WorkSubmitted]}),
-            max_retries=0,
+            delivery=DeliveryPolicy(max_retries=0),
         )
         timer_started = asyncio.Event()
         release_timer = asyncio.Event()

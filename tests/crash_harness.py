@@ -93,11 +93,10 @@ SCENARIOS: dict[str, dict[str, Any]] = {
 }
 
 CHILD_CODE = r"""
-from localqueue import SimpleQueue
+from localqueue import DeliveryPolicy, SimpleQueue
 queue = SimpleQueue(
     DB_PATH,
-    lease_seconds=60.0,
-    max_retries=3,
+    delivery=DeliveryPolicy(lease_seconds=60.0, max_retries=3),
     max_pending_jobs=1 if OPERATION == "enqueue" else None,
 )
 if FAILPOINT:
@@ -124,7 +123,7 @@ queue.close()
 VALIDATOR_CODE = r"""
 import json
 import sqlite3
-from localqueue import LeaseExpired, SimpleQueue
+from localqueue import DeliveryPolicy, LeaseExpired, SimpleQueue
 
 with sqlite3.connect(DB_PATH + "/localqueue.db") as connection:
     integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
@@ -135,7 +134,7 @@ counts = {"ready": 0, "processing": 0, "acked": 0, "failed": 0}
 for status, count in rows:
     counts[{0: "ready", 1: "processing", 2: "acked", 3: "failed"}[status]] = count
 recovery = {"processable_after_reopen": True, "stale_receipt_rejected": True}
-queue = SimpleQueue(DB_PATH, lease_seconds=60.0, max_retries=3)
+queue = SimpleQueue(DB_PATH, delivery=DeliveryPolicy(lease_seconds=60.0, max_retries=3))
 if counts["ready"]:
     job = queue.get(block=False)
     queue.ack(job)
@@ -180,9 +179,11 @@ def _read_notification(connection: socket.socket) -> str:
 
 
 def _prepare(path: Path, operation: str) -> None:
-    from localqueue import SimpleQueue
+    from localqueue import DeliveryPolicy, SimpleQueue
 
-    queue = SimpleQueue(str(path), lease_seconds=60.0, max_retries=3)
+    queue = SimpleQueue(
+        str(path), delivery=DeliveryPolicy(lease_seconds=60.0, max_retries=3)
+    )
     if operation != "enqueue":
         queue.put({"scenario": "crash-harness"})
     queue.close()

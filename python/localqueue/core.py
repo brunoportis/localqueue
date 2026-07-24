@@ -22,6 +22,7 @@ from localqueue.maintenance import (
     build_backup_result,
     build_integrity_result,
 )
+from localqueue.policies import DeliveryPolicy, DurabilityMode, _durability_fsync
 
 log = logging.getLogger(__name__)
 _ResultT = TypeVar("_ResultT")
@@ -68,9 +69,8 @@ class SimpleQueue:
         path: str,
         name: str = "default",
         *,
-        lease_seconds: float = 60.0,
-        max_retries: int = 3,
-        fsync: bool = False,
+        delivery: DeliveryPolicy = DeliveryPolicy(),
+        durability: DurabilityMode = DurabilityMode.RELAXED,
         serializer: Optional[Serializer] = None,
         max_pending_jobs: Optional[int] = None,
     ) -> None:
@@ -78,16 +78,14 @@ class SimpleQueue:
 
         :param path: directory where the SQLite database is stored.
         :param name: logical queue name.
-        :param lease_seconds: lease duration for each claimed job.
-        :param max_retries: retries allowed before moving to dead-letter.
-        :param fsync: use ``PRAGMA synchronous=FULL`` when ``True``.
+        :param delivery: lease duration and retry policy for claimed jobs.
+        :param durability: durability intent for committed operations.
         :param serializer: object providing ``dumps`` and ``loads`` methods.
         :param max_pending_jobs: optional positive logical backlog limit.
         """
-        if not lease_seconds > 0:
-            raise ValueError("'lease_seconds' must be positive")
-        if max_retries < 0:
-            raise ValueError("'max_retries' must be non-negative")
+        if not isinstance(delivery, DeliveryPolicy):
+            raise TypeError("'delivery' must be a DeliveryPolicy")
+        fsync = _durability_fsync(durability)
         if max_pending_jobs is not None:
             if not isinstance(max_pending_jobs, int) or isinstance(
                 max_pending_jobs, bool
@@ -98,8 +96,8 @@ class SimpleQueue:
 
         self.path = Path(path)
         self.name = name
-        self.lease_seconds = lease_seconds
-        self.max_retries = max_retries
+        self.delivery = delivery
+        self.durability = durability
         self.max_pending_jobs = max_pending_jobs
         self.serializer = serializer or JsonSerializer()
         self._closed = threading.Event()
@@ -111,7 +109,7 @@ class SimpleQueue:
         self._native: Optional[_native.NativeQueue] = _native.NativeQueue(
             str(db_path),
             name,
-            max_attempts=max_retries + 1,
+            max_attempts=delivery.max_retries + 1,
             fsync=fsync,
             max_pending_jobs=max_pending_jobs,
         )
@@ -255,7 +253,7 @@ class SimpleQueue:
         :raises Empty: if ``block=False`` and the queue is empty, or if the
             timeout expires while ``block=True``.
         """
-        lease_ms = int(self.lease_seconds * 1000)
+        lease_ms = int(self.delivery.lease_seconds * 1000)
 
         if not block:
             lease = self._get_native().get(lease_ms)
@@ -351,8 +349,8 @@ class SimpleQueue:
             snapshot,
             queue_name=self.name,
             serializer_identity=serializer_identity,
-            lease_seconds=self.lease_seconds,
-            max_retries=self.max_retries,
+            lease_seconds=self.delivery.lease_seconds,
+            max_retries=self.delivery.max_retries,
         )
 
     def check_integrity(

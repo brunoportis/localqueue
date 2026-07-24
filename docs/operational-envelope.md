@@ -54,15 +54,35 @@ Do not use NFS, SMB/CIFS, distributed volumes, cloud-sync folders, multiple host
 
 `nack(delay=...)` returns a transient failure to ready/delayed work; exhaustion of `max_retries` and an expired final lease move it to failed (dead-letter). `fail` moves it there directly; `retry_failed(id)` makes it ready again. Reclaim returns an expired lease to ready unless its maximum attempts are exhausted. The later valid transition wins; a losing stale ACK/NACK cannot overwrite it. Process death after a claim therefore leads to reclaim and possible redelivery (see `TestContract.test_crash_between_get_and_ack`).
 
-The native counter increments on claim. `SimpleQueue` configures `max_attempts = max_retries + 1`; the public `Job.attempts` is zero-based, so the first delivery has `attempts == 0`. `max_retries=3` permits up to four total claims. NACK or lease expiration after the limit moves the record to failed. `retry_failed()` starts processing again under the current contract; it does not promise to erase history that the API does not erase. See [`SimpleQueue.__init__`](../python/localqueue/core.py), [`claim_next`](../src/queue.rs), and [`test_contract.py`](../tests/test_contract.py).
+The native counter increments on claim. `SimpleQueue` configures
+`max_attempts = delivery.max_retries + 1`; the public `Job.attempts` is
+zero-based, so the first delivery has `attempts == 0`.
+`DeliveryPolicy(max_retries=3)` permits up to four total claims. NACK or lease
+expiration after the limit moves the record to failed. `retry_failed()` starts
+processing again under the current contract; it does not promise to erase
+history that the API does not erase. See [`SimpleQueue.__init__`](../python/localqueue/core.py),
+[`claim_next`](../src/queue.rs), and [`test_contract.py`](../tests/test_contract.py).
 
 `job_id` deduplicates within a logical queue. A duplicate returns the original internal id and does not replace its payload; it remains deduplicated while its record exists, including ACKed and failed states, until applicable `purge()`. It does not mean one processing execution. Evidence: [`test_contract.py`](../tests/test_contract.py) and [`test_batch.py`](../tests/test_batch.py).
 
-## Durability: NORMAL and FULL
+## Durability policy
 
-**Guarantee:** `fsync=False` selects SQLite `synchronous=NORMAL`; `fsync=True` selects `FULL` (see [`core.py`](../python/localqueue/core.py) and [`test_diagnostics.py`](../tests/test_diagnostics.py)). NORMAL is the default and trades stronger synchronization for cost. FULL requests SQLite's stronger synchronization mode and has a measured cost in the reports below.
+**Guarantee:** `DurabilityMode.RELAXED` selects SQLite `synchronous=NORMAL`;
+`DurabilityMode.DURABLE` selects `FULL` (see [`policies.py`](../python/localqueue/policies.py),
+[`core.py`](../python/localqueue/core.py), and
+[`test_diagnostics.py`](../tests/test_diagnostics.py)). `RELAXED` is the
+default and prioritizes throughput. `DURABLE` requests SQLite's stronger
+synchronization mode and has a measured cost in the reports below.
 
-**Measured:** the deterministic SIGKILL/failpoint crash harness currently uses NORMAL. Separate chaos lifecycle/reopen/integrity scenarios exercise NORMAL and FULL, and the benchmark reports include both modes; see [`test_crash_recovery.py`](../tests/test_crash_recovery.py), [`test_chaos.py`](../tests/test_chaos.py), and [`operational-chaos.md`](internal/operational-chaos.md). Process crash is not power loss. Neither mode proves safety through physical power loss, kernel panic, corrupt filesystem, lying controller cache, defective SD card, undervoltage, or failed storage. #31's physical campaign is not complete.
+**Measured:** the deterministic SIGKILL/failpoint crash harness currently uses
+NORMAL. Separate chaos lifecycle/reopen/integrity scenarios exercise RELAXED/NORMAL
+and DURABLE/FULL, and the benchmark reports include both SQLite modes; see
+[`test_crash_recovery.py`](../tests/test_crash_recovery.py),
+[`test_chaos.py`](../tests/test_chaos.py), and
+[`operational-chaos.md`](internal/operational-chaos.md). Process crash is not
+power loss. Neither mode proves safety through physical power loss, kernel
+panic, corrupt filesystem, lying controller cache, defective SD card,
+undervoltage, or failed storage. #31's physical campaign is not complete.
 
 ## Capacity, concurrency, and backpressure
 

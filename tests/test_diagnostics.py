@@ -10,7 +10,13 @@ from importlib import metadata
 from pathlib import Path
 
 import pytest
-from localqueue import LocalQueueError, QueueDiagnostics, SimpleQueue
+from localqueue import (
+    DeliveryPolicy,
+    DurabilityMode,
+    LocalQueueError,
+    QueueDiagnostics,
+    SimpleQueue,
+)
 
 
 def database_rows(path: Path) -> list[tuple[object, ...]]:
@@ -82,17 +88,20 @@ def test_to_dict_matches_the_public_dataclass_schema(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("fsync", "synchronous", "durability_mode"),
-    [(False, 1, "normal"), (True, 2, "full")],
+    ("durability", "synchronous", "durability_mode"),
+    [
+        (DurabilityMode.RELAXED, 1, "normal"),
+        (DurabilityMode.DURABLE, 2, "full"),
+    ],
 )
 def test_effective_durability_comes_from_native_connection(
     tmp_path: Path,
-    fsync: bool,
+    durability: DurabilityMode,
     synchronous: int,
     durability_mode: str,
 ) -> None:
-    queue = SimpleQueue(str(tmp_path / str(fsync)), fsync=fsync)
-    database = tmp_path / str(fsync) / "localqueue.db"
+    queue = SimpleQueue(str(tmp_path / durability.value), durability=durability)
+    database = tmp_path / durability.value / "localqueue.db"
 
     with sqlite3.connect(database) as external:
         external.execute("PRAGMA synchronous=OFF")
@@ -138,7 +147,7 @@ def test_closed_queue_uses_existing_error_contract(tmp_path: Path) -> None:
 def test_populated_queue_reports_each_state_and_defensible_ages(
     tmp_path: Path,
 ) -> None:
-    queue = SimpleQueue(str(tmp_path), lease_seconds=30)
+    queue = SimpleQueue(str(tmp_path), delivery=DeliveryPolicy(lease_seconds=30))
     database = tmp_path / "localqueue.db"
 
     queue.put({"state": "acked"})
@@ -213,7 +222,7 @@ def test_delayed_ready_job_is_not_reported_as_already_available(tmp_path: Path) 
 
 
 def test_active_lease_is_reported_without_changing_it(tmp_path: Path) -> None:
-    queue = SimpleQueue(str(tmp_path), lease_seconds=30)
+    queue = SimpleQueue(str(tmp_path), delivery=DeliveryPolicy(lease_seconds=30))
     queue.put({"lease": "active"})
     job = queue.get_nowait()
 
@@ -231,7 +240,7 @@ def test_active_lease_is_reported_without_changing_it(tmp_path: Path) -> None:
 
 
 def test_expired_lease_is_observed_but_not_reclaimed(tmp_path: Path) -> None:
-    queue = SimpleQueue(str(tmp_path), lease_seconds=30)
+    queue = SimpleQueue(str(tmp_path), delivery=DeliveryPolicy(lease_seconds=30))
     database = tmp_path / "localqueue.db"
     queue.put({"lease": "expired"})
     job = queue.get_nowait()
@@ -359,7 +368,7 @@ def test_package_metadata_does_not_mask_other_errors(
 
 
 def test_processing_age_is_since_latest_lease_update(tmp_path: Path) -> None:
-    queue = SimpleQueue(str(tmp_path), lease_seconds=30)
+    queue = SimpleQueue(str(tmp_path), delivery=DeliveryPolicy(lease_seconds=30))
     database = tmp_path / "localqueue.db"
     queue.put({"lease": "extended"})
     job = queue.get_nowait()
@@ -379,7 +388,7 @@ def test_processing_age_is_since_latest_lease_update(tmp_path: Path) -> None:
 
 
 def test_repeated_diagnostics_does_not_mutate_queue_or_wal(tmp_path: Path) -> None:
-    queue = SimpleQueue(str(tmp_path), lease_seconds=30)
+    queue = SimpleQueue(str(tmp_path), delivery=DeliveryPolicy(lease_seconds=30))
     database = tmp_path / "localqueue.db"
     queue.put({"state": "ready"})
     queue.put({"state": "expired"})
@@ -448,11 +457,15 @@ def test_existing_schema_database_requires_no_migration(tmp_path: Path) -> None:
 
 
 def test_concurrent_activity_produces_bounded_valid_snapshots(tmp_path: Path) -> None:
-    observer = SimpleQueue(str(tmp_path), name="concurrent", lease_seconds=5)
+    observer = SimpleQueue(
+        str(tmp_path), name="concurrent", delivery=DeliveryPolicy(lease_seconds=5)
+    )
     start = threading.Event()
 
     def produce() -> None:
-        producer = SimpleQueue(str(tmp_path), name="concurrent", lease_seconds=5)
+        producer = SimpleQueue(
+            str(tmp_path), name="concurrent", delivery=DeliveryPolicy(lease_seconds=5)
+        )
         start.wait(timeout=2)
         try:
             for index in range(40):

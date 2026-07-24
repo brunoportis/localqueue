@@ -22,6 +22,7 @@ from localqueue.bus.topology import (
     validate_name,
 )
 from localqueue.core import JsonSerializer, Serializer, SimpleQueue
+from localqueue.policies import DeliveryPolicy, DurabilityMode, _durability_fsync
 
 
 class NoSubscribers(Exception):
@@ -66,27 +67,35 @@ class EventBus:
         name: str = "default",
         *,
         topology: BusTopology,
-        lease_seconds: float = 60.0,
-        max_retries: int = 3,
-        fsync: bool = False,
+        delivery: DeliveryPolicy = DeliveryPolicy(),
+        durability: DurabilityMode = DurabilityMode.RELAXED,
         require_subscribers: bool = True,
         serializer: Optional[Serializer] = None,
         registry: EventRegistry = EVENT_REGISTRY,
     ) -> None:
+        """Initialize an EventBus with explicit routing and shared policies.
+
+        :param path: directory where the SQLite database is stored.
+        :param name: logical bus name.
+        :param topology: static routing strategy for dispatched events.
+        :param delivery: lease duration and retry policy for every delivery.
+        :param durability: durability intent for fanout and subscription queues.
+        :param require_subscribers: reject dispatches with no matching route.
+        :param serializer: optional event-envelope serialization strategy.
+        :param registry: event reconstruction strategy.
+        """
         self._validate_name(name, "name")
         if not isinstance(topology, BusTopology):
             raise TypeError("'topology' must be a BusTopology")
-        if not lease_seconds > 0:
-            raise ValueError("'lease_seconds' must be positive")
-        if max_retries < 0:
-            raise ValueError("'max_retries' must be non-negative")
+        if not isinstance(delivery, DeliveryPolicy):
+            raise TypeError("'delivery' must be a DeliveryPolicy")
+        fsync = _durability_fsync(durability)
 
         self.path = Path(path)
         self.name = name
         self.topology = topology
-        self.lease_seconds = lease_seconds
-        self.max_retries = max_retries
-        self.fsync = fsync
+        self.delivery = delivery
+        self.durability = durability
         self.require_subscribers = require_subscribers
         self.serializer = serializer
         self.registry = registry
@@ -98,7 +107,7 @@ class EventBus:
         self._native_queue: Optional[_native.NativeQueue] = _native.NativeQueue(
             str(db_path),
             f"__bus__:{name}",
-            max_attempts=max_retries + 1,
+            max_attempts=delivery.max_retries + 1,
             fsync=fsync,
         )
 
@@ -317,9 +326,8 @@ class EventBus:
         return SimpleQueue(
             str(self.path),
             name=self._queue_name(subscription),
-            lease_seconds=self.lease_seconds,
-            max_retries=self.max_retries,
-            fsync=self.fsync,
+            delivery=self.delivery,
+            durability=self.durability,
             serializer=self.serializer,
         )
 

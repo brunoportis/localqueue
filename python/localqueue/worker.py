@@ -39,7 +39,8 @@ class Worker:
         :param permanent_errors: exceptions that move a job to dead-letter.
         :param poll_interval: interval between polls while the queue is empty.
         :param heartbeat_interval: interval used to renew the lease during
-            processing. It must be shorter than ``queue.lease_seconds``;
+            processing. It must be shorter than
+            ``queue.delivery.lease_seconds``;
             one-third of the lease is recommended.
         """
         if not poll_interval > 0:
@@ -47,7 +48,7 @@ class Worker:
         if heartbeat_interval is not None:
             if not heartbeat_interval > 0:
                 raise ValueError("'heartbeat_interval' must be positive")
-            if heartbeat_interval >= queue.lease_seconds:
+            if heartbeat_interval >= queue.delivery.lease_seconds:
                 raise ValueError(
                     "'heartbeat_interval' must be smaller than the queue lease"
                 )
@@ -135,7 +136,7 @@ class Worker:
 
         while not done.wait(self.heartbeat_interval):
             try:
-                job.extend_lease(self.queue.lease_seconds)
+                job.extend_lease(self.queue.delivery.lease_seconds)
             except Exception:
                 log.warning("Lost the lease for job %s", job.id)
                 lease_lost = True

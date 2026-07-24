@@ -2,7 +2,7 @@ import inspect
 import time
 
 import pytest
-from localqueue import LeaseExpired, SimpleQueue, Worker
+from localqueue import DeliveryPolicy, LeaseExpired, SimpleQueue, Worker
 
 
 class PermanentError(Exception):
@@ -16,7 +16,9 @@ class TransientError(Exception):
 @pytest.fixture
 def queue(tmp_path):
     path = tmp_path / "worker_queue"
-    q = SimpleQueue(str(path), lease_seconds=10.0, max_retries=3)
+    q = SimpleQueue(
+        str(path), delivery=DeliveryPolicy(lease_seconds=10.0, max_retries=3)
+    )
     yield q
     q.close()
 
@@ -89,7 +91,9 @@ class TestWorker:
         from unittest.mock import patch
 
         path = tmp_path / "heartbeat"
-        q = SimpleQueue(str(path), lease_seconds=5.0, max_retries=3)
+        q = SimpleQueue(
+            str(path), delivery=DeliveryPolicy(lease_seconds=5.0, max_retries=3)
+        )
 
         handler_started = threading.Event()
         handler_continue = threading.Event()
@@ -134,7 +138,9 @@ class TestWorker:
         from unittest.mock import patch
 
         path = tmp_path / "heartbeat_survive"
-        q = SimpleQueue(str(path), lease_seconds=5.0, max_retries=3)
+        q = SimpleQueue(
+            str(path), delivery=DeliveryPolicy(lease_seconds=5.0, max_retries=3)
+        )
 
         def handler(job):
             time.sleep(0.2)
@@ -167,7 +173,9 @@ class TestWorker:
         q.close()
 
     def test_worker_survives_ack_after_natural_lease_expiry(self, tmp_path):
-        q = SimpleQueue(str(tmp_path / "expired_ack"), lease_seconds=0.03)
+        q = SimpleQueue(
+            str(tmp_path / "expired_ack"), delivery=DeliveryPolicy(lease_seconds=0.03)
+        )
         q.put({"id": 1})
 
         def handler(job):
@@ -181,7 +189,9 @@ class TestWorker:
         q.close()
 
     def test_worker_survives_nack_after_natural_lease_expiry(self, tmp_path):
-        q = SimpleQueue(str(tmp_path / "expired_nack"), lease_seconds=0.03)
+        q = SimpleQueue(
+            str(tmp_path / "expired_nack"), delivery=DeliveryPolicy(lease_seconds=0.03)
+        )
         q.put({"id": 1})
 
         def handler(job):
@@ -195,7 +205,9 @@ class TestWorker:
         q.close()
 
     def test_worker_survives_fail_after_natural_lease_expiry(self, tmp_path):
-        q = SimpleQueue(str(tmp_path / "expired_fail"), lease_seconds=0.03)
+        q = SimpleQueue(
+            str(tmp_path / "expired_fail"), delivery=DeliveryPolicy(lease_seconds=0.03)
+        )
         q.put({"id": 1})
 
         def handler(job):

@@ -1,11 +1,13 @@
 import pytest
-from localqueue import Empty, EnqueueItem, SimpleQueue
+from localqueue import DeliveryPolicy, Empty, EnqueueItem, SimpleQueue
 
 
 @pytest.fixture
 def queue(tmp_path):
     path = tmp_path / "batch"
-    q = SimpleQueue(str(path), lease_seconds=0.5, max_retries=2)
+    q = SimpleQueue(
+        str(path), delivery=DeliveryPolicy(lease_seconds=0.5, max_retries=2)
+    )
     yield q
     q.close()
 
@@ -90,9 +92,15 @@ class TestPutMany:
 class TestFanout:
     def test_fanout_mesma_mensagem_em_filas_diferentes(self, tmp_path):
         path = tmp_path / "fanout"
-        source = SimpleQueue(str(path), name="source", lease_seconds=5.0)
-        qa = SimpleQueue(str(path), name="queue-a", lease_seconds=5.0)
-        qb = SimpleQueue(str(path), name="queue-b", lease_seconds=5.0)
+        source = SimpleQueue(
+            str(path), name="source", delivery=DeliveryPolicy(lease_seconds=5.0)
+        )
+        qa = SimpleQueue(
+            str(path), name="queue-a", delivery=DeliveryPolicy(lease_seconds=5.0)
+        )
+        qb = SimpleQueue(
+            str(path), name="queue-b", delivery=DeliveryPolicy(lease_seconds=5.0)
+        )
         try:
             payload = source.serializer.dumps({"event": "created"})
             ids = source._native.fanout(payload, [("queue-a", None), ("queue-b", None)])
@@ -113,9 +121,15 @@ class TestFanout:
 
     def test_fanout_mesmo_job_id_em_filas_diferentes(self, tmp_path):
         path = tmp_path / "fanout-dedup"
-        source = SimpleQueue(str(path), name="source", lease_seconds=5.0)
-        qa = SimpleQueue(str(path), name="queue-a", lease_seconds=5.0)
-        qb = SimpleQueue(str(path), name="queue-b", lease_seconds=5.0)
+        source = SimpleQueue(
+            str(path), name="source", delivery=DeliveryPolicy(lease_seconds=5.0)
+        )
+        qa = SimpleQueue(
+            str(path), name="queue-a", delivery=DeliveryPolicy(lease_seconds=5.0)
+        )
+        qb = SimpleQueue(
+            str(path), name="queue-b", delivery=DeliveryPolicy(lease_seconds=5.0)
+        )
         try:
             payload = source.serializer.dumps({"event": 1})
             ids = source._native.fanout(

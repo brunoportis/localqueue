@@ -14,7 +14,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from localqueue import Empty, JsonSerializer, LocalQueueError, SimpleQueue
+from localqueue import (
+    DurabilityMode,
+    Empty,
+    JsonSerializer,
+    LocalQueueError,
+    SimpleQueue,
+)
 from localqueue.benchmark.environment import environment, subject
 from localqueue.benchmark.errors import BenchmarkExecutionError, sanitize_error_message
 from localqueue.benchmark.metrics import MetricSummary
@@ -40,6 +46,10 @@ def rss_method() -> str | None:
     if _resource is None or platform.system() not in {"Linux", "Darwin"}:
         return None
     return "resource.getrusage(RUSAGE_SELF).ru_maxrss"
+
+
+def _durability_mode(full: bool) -> DurabilityMode:
+    return DurabilityMode.DURABLE if full else DurabilityMode.RELAXED
 
 
 def make_payload(
@@ -85,7 +95,7 @@ def producer_target(
     actual = 0
     first_put_started_ns: int | None = None
     last_put_completed_ns: int | None = None
-    queue = SimpleQueue(path, name, fsync=full)
+    queue = SimpleQueue(path, name, durability=_durability_mode(full))
     try:
         ready.wait()
         for identifier in range(start, start + count):
@@ -163,7 +173,7 @@ def consumer_target(
     claims: list[tuple[int, int]] = []
     roundtrips: list[tuple[int, int]] = []
     last_ack_completed_ns: int | None = None
-    queue = SimpleQueue(path, name, fsync=full)
+    queue = SimpleQueue(path, name, durability=_durability_mode(full))
     deadline = time.monotonic() + timeout
     try:
         ready.wait()
@@ -536,7 +546,11 @@ def run_large_database_scenario(
     database = run_path / "localqueue.db"
     queue: SimpleQueue | None = None
     try:
-        queue = SimpleQueue(str(run_path), "large-database", fsync=durability == "full")
+        queue = SimpleQueue(
+            str(run_path),
+            "large-database",
+            durability=_durability_mode(durability == "full"),
+        )
         snapshots: dict[str, Any] = {"before_workload": _file_snapshot(database)}
         before_stats = queue.stats()
         started = time.monotonic_ns()
@@ -639,7 +653,11 @@ def _execute_multiprocess_scenario(
     name = "benchmark"
     database = scenario_path / "localqueue.db"
     file_phases: dict[str, Any] = {"before_workload": _file_snapshot(database)}
-    initializer = SimpleQueue(str(scenario_path), name, fsync=durability == "full")
+    initializer = SimpleQueue(
+        str(scenario_path),
+        name,
+        durability=_durability_mode(durability == "full"),
+    )
     lifecycle.local_queues.append(initializer)
     sqlite = _sqlite_settings(initializer)
     lifecycle.close_local_queue(initializer)
@@ -789,7 +807,11 @@ def _execute_multiprocess_scenario(
             "produced_elapsed_ns": None,
             "acked_elapsed_ns": None,
         }
-    queue = SimpleQueue(str(scenario_path), name, fsync=durability == "full")
+    queue = SimpleQueue(
+        str(scenario_path),
+        name,
+        durability=_durability_mode(durability == "full"),
+    )
     lifecycle.local_queues.append(queue)
     try:
         stats = queue.stats()

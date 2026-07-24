@@ -2,20 +2,26 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from localqueue import SimpleQueue
+from localqueue import DurabilityMode, SimpleQueue
 
 from ..model import ScenarioResult
 from ..sqlite import product_sqlite_settings
 from .common import ScenarioContext, counts, validate_queue
 
 
-def run_mode(_: str, artifacts_dir: Path, *, fsync: bool) -> ScenarioResult:
-    mode = "full" if fsync else "normal"
-    expected_synchronous = 2 if fsync else 1
+def run_mode(
+    _: str, artifacts_dir: Path, *, durability: DurabilityMode
+) -> ScenarioResult:
+    is_durable = durability is DurabilityMode.DURABLE
+    mode = "full" if is_durable else "normal"
+    expected_synchronous = 2 if is_durable else 1
     result = ScenarioResult(
         f"synchronous-{mode}",
         durability_mode=mode,
-        expected_outcome=f"SimpleQueue(fsync={fsync}) executes put/get/ack with SQLite {mode.upper()}",
+        expected_outcome=(
+            f"SimpleQueue(durability=DurabilityMode.{durability.name}) executes "
+            f"put/get/ack with SQLite {mode.upper()}"
+        ),
         required_invariants=frozenset(
             {
                 "product_pragmas",
@@ -36,7 +42,7 @@ def run_mode(_: str, artifacts_dir: Path, *, fsync: bool) -> ScenarioResult:
     )
     context = ScenarioContext(artifacts_dir, result.name)
     try:
-        queue = SimpleQueue(str(context.queue_dir), fsync=fsync)
+        queue = SimpleQueue(str(context.queue_dir), durability=durability)
         result.counts_before = counts(queue.stats())
         queue.put({"mode": mode})
         result.operation_confirmed_to_caller = True
@@ -81,8 +87,8 @@ def run_mode(_: str, artifacts_dir: Path, *, fsync: bool) -> ScenarioResult:
 
 
 def normal(profile: str, artifacts_dir: Path) -> ScenarioResult:
-    return run_mode(profile, artifacts_dir, fsync=False)
+    return run_mode(profile, artifacts_dir, durability=DurabilityMode.RELAXED)
 
 
 def full(profile: str, artifacts_dir: Path) -> ScenarioResult:
-    return run_mode(profile, artifacts_dir, fsync=True)
+    return run_mode(profile, artifacts_dir, durability=DurabilityMode.DURABLE)
