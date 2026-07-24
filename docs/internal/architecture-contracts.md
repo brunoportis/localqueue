@@ -36,10 +36,15 @@ are intentional and no adapter boundary exists yet.
 ## Facade and optional dependencies
 
 The `facade-does-not-load-optional-packages` contract treats the exact
-`localqueue` module as a module, not as all of its descendants. It rejects
-direct and indirect imports from the facade to `localqueue.bus`,
-`localqueue.benchmark`, and `pydantic`. This keeps `import localqueue` usable
-without the `bus` extra and without benchmark tooling.
+`localqueue` module as a module, not as all of its descendants:
+`as_packages = false` applies to both source and forbidden module sets. The
+source therefore remains only the facade, while the protected optional-package
+sets explicitly include `localqueue.bus`, `localqueue.benchmark`, and each
+package's descendants through `localqueue.bus.**` and
+`localqueue.benchmark.**`. It rejects direct and indirect facade imports to
+those modules and to `pydantic`. This keeps `import localqueue` usable without
+the `bus` extra and without benchmark tooling, including if a future optional
+submodule is added.
 
 The `pydantic-is-local-to-eventbus` contract covers all of `localqueue` and
 forbids Pydantic except for these direct, intentional EventBus edges:
@@ -48,9 +53,12 @@ forbids Pydantic except for these direct, intentional EventBus edges:
 - `localqueue.bus.event -> pydantic`: defines validated event models;
 - `localqueue.bus.envelope -> pydantic`: validates persisted event envelopes.
 
-Each allowance is an exact importer-to-imported edge. `unmatched_ignore_imports_alerting = "error"` makes a stale allowance fail, and no allowance
-uses a wildcard. Indirect imports remain checked; the contracts do not enable
-`allow_indirect_imports`.
+Each allowance is an exact importer-to-imported edge.
+`unmatched_ignore_imports_alerting = "error"` makes a stale allowance fail,
+and no allowance uses a wildcard. Wildcards remain prohibited in exceptions;
+they are intentionally used only in protected architectural sets, where they
+cover future descendants. Indirect imports remain checked; the contracts do
+not enable `allow_indirect_imports`.
 
 Imports guarded by `TYPE_CHECKING` remain in the graph through
 `exclude_type_checking_imports = false`. A type-only import still describes an

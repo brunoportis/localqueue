@@ -91,7 +91,13 @@ id = "facade-does-not-load-optional-packages"
 name = "Facade does not load optional packages"
 type = "forbidden"
 source_modules = ["localqueue"]
-forbidden_modules = ["localqueue.bus", "localqueue.benchmark", "pydantic"]
+forbidden_modules = [
+    "localqueue.bus",
+    "localqueue.bus.**",
+    "localqueue.benchmark",
+    "localqueue.benchmark.**",
+    "pydantic",
+]
 as_packages = false
 
 [[tool.importlinter.contracts]]
