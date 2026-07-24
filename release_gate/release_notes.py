@@ -19,10 +19,10 @@ def render_release_body(notes: str, claim: str, version: str) -> str:
     body = notes.split(heading, maxsplit=1)[0].rstrip()
     tag_root = f"https://github.com/brunoportis/localqueue/blob/v{version}/"
     body = body.replace(
-        "This candidate consolidates the changes since v1.1.2. The final public claim is\n"
+        "This candidate consolidates the changes since v1.2.0. The final public claim is\n"
         "deliberately left to the human promotion gate and must not exceed the collected\n"
         "evidence.",
-        "This release consolidates the changes since v1.1.2. Its approved public claim\n"
+        "This release consolidates the changes since v1.2.0. Its approved public claim\n"
         "is constrained by the attached release evidence.",
     )
     body = body.replace("The candidate does not change", "This release does not change")
@@ -37,8 +37,8 @@ def render_release_body(notes: str, claim: str, version: str) -> str:
         body,
     )
     body = re.sub(
-        r"\]\(\.\./docs/(operational-envelope|storage-compatibility)\.md\)",
-        lambda match: f"]({tag_root}docs/{match.group(1)}.md)",
+        r"\]\(\.\./docs/([^)]+\.md)\)",
+        lambda match: f"]({tag_root}docs/{match.group(1)})",
         body,
     )
     final = f"{body}\n\n## Approved public claim\n\n{claim}\n"
