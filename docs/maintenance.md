@@ -3,6 +3,9 @@
 The [operational envelope](operational-envelope.md) contains the supported
 backup, restore, and corruption-response runbooks.
 
+The internal [architecture import contracts](internal/architecture-contracts.md)
+document the production-package dependency direction and its local CI command.
+
 `SimpleQueue` exposes explicit maintenance APIs for checking a live SQLite
 database and creating a consistent point-in-time backup without direct access
 to the queue's connection:
