@@ -25,7 +25,7 @@ service.
   atomic fan-out, consumer groups, retries, and dead-letter handling.
 
 [Installation](#installation) · [Quick start](#quick-start) ·
-[Worker](#worker) · [Event bus](#event-bus) ·
+[Worker](#worker) · [Static typing](#static-typing) · [Event bus](#event-bus) ·
 [Benchmarks](#benchmarks) ·
 [Guarantees](#delivery-guarantees) ·
 [Backpressure](#bounded-backlog-and-backpressure) ·
@@ -133,6 +133,19 @@ For long-running handlers, `heartbeat_interval` renews the lease in the
 background. It must be shorter than `lease_seconds`; one-third of the lease is
 recommended. A handler can also renew it explicitly with
 `job.extend_lease(seconds)`, using a positive duration.
+
+## Static typing
+
+Payload types flow through `Serializer[PayloadT]`, `SimpleQueue[PayloadT]`,
+`Job[PayloadT]`, and `Worker[PayloadT]`. EventBus class patterns likewise give
+handlers the concrete event subtype. These are static relationships: the
+serializer reconstructs queue payloads at runtime, and Pydantic validates
+EventBus events. `JsonSerializer` does not reconstruct arbitrary annotated
+classes.
+
+See the [static typing guide](docs/typing.md) for a custom serializer, typed
+workers, concrete sync/async event handlers, string/wildcard handlers, and
+installed-wheel verification.
 
 ## Event bus
 
