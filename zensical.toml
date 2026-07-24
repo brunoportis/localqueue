@@ -9,6 +9,7 @@ edit_uri = "edit/main/docs/"
 nav = [
   {"Home" = "index.md"},
   {"Getting started" = "getting-started.md"},
+  {"Migrating to v1.3" = "migrating-to-1.3.md"},
   {"Static typing" = "typing.md"},
   {"Delivery guarantees" = "guarantees.md"},
   {"Backpressure" = "backpressure.md"},

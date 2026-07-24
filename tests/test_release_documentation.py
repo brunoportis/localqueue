@@ -198,8 +198,8 @@ def test_release_gate_runbook_documents_go_no_go_and_recovery() -> None:
         "Recovery after a partial failure",
         "editable `localqueue` entry",
         "uv lock --check",
-        "confirm v1.2.0",
-        "Only then close #32",
+        "confirm v1.3.0",
+        "Only then close #66",
     ):
         assert phrase in text
 
