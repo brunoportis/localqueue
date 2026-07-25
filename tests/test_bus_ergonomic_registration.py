@@ -26,6 +26,10 @@ class InvalidSubscriptionEvent(BaseEvent):
     event_name = "contact/requested"
 
 
+class WildcardEvent(BaseEvent):
+    event_name = "*"
+
+
 def run(coro):
     return asyncio.run(coro)
 
@@ -134,6 +138,21 @@ def test_handler_rejects_non_event_classes_without_mutation(tmp_path, event):
         with pytest.raises(TypeError, match=r"subclass of BaseEvent.*bus\.on"):
             bus.handler(event)
         assert bus.topology.subscription_names == ()
+    finally:
+        bus.close()
+
+
+def test_handler_rejects_event_class_with_wildcard_name_without_mutation(tmp_path):
+    bus = EventBus(str(tmp_path / "bus"))
+    try:
+        with pytest.raises(ValueError, match="wildcard"):
+            bus.handler(
+                WildcardEvent,
+                lambda event: None,
+                subscription="catch-all",
+            )
+        assert bus.topology.subscription_names == ()
+        assert bus._handlers == {}
     finally:
         bus.close()
 
@@ -415,6 +434,57 @@ def test_running_subscription_rejects_new_handler_without_partial_route(tmp_path
 
     try:
         run(consume())
+    finally:
+        bus.close()
+
+
+def test_active_run_rejects_new_subscription_without_partial_configuration(tmp_path):
+    bus = EventBus(str(tmp_path / "bus"), concurrency=2)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    @bus.handler(ErgonomicInput)
+    async def handle(event):
+        started.set()
+        await release.wait()
+
+    bus.dispatch(ErgonomicInput(value=1))
+
+    async def consume():
+        task = asyncio.create_task(bus.run(idle_timeout=0.05))
+        await asyncio.wait_for(started.wait(), timeout=1)
+        topology = bus.topology
+        concurrency = dict(bus._subscription_concurrency)
+        handlers = dict(bus._handlers)
+
+        with pytest.raises(RuntimeError, match=r"before EventBus\.run starts"):
+            bus.handler(
+                ErgonomicOutput,
+                lambda event: None,
+                concurrency=7,
+            )
+
+        assert bus.topology is topology
+        assert bus._subscription_concurrency == concurrency
+        assert bus._handlers == handlers
+        release.set()
+        await asyncio.wait_for(task, timeout=1)
+
+    try:
+        run(consume())
+    finally:
+        bus.close()
+
+
+def test_bus_default_concurrency_is_read_only(tmp_path):
+    bus = EventBus(str(tmp_path / "bus"), concurrency=3)
+    bus.handler(ErgonomicInput, lambda event: None)
+    try:
+        assert bus.concurrency == 3
+        with pytest.raises(AttributeError):
+            bus.concurrency = 0
+        assert bus.concurrency == 3
+        assert bus.subscription("ErgonomicInput").concurrency == 3
     finally:
         bus.close()
 

@@ -177,7 +177,7 @@ class EventBus(Generic[ContextT]):
         self.path = Path(path)
         self.name = name
         self.topology = topology if topology is not None else BusTopology({})
-        self.concurrency = validated_concurrency
+        self._default_concurrency = validated_concurrency
         self.delivery = delivery
         self.durability = durability
         self.require_subscribers = require_subscribers
@@ -200,10 +200,16 @@ class EventBus(Generic[ContextT]):
         self._subscription_concurrency: dict[str, int] = {}
         self._frozen_subscriptions: set[str] = set()
         self._running_subscriptions: set[str] = set()
+        self._run_active = False
 
     @staticmethod
     def _validate_name(value: str, field: str) -> None:
         validate_name(value, field)
+
+    @property
+    def concurrency(self) -> int:
+        """Return the immutable process-local default per subscription."""
+        return self._default_concurrency
 
     def _queue_name(self, subscription: str) -> str:
         return f"__bus__:{self.name}:{subscription}"
@@ -269,9 +275,13 @@ class EventBus(Generic[ContextT]):
                 "use bus.on for string patterns"
             )
         event_class = cast(type[BaseEvent], event)
-        resolved_subscription = (
-            event_type_of(event_class) if subscription is None else subscription
-        )
+        event_type = event_type_of(event_class)
+        if "*" in event_type:
+            raise ValueError(
+                "EventBus.handler does not support wildcard event types; "
+                "use bus.on for wildcard patterns"
+            )
+        resolved_subscription = event_type if subscription is None else subscription
         try:
             validate_name(resolved_subscription, "subscription")
         except ValueError as error:
@@ -403,7 +413,9 @@ class EventBus(Generic[ContextT]):
 
     def _concurrency_for(self, subscription: str) -> int:
         """Return this process's configured bound for ``subscription``."""
-        return self._subscription_concurrency.get(subscription, self.concurrency)
+        return self._subscription_concurrency.get(
+            subscription, self._default_concurrency
+        )
 
     def _begin_consuming(self, subscription: str) -> None:
         """Freeze configuration and claim the local runner for a subscription."""
@@ -415,6 +427,15 @@ class EventBus(Generic[ContextT]):
     def _end_consuming(self, subscription: str) -> None:
         """Release the local runner while retaining frozen configuration."""
         self._running_subscriptions.discard(subscription)
+
+    def _ensure_handler_registration_open(self, subscription: str) -> None:
+        """Reject handler changes after the relevant consumption lifecycle starts."""
+        if self._run_active:
+            raise RuntimeError("handlers must be registered before EventBus.run starts")
+        if subscription in self._frozen_subscriptions:
+            raise RuntimeError(
+                f"subscription {subscription!r} handlers must be registered before run"
+            )
 
     @overload
     def _register_handler(
@@ -542,11 +563,7 @@ class EventBus(Generic[ContextT]):
         )
 
         def decorator(fn: object) -> object:
-            if subscription in self._frozen_subscriptions:
-                raise RuntimeError(
-                    f"subscription {subscription!r} handlers must be registered "
-                    "before run"
-                )
+            self._ensure_handler_registration_open(subscription)
             if not callable(fn):
                 raise TypeError("'handler' must be callable")
             # The registry is heterogeneous. The pattern key retains the
@@ -709,20 +726,26 @@ class EventBus(Generic[ContextT]):
         """
         from localqueue.bus.consumer import run_consumer
 
-        subscriptions = sorted({sub for (sub, _) in self._handlers})
-        consumers = [
-            asyncio.create_task(
-                run_consumer(self, subscription, idle_timeout=idle_timeout)
-            )
-            for subscription in subscriptions
-        ]
+        if self._run_active:
+            raise RuntimeError("EventBus.run is already running")
+        self._run_active = True
         try:
-            await asyncio.gather(*consumers)
-        except BaseException:
-            for consumer in consumers:
-                consumer.cancel()
-            await asyncio.gather(*consumers, return_exceptions=True)
-            raise
+            subscriptions = sorted({sub for (sub, _) in self._handlers})
+            consumers = [
+                asyncio.create_task(
+                    run_consumer(self, subscription, idle_timeout=idle_timeout)
+                )
+                for subscription in subscriptions
+            ]
+            try:
+                await asyncio.gather(*consumers)
+            except BaseException:
+                for consumer in consumers:
+                    consumer.cancel()
+                await asyncio.gather(*consumers, return_exceptions=True)
+                raise
+        finally:
+            self._run_active = False
 
     async def run_subscription(
         self, subscription: str, *, idle_timeout: Optional[float] = None
