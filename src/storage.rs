@@ -48,6 +48,7 @@ impl Storage {
 
         conn.execute_batch(SCHEMA_SQL)?;
         migrate_failure_reason(&mut conn)?;
+        migrate_failure_category(&mut conn)?;
 
         Ok(Self {
             conn: Mutex::new(Some(conn)),
@@ -162,6 +163,7 @@ impl Storage {
                 lease_until = NULL,
                 last_error = NULL,
                 failure_reason = NULL,
+                failure_category = NULL,
                 updated_at = ?2
              WHERE id = ?3 AND queue = ?4 AND status = 3",
             params![now, now, id, queue_name],
@@ -175,26 +177,42 @@ impl Storage {
 }
 
 fn migrate_failure_reason(conn: &mut Connection) -> Result<()> {
-    if has_failure_reason_column(conn)? {
+    if has_column(conn, "failure_reason")? {
         return Ok(());
     }
 
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    if !has_failure_reason_column(&tx)? {
+    if !has_column(&tx, "failure_reason")? {
         tx.execute("ALTER TABLE messages ADD COLUMN failure_reason TEXT", [])?;
     }
-    if !has_failure_reason_column(&tx)? {
+    if !has_column(&tx, "failure_reason")? {
         return Err(QueueError::Sqlite(rusqlite::Error::InvalidQuery));
     }
     tx.commit()?;
     Ok(())
 }
 
-fn has_failure_reason_column(conn: &Connection) -> Result<bool> {
+fn migrate_failure_category(conn: &mut Connection) -> Result<()> {
+    if has_column(conn, "failure_category")? {
+        return Ok(());
+    }
+
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if !has_column(&tx, "failure_category")? {
+        tx.execute("ALTER TABLE messages ADD COLUMN failure_category TEXT", [])?;
+    }
+    if !has_column(&tx, "failure_category")? {
+        return Err(QueueError::Sqlite(rusqlite::Error::InvalidQuery));
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn has_column(conn: &Connection, expected: &str) -> Result<bool> {
     let mut statement = conn.prepare("PRAGMA table_info(messages)")?;
     let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
     for column in columns {
-        if column? == "failure_reason" {
+        if column? == expected {
             return Ok(true);
         }
     }
@@ -368,6 +386,24 @@ mod tests {
         tested.pragma_update(None, "busy_timeout", 1).unwrap();
 
         migrate_failure_reason(&mut tested).unwrap();
+        blocker.execute_batch("ROLLBACK").unwrap();
+    }
+
+    #[test]
+    fn failure_category_migration_fast_path_does_not_take_writer_lock() {
+        let dir = tempfile_guard::TempDir::new();
+        let path = dir.path().join("migrated.db");
+        let setup = Connection::open(&path).unwrap();
+        setup.execute_batch(SCHEMA_SQL).unwrap();
+        drop(setup);
+
+        let blocker = Connection::open(&path).unwrap();
+        blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+        let mut tested = Connection::open(&path).unwrap();
+        tested.pragma_update(None, "busy_timeout", 1).unwrap();
+
+        migrate_failure_category(&mut tested).unwrap();
         blocker.execute_batch("ROLLBACK").unwrap();
     }
 

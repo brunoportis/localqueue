@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS messages (
     receipt       TEXT,
     last_error    TEXT,
     failure_reason TEXT,
+    failure_category TEXT,
     job_id        TEXT,
     created_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL

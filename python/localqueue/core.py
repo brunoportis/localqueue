@@ -361,8 +361,15 @@ class SimpleQueue(Generic[_PayloadT]):
         *,
         last_error: str | None = None,
         reason: FailureReason,
+        failure_category: str | None = None,
     ) -> None:
-        self._get_native().fail(job.id, job.receipt, last_error, reason.value)
+        self._get_native().fail(
+            job.id,
+            job.receipt,
+            last_error,
+            reason.value,
+            failure_category,
+        )
 
     def extend_lease(self, job: Job[_PayloadT], seconds: float) -> None:
         """Extend a job's lease.
@@ -511,6 +518,7 @@ class SimpleQueue(Generic[_PayloadT]):
                     attempts=message.attempts,
                     reason=FailureReason._from_stored(message.failure_reason),
                     last_error=message.last_error,
+                    failure_category=message.failure_category,
                     created_at=message.created_at / 1000.0,
                     updated_at=message.updated_at / 1000.0,
                     decode_error=decode_error,

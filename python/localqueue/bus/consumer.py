@@ -15,6 +15,7 @@ from localqueue.bus.bus import (
     _StoredEventHandler,
 )
 from localqueue.bus.context import ContextT, HandlerContext, RuntimeContext
+from localqueue.bus.control import Reject, Retry
 from localqueue.bus.envelope import (
     EnvelopeError,
     parse_envelope,
@@ -260,6 +261,8 @@ async def _transition(
     *,
     last_error: str | None = None,
     reason: FailureReason | None = None,
+    delay: float = 0.0,
+    failure_category: str | None = None,
 ) -> None:
     """Apply ACK/NACK/fail without letting LeaseExpired stop the consumer."""
     try:
@@ -269,6 +272,7 @@ async def _transition(
             await asyncio.to_thread(
                 queue._nack_with_reason,
                 job,
+                delay=delay,
                 last_error=last_error,
                 reason=reason,
             )
@@ -278,6 +282,7 @@ async def _transition(
                 job,
                 last_error=last_error,
                 reason=reason or FailureReason.EXPLICIT_PERMANENT_FAILURE,
+                failure_category=failure_category,
             )
     except LeaseExpired:
         log.warning(
@@ -377,6 +382,23 @@ async def _process_delivery(
             await _invoke_sync_handler(
                 handler, event, context, registration.accepts_context
             )
+    except Reject as exc:
+        await _transition(
+            queue,
+            "fail",
+            job,
+            last_error=exc.reason,
+            reason=FailureReason.REJECTED,
+            failure_category=exc.category,
+        )
+    except Retry as exc:
+        await _transition(
+            queue,
+            "nack",
+            job,
+            last_error=exc.reason,
+            delay=0.0 if exc.after is None else exc.after,
+        )
     except registration.permanent_errors as exc:
         await _transition(
             queue,

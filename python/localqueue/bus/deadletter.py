@@ -29,6 +29,7 @@ class FailedDelivery:
     created_at: float
     updated_at: float
     inspection_error: str | None
+    failure_category: str | None = None
 
 
 def inspect_delivery(
@@ -60,6 +61,7 @@ def inspect_delivery(
         attempts=message.attempts,
         reason=message.reason,
         last_error=message.last_error,
+        failure_category=message.failure_category,
         created_at=message.created_at,
         updated_at=message.updated_at,
         inspection_error=inspection_error,

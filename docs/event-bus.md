@@ -409,3 +409,22 @@ this API.
 - Communication is limited to processes sharing one local database on one
   machine. There is no network protocol, cross-machine replication, replay,
   retention, offsets, partitions, or dynamic subscription discovery.
+## Explicit handler control flow
+
+Handlers and context factories can request a retry or reject a delivery:
+
+```python
+from localqueue.bus import Reject, Retry
+
+raise Retry()
+raise Retry("rate limited", after=30)
+raise Reject("invalid input", category="validation")
+```
+
+`Retry` uses the normal persistent NACK path and still observes
+`DeliveryPolicy.max_retries`. With no `after`, it preserves the configured
+delivery behavior; `after` changes only the next attempt's persisted
+availability time. `Reject` immediately moves the delivery to the subscription
+DLQ without an automatic retry. Its reason and optional category remain
+inspectable through `FailedDelivery` and survive database reopen and manual
+replay.
