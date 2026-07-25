@@ -791,15 +791,22 @@ larger than the available capacity is split internally into smaller commits;
 atomicity applies per effective commit and each split counts in
 `batches_committed`.
 
+If consumers do not free capacity, this wait has no implicit deadline.
+Applications that need a bound should compose one explicitly:
+
+```python
+async with asyncio.timeout(30):
+    result = await bus.ingest(events, max_pending=10_000)
+```
+
+Cancellation or timeout while backpressure is waiting is observed promptly.
+If a native commit is already in flight, it is allowed to settle first; the
+batch may commit before the cancellation or timeout reaches the caller.
+
 Synchronous source iteration and synchronous transforms execute on the
 event-loop thread. This avoids a thread handoff for every item, but a blocking
 CSV reader or CPU-heavy transform can delay unrelated async tasks. Use an
 `AsyncIterable`, an async transform, or explicitly offload blocking work.
-
-If ingestion is cancelled while a native transaction is in flight, that
-transaction cannot be stopped safely. `ingest()` waits for it to settle before
-propagating `CancelledError`; the batch may commit, but when the caller
-observes cancellation there is no commit still running in the background.
 
 Ingestion is incremental and batch-atomic, not all-or-nothing: batches
 committed before a later failure stay committed. There is no checkpoint or

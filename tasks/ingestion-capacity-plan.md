@@ -2,10 +2,14 @@
 
 ## Objetivo
 
-Fechar o contrato operacional de backpressure e obter evidência suficiente
-para decidir se `enforce_capacity_policies` pode ser entregue como está ou se
-o lookup de identidades precisa ser convertido de N point queries para uma
-operação set-based antes do merge.
+Registrar um follow-up não bloqueante para validar a escala de
+`enforce_capacity_policies` e decidir se o lookup de identidades deve migrar
+de N point queries para uma operação set-based. A implementação atual é
+entregável com as limitações públicas já documentadas; esta investigação
+orienta a recomendação operacional e uma possível otimização posterior.
+
+Este plano não bloqueia o merge do PR atual. Ele só deve reabrir a decisão se
+um benchmark representativo demonstrar uma falha operacional concreta.
 
 ## Decisões já tomadas
 
@@ -18,6 +22,8 @@ operação set-based antes do merge.
   pré-carregado e os casos de identidade nova, duplicada e conflitante.
 - O benchmark atual de 10 mil linhas permanece como baseline preliminar, não
   como evidência de escala.
+- A investigação de escala é follow-up pós-merge ou evidência de release, não
+  critério de aceite deste PR.
 
 ## Dependências
 
@@ -43,7 +49,7 @@ Comparação com critérios objetivos
 
 ### Tarefa 1: Documentar espera indefinida e timeout externo
 
-**Descrição:** Explicar que uma fila permanentemente cheia mantém
+**Descrição:** Manter explícito que uma fila permanentemente cheia mantém
 `ingest()` aguardando até haver capacity, cancelamento ou timeout externo.
 
 **Critérios de aceite:**
@@ -68,14 +74,18 @@ Comparação com critérios objetivos
 - Contrato revisado sem introduzir parâmetro novo na API.
 - Testes e documentação passam.
 
-## Fase 2 — Medir o caminho predominante
+## Fase 2 — Follow-up não bloqueante: medir o caminho predominante
+
+Esta fase é executada depois do merge ou como parte da preparação de release.
+Os resultados refinam a recomendação de escala; não impedem o merge da
+implementação atual sem evidência de uma falha operacional.
 
 ### Tarefa 2: Tornar o benchmark configurável para escala e estado do banco
 
 **Descrição:** Expandir o harness de ingestion para pré-carregar o banco e
 separar o conjunto medido do setup.
 
-**Dimensões obrigatórias:**
+**Dimensões a cobrir, sem produto cartesiano completo:**
 
 - banco inicial: vazio, 100 mil, 1 milhão e 6 milhões de identidades;
 - identidade do lote: nova, já persistida e conflito de fingerprint;
@@ -87,7 +97,11 @@ separar o conjunto medido do setup.
 **Critérios de aceite:**
 
 - Setup e medição são fases distintas; preload não entra no throughput.
-- Cada cenário usa banco/processo isolado e configuração registrada no JSON.
+- Cada cardinalidade cria um banco-base uma vez; cenários derivados usam clone
+  copy-on-write/reflink quando disponível, ou cópia convencional como
+  fallback.
+- A seleção de cenários evita recriar o preload para cada combinação e a
+  configuração fica registrada no JSON.
 - O benchmark aceita seleção de subset para smoke local e matriz release.
 
 **Verificação:**
@@ -133,10 +147,12 @@ segurando `BEGIN IMMEDIATE`.
 
 ### Checkpoint 2 — GO/NO-GO da otimização
 
-Executar primeiro uma matriz curta em 100 mil e, se estável, a matriz release
-em 1 milhão e 6 milhões.
+Executar primeiro uma matriz curta em 100 mil e, se estável, cenários
+representativos em 1 milhão e 6 milhões. A matriz release deve selecionar os
+casos que mais distinguem point queries de lookup set-based; não deve executar
+todas as combinações possíveis.
 
-**Aceitar a implementação atual somente se:**
+**Registrar a implementação atual como adequada para a recomendação medida se:**
 
 - não houver crescimento aproximadamente linear do tempo por batch com o
   número de identidades distintas além do custo esperado de inserts;
@@ -149,7 +165,7 @@ em 1 milhão e 6 milhões.
 Os valores numéricos do orçamento devem ser aprovados antes da matriz release;
 o plano não inventa um SLA depois de ver os resultados.
 
-## Fase 3 — Otimizar somente se o checkpoint falhar
+## Fase 3 — Otimizar somente se o checkpoint recomendar
 
 ### Tarefa 4: Prototipar lookup set-based por queue
 
@@ -231,4 +247,5 @@ set-based.
 
 1. Qual orçamento de p95 do writer lock será usado no batch recomendado de
    1.000: 100 ms, 250 ms ou outro valor?
-2. A matriz de 6 milhões será gate obrigatório deste PR ou evidência de release?
+2. A matriz de 6 milhões será evidência de release ou acompanhamento
+   pós-merge?
