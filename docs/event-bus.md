@@ -795,8 +795,10 @@ If consumers do not free capacity, this wait has no implicit deadline.
 Applications that need a bound should compose one explicitly:
 
 ```python
-async with asyncio.timeout(30):
-    result = await bus.ingest(events, max_pending=10_000)
+result = await asyncio.wait_for(
+    bus.ingest(events, max_pending=10_000),
+    timeout=30,
+)
 ```
 
 Cancellation or timeout while backpressure is waiting is observed promptly.

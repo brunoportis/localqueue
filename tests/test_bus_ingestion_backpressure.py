@@ -287,14 +287,10 @@ class TestBackpressureWait:
                 observed = tracker_state["count"]
                 queue = bus._open_subscription_queue("s1")
                 try:
-                    while not task.done():
-                        try:
-                            queue.ack(queue.get_nowait())
-                        except Empty:
-                            await asyncio.sleep(0.005)
+                    await asyncio.wait_for(drain_until(queue, task.done), timeout=5)
                 finally:
                     queue.close()
-                return observed, await asyncio.wait_for(task, 5)
+                return observed, await task
 
             observed, result = run(main())
             # Only the in-flight item was consumed while the queue was full.
