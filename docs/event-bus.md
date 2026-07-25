@@ -650,3 +650,68 @@ availability time. `Reject` immediately moves the delivery to the subscription
 DLQ without an automatic retry. Its reason and optional category remain
 inspectable through `FailedDelivery` and survive database reopen and manual
 replay.
+
+## Declarative retry policies
+
+`RetryPolicy` configures a durable subscription's retry budget and delay:
+
+```python
+from localqueue.bus import Retry, RetryPolicy
+
+
+@bus.handler(
+    ContactCreationRequested,
+    retry=RetryPolicy.exponential(
+        max_attempts=8,
+        initial_delay=0.5,
+        max_delay=60,
+    ),
+)
+async def create_contact(event, ctx):
+    try:
+        ...
+    except RateLimited as error:
+        raise Retry(
+            "rate limited",
+            after=error.retry_after,
+        ) from error
+```
+
+`RetryPolicy.fixed(max_attempts=5, delay=10)` always uses the same delay.
+Exponential backoff starts at `initial_delay`, multiplies after each failed
+attempt, and saturates at `max_delay`. Its default `jitter=True` uses full
+jitter: a random delay between zero and the current capped base delay.
+
+`max_attempts` counts the initial execution. A value of `1` permits that
+execution but no retry; `8` permits at most one initial execution and seven
+retries. Without an explicit policy, `DeliveryPolicy.max_retries + 1` remains
+the persisted attempt budget and retries retain their legacy zero-delay
+behavior.
+
+The policy belongs to the subscription, not the Python function. Exact and
+wildcard handlers sharing a subscription must therefore specify structurally
+compatible policies. Omitting `retry=` on another handler inherits an already
+configured policy. All consumers of the same durable subscription should use
+consistent configuration; localqueue does not coordinate policy configuration
+between processes.
+
+After a failure, EventBus calculates the delay once and persists it in
+`available_at`; the worker does not sleep and is free to claim other work.
+`Retry(after=...)` overrides only that next persisted delay, without jitter or
+the exponential cap, and does not extend an exhausted attempt budget. This is
+appropriate for values obtained from `Retry-After` while keeping the policy
+independent of HTTP.
+
+Retry policies do not know about HTTP clients, status codes, or domain
+exceptions, and do not decide whether a failure is retryable. Handlers continue
+to use `Retry` and `Reject` for explicit classification; configured
+`permanent_errors` also remain permanent. When a retryable failure exhausts the
+policy budget, the terminal failure reason is `RETRIES_EXHAUSTED`;
+`last_error` preserves the concrete timeout or exception from the final
+attempt.
+
+The budget is written during each atomic claim so lease recovery observes it
+even if the worker crashes before the handler starts. Consequently, changing a
+subscription policy between deployments can change a message's persisted
+budget at its next claim. Deploy consistent policy configuration across all
+workers competing for that subscription.

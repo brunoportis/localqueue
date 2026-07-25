@@ -11,6 +11,7 @@ from localqueue.bus.topology import EventPattern
 if TYPE_CHECKING:
     from localqueue.bus.bus import EventBus, _EventHandlerDecorator
     from localqueue.bus.event import BaseEvent
+    from localqueue.bus.retry import RetryPolicy
 
 _EventT = TypeVar("_EventT", bound="BaseEvent")
 _HandlerResultT = TypeVar(
@@ -38,6 +39,7 @@ class Subscription(Generic[ContextT]):
         *,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
+        retry: RetryPolicy | None = None,
     ) -> _EventHandlerDecorator[_EventT, ContextT]: ...
 
     @overload
@@ -46,6 +48,7 @@ class Subscription(Generic[ContextT]):
         pattern: type[_EventT],
         handler: Callable[[_EventT], _HandlerResultT],
         *,
+        retry: RetryPolicy | None = None,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
     ) -> Callable[[_EventT], _HandlerResultT]: ...
@@ -56,6 +59,7 @@ class Subscription(Generic[ContextT]):
         pattern: type[_EventT],
         handler: Callable[[_EventT, ContextT], _HandlerResultT],
         *,
+        retry: RetryPolicy | None = None,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
     ) -> Callable[[_EventT, ContextT], _HandlerResultT]: ...
@@ -66,6 +70,7 @@ class Subscription(Generic[ContextT]):
         pattern: str,
         handler: None = None,
         *,
+        retry: RetryPolicy | None = None,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
     ) -> _EventHandlerDecorator[BaseEvent, ContextT]: ...
@@ -76,6 +81,7 @@ class Subscription(Generic[ContextT]):
         pattern: str,
         handler: Callable[[BaseEvent], _HandlerResultT],
         *,
+        retry: RetryPolicy | None = None,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
     ) -> Callable[[BaseEvent], _HandlerResultT]: ...
@@ -86,6 +92,7 @@ class Subscription(Generic[ContextT]):
         pattern: str,
         handler: Callable[[BaseEvent, ContextT], _HandlerResultT],
         *,
+        retry: RetryPolicy | None = None,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
     ) -> Callable[[BaseEvent, ContextT], _HandlerResultT]: ...
@@ -97,6 +104,7 @@ class Subscription(Generic[ContextT]):
         *,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
+        retry: RetryPolicy | None = None,
     ) -> object:
         """Register a direct handler or return a handler decorator."""
         return self._bus._register_handler(
@@ -105,6 +113,7 @@ class Subscription(Generic[ContextT]):
             handler,
             permanent_errors=permanent_errors,
             timeout=timeout,
+            retry=retry,
         )
 
     def list_failed(self, limit: int = 100, offset: int = 0) -> list[FailedDelivery]:

@@ -64,6 +64,7 @@ def wrong_event_handler(event: OrderPlaced) -> None:
 
 
 bus.on(UserCreated, wrong_event_handler, subscription="users")
+bus.on(UserCreated, subscription="users", retry="exponential")
 bus.subscription("users").handler(UserCreated, wrong_event_handler)
 
 wrong_failed_messages: list[FailedMessage[str]] = task_queue.list_failed()

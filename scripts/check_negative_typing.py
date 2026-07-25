@@ -13,6 +13,7 @@ EXPECTED_DIAGNOSTICS = (
     "localqueue.core.SimpleQueue.ack",
     "localqueue.worker.Worker.__init__",
     "localqueue.bus.bus.EventBus.on",
+    "localqueue.bus.bus.EventBus.on",
     "localqueue.bus.subscription.Subscription.handler",
     "`list[FailedMessage[Task]]`",
     "`bytes` is not assignable to `str`",

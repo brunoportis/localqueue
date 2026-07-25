@@ -13,6 +13,7 @@ from localqueue.bus.control import Reject, Retry
 from localqueue.bus.deadletter import FailedDelivery
 from localqueue.bus.event import BaseEvent, InvalidEventIdentity, event
 from localqueue.bus.registry import EVENT_REGISTRY, EventRegistry
+from localqueue.bus.retry import RetryPolicy
 from localqueue.bus.subscription import Subscription
 from localqueue.bus.topology import BusTopology
 from localqueue.exceptions import DeduplicationConflict
@@ -33,6 +34,7 @@ __all__ = [
     "NoSubscribers",
     "Reject",
     "Retry",
+    "RetryPolicy",
     "RuntimeContext",
     "Subscription",
 ]

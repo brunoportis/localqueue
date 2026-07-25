@@ -25,6 +25,7 @@ from localqueue.bus.context import ContextFactory, ContextT
 from localqueue.bus.event import BaseEvent, event_type_of
 from localqueue.bus.identity import business_payload, prepare_event_persistence
 from localqueue.bus.registry import EVENT_REGISTRY, EventRegistry
+from localqueue.bus.retry import RetryPolicy
 from localqueue.bus.subscription import Subscription
 from localqueue.bus.topology import (
     WILDCARD,
@@ -157,6 +158,17 @@ def _validate_concurrency(concurrency: object) -> int:
     return concurrency
 
 
+def _validate_timeout(timeout: object) -> float | None:
+    """Validate and normalize an optional handler timeout."""
+    if timeout is None:
+        return None
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        raise TypeError("'timeout' must be a positive number or None")
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("'timeout' must be a positive finite number")
+    return float(timeout)
+
+
 class EventBus(Generic[ContextT]):
     """Atomically fan events out to durable subscriptions.
 
@@ -224,6 +236,7 @@ class EventBus(Generic[ContextT]):
 
         self._handlers: dict[tuple[str, str], _HandlerRegistration] = {}
         self._subscription_concurrency: dict[str, int] = {}
+        self._subscription_retry: dict[str, RetryPolicy] = {}
         self._frozen_subscriptions: set[str] = set()
         self._running_subscriptions: set[str] = set()
         self._run_active = False
@@ -256,6 +269,7 @@ class EventBus(Generic[ContextT]):
         *,
         subscription: str | None = None,
         concurrency: int | None = None,
+        retry: RetryPolicy | None = None,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
     ) -> _EventHandlerDecorator[_EventT, ContextT]: ...
@@ -268,6 +282,7 @@ class EventBus(Generic[ContextT]):
         *,
         subscription: str | None = None,
         concurrency: int | None = None,
+        retry: RetryPolicy | None = None,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
     ) -> Callable[[_EventT], _HandlerResultT]: ...
@@ -280,6 +295,7 @@ class EventBus(Generic[ContextT]):
         *,
         subscription: str | None = None,
         concurrency: int | None = None,
+        retry: RetryPolicy | None = None,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
     ) -> Callable[[_EventT, ContextT], _HandlerResultT]: ...
@@ -291,6 +307,7 @@ class EventBus(Generic[ContextT]):
         *,
         subscription: str | None = None,
         concurrency: int | None = None,
+        retry: RetryPolicy | None = None,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
     ) -> object:
@@ -319,6 +336,8 @@ class EventBus(Generic[ContextT]):
             raise
         if concurrency is not None:
             _validate_concurrency(concurrency)
+        if retry is not None and not isinstance(retry, RetryPolicy):
+            raise TypeError("'retry' must be a RetryPolicy or None")
         return self._register_handler_untyped(
             resolved_subscription,
             event_class,
@@ -327,6 +346,7 @@ class EventBus(Generic[ContextT]):
             timeout=timeout,
             declare_route=True,
             concurrency=concurrency,
+            retry=retry,
         )
 
     @overload
@@ -336,6 +356,7 @@ class EventBus(Generic[ContextT]):
         handler: None = None,
         *,
         subscription: str,
+        retry: RetryPolicy | None = None,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
     ) -> _EventHandlerDecorator[_EventT, ContextT]: ...
@@ -347,6 +368,7 @@ class EventBus(Generic[ContextT]):
         handler: Callable[[_EventT], _HandlerResultT],
         *,
         subscription: str,
+        retry: RetryPolicy | None = None,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
     ) -> Callable[[_EventT], _HandlerResultT]: ...
@@ -358,6 +380,7 @@ class EventBus(Generic[ContextT]):
         handler: Callable[[_EventT, ContextT], _HandlerResultT],
         *,
         subscription: str,
+        retry: RetryPolicy | None = None,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
     ) -> Callable[[_EventT, ContextT], _HandlerResultT]: ...
@@ -369,6 +392,7 @@ class EventBus(Generic[ContextT]):
         handler: None = None,
         *,
         subscription: str,
+        retry: RetryPolicy | None = None,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
     ) -> _EventHandlerDecorator[BaseEvent, ContextT]: ...
@@ -380,6 +404,7 @@ class EventBus(Generic[ContextT]):
         handler: Callable[[BaseEvent], _HandlerResultT],
         *,
         subscription: str,
+        retry: RetryPolicy | None = None,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
     ) -> Callable[[BaseEvent], _HandlerResultT]: ...
@@ -391,6 +416,7 @@ class EventBus(Generic[ContextT]):
         handler: Callable[[BaseEvent, ContextT], _HandlerResultT],
         *,
         subscription: str,
+        retry: RetryPolicy | None = None,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
     ) -> Callable[[BaseEvent, ContextT], _HandlerResultT]: ...
@@ -401,10 +427,13 @@ class EventBus(Generic[ContextT]):
         handler: object = None,
         *,
         subscription: str,
+        retry: RetryPolicy | None = None,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
     ) -> object:
         """Register a handler through a declared subscription."""
+        if retry is not None and not isinstance(retry, RetryPolicy):
+            raise TypeError("'retry' must be a RetryPolicy or None")
         self.subscription(subscription)
         return self._register_handler(
             subscription,
@@ -412,6 +441,7 @@ class EventBus(Generic[ContextT]):
             handler,
             permanent_errors=permanent_errors,
             timeout=timeout,
+            retry=retry,
         )
 
     def subscription(
@@ -443,6 +473,21 @@ class EventBus(Generic[ContextT]):
             subscription, self._default_concurrency
         )
 
+    def _retry_for(self, subscription: str) -> RetryPolicy | None:
+        """Return the explicit retry policy for ``subscription``, if any."""
+        return self._subscription_retry.get(subscription)
+
+    def _ensure_retry_compatible(
+        self, subscription: str, retry: RetryPolicy | None
+    ) -> None:
+        """Reject a process-local subscription policy conflict."""
+        configured = self._subscription_retry.get(subscription)
+        if retry is not None and configured is not None and configured != retry:
+            raise ValueError(
+                f"subscription {subscription!r} is already configured with "
+                "a conflicting retry policy"
+            )
+
     def _begin_consuming(self, subscription: str) -> None:
         """Freeze configuration and claim the local runner for a subscription."""
         if subscription in self._running_subscriptions:
@@ -472,6 +517,7 @@ class EventBus(Generic[ContextT]):
         *,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
+        retry: RetryPolicy | None = None,
     ) -> _EventHandlerDecorator[_EventT, ContextT]: ...
 
     @overload
@@ -481,6 +527,7 @@ class EventBus(Generic[ContextT]):
         pattern: type[_EventT],
         handler: Callable[[_EventT], _HandlerResultT],
         *,
+        retry: RetryPolicy | None = None,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
     ) -> Callable[[_EventT], _HandlerResultT]: ...
@@ -492,6 +539,7 @@ class EventBus(Generic[ContextT]):
         pattern: type[_EventT],
         handler: Callable[[_EventT, ContextT], _HandlerResultT],
         *,
+        retry: RetryPolicy | None = None,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
     ) -> Callable[[_EventT, ContextT], _HandlerResultT]: ...
@@ -503,6 +551,7 @@ class EventBus(Generic[ContextT]):
         pattern: str,
         handler: None = None,
         *,
+        retry: RetryPolicy | None = None,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
     ) -> _EventHandlerDecorator[BaseEvent, ContextT]: ...
@@ -514,6 +563,7 @@ class EventBus(Generic[ContextT]):
         pattern: str,
         handler: Callable[[BaseEvent], _HandlerResultT],
         *,
+        retry: RetryPolicy | None = None,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
     ) -> Callable[[BaseEvent], _HandlerResultT]: ...
@@ -525,6 +575,7 @@ class EventBus(Generic[ContextT]):
         pattern: str,
         handler: Callable[[BaseEvent, ContextT], _HandlerResultT],
         *,
+        retry: RetryPolicy | None = None,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
     ) -> Callable[[BaseEvent, ContextT], _HandlerResultT]: ...
@@ -538,6 +589,7 @@ class EventBus(Generic[ContextT]):
         *,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
+        retry: RetryPolicy | None = None,
     ) -> object: ...
 
     def _register_handler(
@@ -548,6 +600,7 @@ class EventBus(Generic[ContextT]):
         *,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
+        retry: RetryPolicy | None = None,
     ) -> object:
         """Register a process-local handler without changing bus topology."""
         return self._register_handler_untyped(
@@ -556,6 +609,7 @@ class EventBus(Generic[ContextT]):
             handler,
             permanent_errors=permanent_errors,
             timeout=timeout,
+            retry=retry,
         )
 
     def _register_handler_untyped(
@@ -568,6 +622,7 @@ class EventBus(Generic[ContextT]):
         timeout: float | None,
         declare_route: bool = False,
         concurrency: int | None = None,
+        retry: RetryPolicy | None = None,
     ) -> object:
         """Validate and atomically commit one local handler registration."""
         validate_name(subscription, "subscription")
@@ -579,14 +634,12 @@ class EventBus(Generic[ContextT]):
             raise TypeError(
                 "'permanent_errors' must be a tuple or list of exception classes"
             )
-        if timeout is not None:
-            if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
-                raise TypeError("'timeout' must be a positive number or None")
-            if not math.isfinite(timeout) or timeout <= 0:
-                raise ValueError("'timeout' must be a positive finite number")
+        validated_timeout = _validate_timeout(timeout)
         validated_concurrency = (
             _validate_concurrency(concurrency) if concurrency is not None else None
         )
+        if retry is not None and not isinstance(retry, RetryPolicy):
+            raise TypeError("'retry' must be a RetryPolicy or None")
 
         def decorator(fn: object) -> object:
             self._ensure_handler_registration_open(subscription)
@@ -596,7 +649,7 @@ class EventBus(Generic[ContextT]):
             # EventT relationship validated by the public overloads, so erase
             # that parameter type exactly once when storing the callable.
             stored_handler = cast(_StoredEventHandler, fn)
-            if timeout is not None and not _is_async_callable(stored_handler):
+            if validated_timeout is not None and not _is_async_callable(stored_handler):
                 raise TypeError("'timeout' is only supported for async handlers")
             accepts_context = _accepts_context(stored_handler)
             combo = (subscription, key)
@@ -604,6 +657,7 @@ class EventBus(Generic[ContextT]):
                 raise ValueError(
                     f"handler already registered for ({subscription!r}, {key!r})"
                 )
+            self._ensure_retry_compatible(subscription, retry)
             configured = self._subscription_concurrency.get(subscription)
             if (
                 validated_concurrency is not None
@@ -631,7 +685,7 @@ class EventBus(Generic[ContextT]):
             registration = _HandlerRegistration(
                 handler=stored_handler,
                 permanent_errors=tuple(permanent_errors),
-                timeout=float(timeout) if timeout is not None else None,
+                timeout=validated_timeout,
                 handler_name=getattr(fn, "__name__", type(fn).__name__),
                 accepts_context=accepts_context,
             )
@@ -640,6 +694,8 @@ class EventBus(Generic[ContextT]):
             self.topology = new_topology
             if validated_concurrency is not None:
                 self._subscription_concurrency[subscription] = validated_concurrency
+            if retry is not None:
+                self._subscription_retry[subscription] = retry
             self._handlers[combo] = registration
             return fn
 

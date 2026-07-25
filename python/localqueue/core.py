@@ -288,10 +288,29 @@ class SimpleQueue(Generic[_PayloadT]):
         :raises Empty: if ``block=False`` and the queue is empty, or if the
             timeout expires while ``block=True``.
         """
+        return self._get(block=block, timeout=timeout, max_attempts=None)
+
+    def _get_with_max_attempts(
+        self,
+        *,
+        max_attempts: int,
+        block: bool = True,
+        timeout: Optional[float] = None,
+    ) -> Job[_PayloadT]:
+        """Claim while atomically overriding the persisted retry budget."""
+        return self._get(block=block, timeout=timeout, max_attempts=max_attempts)
+
+    def _get(
+        self,
+        *,
+        block: bool,
+        timeout: Optional[float],
+        max_attempts: int | None,
+    ) -> Job[_PayloadT]:
         lease_ms = int(self.delivery.lease_seconds * 1000)
 
         if not block:
-            lease = self._get_native().get(lease_ms)
+            lease = self._get_native().get(lease_ms, max_attempts)
             if lease is None:
                 raise Empty("queue is empty")
             return self._to_job(lease)
@@ -303,7 +322,7 @@ class SimpleQueue(Generic[_PayloadT]):
         sleep = 0.01
         max_sleep = 0.25
         while True:
-            lease = self._get_native().get(lease_ms)
+            lease = self._get_native().get(lease_ms, max_attempts)
             if lease is not None:
                 return self._to_job(lease)
 
