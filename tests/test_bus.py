@@ -2,6 +2,7 @@ import asyncio
 import importlib
 import pickle
 import sys
+import threading
 import time
 
 import pytest
@@ -357,6 +358,45 @@ class TestConsumption:
         queue = bus._open_subscription_queue("users")
         assert queue.stats()["acked"] == 1
         queue.close()
+        bus.close()
+
+    def test_sync_context_factory_does_not_block_the_event_loop(self, tmp_path):
+        factory_started = threading.Event()
+        loop_progressed = threading.Event()
+        factory_observed_progress = []
+
+        class AppContext(HandlerContext):
+            pass
+
+        def create_context(runtime: RuntimeContext) -> AppContext:
+            factory_started.set()
+            factory_observed_progress.append(loop_progressed.wait(timeout=0.5))
+            return AppContext(runtime)
+
+        bus = EventBus[AppContext](
+            str(tmp_path / "bus"),
+            topology=BusTopology({"users": [UserCreated]}),
+            context_factory=create_context,
+        )
+
+        @bus.subscription("users").handler(UserCreated)
+        def handle_user(event, ctx):
+            assert isinstance(ctx, AppContext)
+
+        async def allow_loop_progress() -> None:
+            await asyncio.to_thread(factory_started.wait)
+            await asyncio.sleep(0)
+            loop_progressed.set()
+
+        async def consume() -> None:
+            progress_task = asyncio.create_task(allow_loop_progress())
+            bus.dispatch(UserCreated(user_id="42"))
+            await bus.run(idle_timeout=0.2)
+            await progress_task
+
+        run(consume())
+
+        assert factory_observed_progress == [True]
         bus.close()
 
     def test_handler_sync_e_async_ack(self, tmp_path):

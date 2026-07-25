@@ -129,7 +129,10 @@ async def _create_handler_context(
     factory = bus.context_factory
     if factory is None:
         return HandlerContext(runtime)
-    context = factory(runtime)
+    if _is_async_callable(cast(_StoredEventHandler, factory)):
+        context = factory(runtime)
+    else:
+        context = await asyncio.to_thread(factory, runtime)
     if inspect.isawaitable(context):
         context = await context
     return cast(HandlerContext, context)
