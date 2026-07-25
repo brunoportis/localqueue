@@ -80,6 +80,37 @@ Reject("")
 Reject("invalid", category=1)
 
 
+def returns_string(event: UserCreated) -> str:
+    return event.user_id
+
+
+def returns_integer(event: UserCreated) -> int:
+    return 1
+
+
+def returns_events(event: UserCreated) -> list[BaseEvent]:
+    return [event]
+
+
+class Response:
+    pass
+
+
+def returns_response(event: UserCreated) -> Response:
+    return Response()
+
+
+def returns_object(event: UserCreated) -> object:
+    return event
+
+
+bus.subscription("users").handler(UserCreated, returns_string)
+bus.subscription("users").handler(UserCreated, returns_integer)
+bus.subscription("users").handler(UserCreated, returns_events)
+bus.subscription("users").handler(UserCreated, returns_response)
+bus.subscription("users").handler(UserCreated, returns_object)
+
+
 class AppContext(HandlerContext):
     pass
 

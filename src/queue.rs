@@ -224,6 +224,36 @@ impl NativeQueue {
         })
     }
 
+    /// Atomically acknowledge this queue's leased message and fan one payload
+    /// out to all target queues.
+    pub fn ack_and_fanout(
+        &self,
+        py: Python<'_>,
+        id: i64,
+        receipt: &str,
+        payload: Vec<u8>,
+        targets: Vec<(String, Option<String>)>,
+    ) -> PyResult<Vec<i64>> {
+        let receipt = receipt.to_owned();
+        py.detach(move || {
+            let entries: Vec<EnqueueEntry<'_>> = targets
+                .iter()
+                .map(|(queue_name, job_id)| EnqueueEntry {
+                    queue_name,
+                    payload: &payload,
+                    job_id: job_id.as_deref(),
+                })
+                .collect();
+            Ok(self.storage.ack_and_fanout(
+                &self.queue,
+                id,
+                &receipt,
+                &entries,
+                self.max_attempts,
+            )?)
+        })
+    }
+
     pub fn get(&self, py: Python<'_>, lease_ms: i64) -> PyResult<Option<Lease>> {
         py.detach(move || {
             let now = now_ms();

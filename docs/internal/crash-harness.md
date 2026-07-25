@@ -30,6 +30,7 @@ coverage.
 | `enqueue-before-commit` | empty | INSERT before COMMIT | empty |
 | `claim-before-commit` | ready=1 | lease update before COMMIT | ready=1 |
 | `ack-before-commit` | processing=1 | ACK update before COMMIT | processing=1 |
+| `ack-fanout-before-commit` | processing=1, targets=0 | ACK and target inserts before COMMIT | processing=1, targets=0 |
 | `nack-before-commit` | processing=1 | NACK update before COMMIT | processing=1 |
 | `fail-before-commit` | processing=1 | fail update before COMMIT | processing=1 |
 | `purge-before-commit` | acked=1 | purge DELETE before COMMIT | acked=1 |

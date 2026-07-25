@@ -22,6 +22,11 @@ EXPECTED_DIAGNOSTICS = (
     "localqueue.bus.subscription.Subscription.retry_failed",
     "localqueue.bus.control.Retry.__init__",
     "localqueue.bus.control.Reject.__init__",
+    "localqueue.bus.subscription.Subscription.handler",
+    "localqueue.bus.subscription.Subscription.handler",
+    "localqueue.bus.subscription.Subscription.handler",
+    "localqueue.bus.subscription.Subscription.handler",
+    "localqueue.bus.subscription.Subscription.handler",
     "nonexistent_service",
 )
 

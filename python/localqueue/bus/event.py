@@ -78,3 +78,13 @@ class BaseEvent(BaseModel):
 def event_type_of(cls: type[BaseEvent]) -> str:
     """Resolve a class's ``event_type`` without instantiating it."""
     return cls.event_name or cls.__name__
+
+
+def derive_from_returned(event: _EventT, parent: BaseEvent) -> _EventT:
+    """Copy a returned event and fill only lineage fields the caller omitted."""
+    updates: dict[str, UUID | None] = {}
+    if "correlation_id" not in event.model_fields_set:
+        updates["correlation_id"] = parent.correlation_id
+    if "causation_id" not in event.model_fields_set:
+        updates["causation_id"] = parent.event_id
+    return event.model_copy(update=updates)

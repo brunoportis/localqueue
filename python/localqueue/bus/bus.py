@@ -36,7 +36,9 @@ from localqueue.core import JsonSerializer, Serializer, SimpleQueue
 from localqueue.policies import DeliveryPolicy, DurabilityMode, _durability_fsync
 
 _EventT = TypeVar("_EventT", bound=BaseEvent)
-_HandlerResultT = TypeVar("_HandlerResultT")
+HandlerResult = BaseEvent | None
+HandlerReturn = HandlerResult | Awaitable[HandlerResult]
+_HandlerResultT = TypeVar("_HandlerResultT", bound=HandlerReturn)
 _StoredEventHandler = Callable[..., object]
 _AsyncStoredEventHandler = Callable[..., Awaitable[object]]
 

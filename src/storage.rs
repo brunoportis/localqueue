@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, ErrorCode, OpenFlags, TransactionBehavior};
+use rusqlite::{params, Connection, ErrorCode, OpenFlags, Transaction, TransactionBehavior};
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -99,6 +99,38 @@ impl Storage {
             }
             None => enqueue_batch_on_connection(primary, entries, max_attempts, capacity),
         }
+    }
+
+    pub fn ack_and_fanout(
+        &self,
+        queue_name: &str,
+        id: i64,
+        receipt: &str,
+        entries: &[EnqueueEntry<'_>],
+        max_attempts: i64,
+    ) -> Result<Vec<i64>> {
+        let now = now_ms();
+        let mut guard = self.connection();
+        let conn = guard.as_mut().ok_or(QueueError::Closed)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = tx.execute(
+            "UPDATE messages SET
+                status = 2,
+                receipt = NULL,
+                lease_until = NULL,
+                updated_at = ?1
+             WHERE id = ?2 AND queue = ?3 AND status = 1
+                AND receipt = ?4 AND lease_until > ?5",
+            params![now, id, queue_name, receipt, now],
+        )?;
+        if changed != 1 {
+            return Err(QueueError::LeaseExpired);
+        }
+        let ids = insert_entries_in_transaction(&tx, entries, max_attempts, now)?;
+        #[cfg(feature = "__crash_test")]
+        crate::failpoints::hit(crate::failpoints::Failpoint::AckFanoutBeforeCommit);
+        tx.commit()?;
+        Ok(ids)
     }
 
     /// Open a short-lived connection for a deadline-bounded enqueue attempt.
@@ -272,6 +304,20 @@ fn enqueue_batch_on_connection(
         }
     }
 
+    let ids = insert_entries_in_transaction(&tx, entries, max_attempts, now)?;
+
+    #[cfg(feature = "__crash_test")]
+    crate::failpoints::hit(crate::failpoints::Failpoint::EnqueueBeforeCommit);
+    tx.commit().map_err(QueueError::from)?;
+    Ok(ids)
+}
+
+fn insert_entries_in_transaction(
+    tx: &Transaction<'_>,
+    entries: &[EnqueueEntry<'_>],
+    max_attempts: i64,
+    now: i64,
+) -> Result<Vec<i64>> {
     let mut insert = tx
         .prepare(
             "INSERT OR IGNORE INTO messages (
@@ -311,9 +357,6 @@ fn enqueue_batch_on_connection(
     }
     drop(insert);
 
-    #[cfg(feature = "__crash_test")]
-    crate::failpoints::hit(crate::failpoints::Failpoint::EnqueueBeforeCommit);
-    tx.commit().map_err(QueueError::from)?;
     Ok(ids)
 }
 
@@ -437,6 +480,180 @@ mod tests {
         let ids = storage.enqueue_batch(&entries, 3, None, None).unwrap();
         assert_eq!(ids.len(), 3);
         assert!(ids[0] < ids[1] && ids[1] < ids[2]);
+    }
+
+    fn lease_message(storage: &Storage, id: i64, queue: &str, receipt: &str) {
+        let mut guard = storage.connection();
+        let conn = guard.as_mut().unwrap();
+        conn.execute(
+            "UPDATE messages SET status = 1, attempts = 1, receipt = ?1,
+                lease_until = ?2 WHERE id = ?3 AND queue = ?4",
+            params![receipt, now_ms() + 60_000, id, queue],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn ack_and_fanout_acknowledges_and_inserts_targets_in_order() {
+        let (_dir, storage) = open_storage();
+        let origin = [EnqueueEntry {
+            queue_name: "origin",
+            payload: b"parent",
+            job_id: Some("parent-id"),
+        }];
+        let origin_id = storage.enqueue_batch(&origin, 4, None, None).unwrap()[0];
+        lease_message(&storage, origin_id, "origin", "receipt");
+        let targets = [
+            EnqueueEntry {
+                queue_name: "target-b",
+                payload: b"child",
+                job_id: Some("child-id"),
+            },
+            EnqueueEntry {
+                queue_name: "target-a",
+                payload: b"child",
+                job_id: Some("child-id"),
+            },
+        ];
+
+        let ids = storage
+            .ack_and_fanout("origin", origin_id, "receipt", &targets, 4)
+            .unwrap();
+
+        assert_eq!(ids.len(), 2);
+        let mut guard = storage.connection();
+        let conn = guard.as_mut().unwrap();
+        let status: i64 = conn
+            .query_row(
+                "SELECT status FROM messages WHERE id = ?1",
+                params![origin_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, 2);
+        for (index, queue) in ["target-b", "target-a"].iter().enumerate() {
+            let row: (i64, i64) = conn
+                .query_row(
+                    "SELECT id, max_attempts FROM messages
+                     WHERE queue = ?1 AND job_id = 'child-id'",
+                    params![queue],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(row, (ids[index], 4));
+        }
+    }
+
+    #[test]
+    fn ack_and_fanout_deduplicates_and_rejects_stale_receipt_without_inserts() {
+        let (_dir, storage) = open_storage();
+        let origin = [EnqueueEntry {
+            queue_name: "origin",
+            payload: b"parent",
+            job_id: None,
+        }];
+        let origin_id = storage.enqueue_batch(&origin, 3, None, None).unwrap()[0];
+        lease_message(&storage, origin_id, "origin", "valid");
+        let existing = [EnqueueEntry {
+            queue_name: "target",
+            payload: b"first",
+            job_id: Some("child"),
+        }];
+        let existing_id = storage.enqueue_batch(&existing, 3, None, None).unwrap()[0];
+        let targets = [
+            EnqueueEntry {
+                queue_name: "target",
+                payload: b"second",
+                job_id: Some("child"),
+            },
+            EnqueueEntry {
+                queue_name: "new-target",
+                payload: b"second",
+                job_id: Some("child"),
+            },
+        ];
+
+        assert!(matches!(
+            storage.ack_and_fanout("origin", origin_id, "wrong", &targets, 3),
+            Err(QueueError::LeaseExpired)
+        ));
+
+        let mut guard = storage.connection();
+        let conn = guard.as_mut().unwrap();
+        let new_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE queue = 'new-target'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(new_count, 0);
+        drop(guard);
+
+        let ids = storage
+            .ack_and_fanout("origin", origin_id, "valid", &targets, 3)
+            .unwrap();
+        assert_eq!(ids[0], existing_id);
+    }
+
+    #[test]
+    fn ack_and_fanout_rolls_back_ack_and_all_targets_on_insert_error() {
+        let (_dir, storage) = open_storage();
+        let origin = [EnqueueEntry {
+            queue_name: "origin",
+            payload: b"parent",
+            job_id: None,
+        }];
+        let origin_id = storage.enqueue_batch(&origin, 3, None, None).unwrap()[0];
+        lease_message(&storage, origin_id, "origin", "receipt");
+        {
+            let mut guard = storage.connection();
+            guard
+                .as_mut()
+                .unwrap()
+                .execute_batch(
+                    "CREATE TRIGGER reject_second_target
+                     BEFORE INSERT ON messages
+                     WHEN NEW.queue = 'target-2'
+                     BEGIN SELECT RAISE(ABORT, 'injected insert failure'); END;",
+                )
+                .unwrap();
+        }
+        let targets = [
+            EnqueueEntry {
+                queue_name: "target-1",
+                payload: b"child",
+                job_id: Some("child"),
+            },
+            EnqueueEntry {
+                queue_name: "target-2",
+                payload: b"child",
+                job_id: Some("child"),
+            },
+        ];
+
+        assert!(storage
+            .ack_and_fanout("origin", origin_id, "receipt", &targets, 3)
+            .is_err());
+
+        let mut guard = storage.connection();
+        let conn = guard.as_mut().unwrap();
+        let status: i64 = conn
+            .query_row(
+                "SELECT status FROM messages WHERE id = ?1",
+                params![origin_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let target_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE queue LIKE 'target-%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, 1);
+        assert_eq!(target_count, 0);
     }
 
     #[test]

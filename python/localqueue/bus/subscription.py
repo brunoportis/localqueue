@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable, Generic, TypeVar, overload
+from typing import TYPE_CHECKING, Awaitable, Callable, Generic, TypeVar, overload
 
 from localqueue.bus.context import ContextT
 from localqueue.bus.deadletter import FailedDelivery, inspect_delivery
@@ -13,7 +13,9 @@ if TYPE_CHECKING:
     from localqueue.bus.event import BaseEvent
 
 _EventT = TypeVar("_EventT", bound="BaseEvent")
-_HandlerResultT = TypeVar("_HandlerResultT")
+_HandlerResultT = TypeVar(
+    "_HandlerResultT", bound="BaseEvent | None | Awaitable[BaseEvent | None]"
+)
 
 
 class Subscription(Generic[ContextT]):

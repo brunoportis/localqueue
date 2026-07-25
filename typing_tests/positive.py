@@ -2,7 +2,7 @@
 
 import json
 from dataclasses import dataclass
-from typing import Callable
+from typing import Awaitable, Callable
 
 from localqueue import (
     EnqueueItem,
@@ -99,8 +99,8 @@ class AppContext(HandlerContext):
 
 
 class CallableHandler:
-    def __call__(self, event: UserCreated) -> int:
-        return len(event.user_id)
+    def __call__(self, event: UserCreated) -> UserCreated:
+        return event
 
 
 event_serializer = EventEnvelopeSerializer()
@@ -137,17 +137,17 @@ async def handle_user_created_async(event: UserCreated) -> None:
     print(user_created.user_id)
 
 
-def direct_handler(event: UserCreated) -> str:
-    return event.user_id
+def direct_handler(event: UserCreated) -> UserCreated:
+    return event
 
 
-registered_direct: Callable[[UserCreated], str] = bus.on(
+registered_direct: Callable[[UserCreated], UserCreated] = bus.on(
     UserCreated,
     direct_handler,
     subscription="users_direct",
 )
 callable_handler = CallableHandler()
-registered_callable: Callable[[UserCreated], int] = bus.subscription(
+registered_callable: Callable[[UserCreated], UserCreated] = bus.subscription(
     "users_callable"
 ).handler(UserCreated, callable_handler)
 
@@ -156,6 +156,30 @@ registered_callable: Callable[[UserCreated], int] = bus.subscription(
 def handle_string_pattern(event: BaseEvent) -> None:
     base_event: BaseEvent = event
     print(base_event.event_type)
+
+
+@bus.subscription("users_sync").handler(UserCreated)
+def sync_emission(event: UserCreated) -> UserCreated:
+    return UserCreated(user_id=event.user_id)
+
+
+@bus.subscription("users_async").handler(UserCreated)
+async def async_emission(event: UserCreated) -> UserCreated:
+    return UserCreated(user_id=event.user_id)
+
+
+def awaitable_emission(event: UserCreated) -> Awaitable[BaseEvent | None]:
+    async def resolve() -> BaseEvent | None:
+        return event
+
+    return resolve()
+
+
+registered_awaitable: Callable[[UserCreated], Awaitable[BaseEvent | None]] = bus.on(
+    UserCreated,
+    awaitable_emission,
+    subscription="users_direct",
+)
 
 
 registered_event: type[UserCreated] = bus.register(UserCreated)
