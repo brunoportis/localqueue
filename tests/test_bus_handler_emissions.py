@@ -1,4 +1,5 @@
 import asyncio
+import json
 from uuid import uuid4
 
 import pytest
@@ -187,3 +188,60 @@ def test_timeout_discards_event_returned_during_cancellation_cleanup(tmp_path):
     assert failed[0].reason is FailureReason.HANDLER_TIMEOUT
     assert stats(bus, "outputs")["ready"] == 0
     bus.close()
+
+
+def test_serialization_error_retries_without_output(tmp_path):
+    class FailingOutputSerializer:
+        def dumps(self, obj: dict[str, object], /) -> bytes:
+            if obj["event_type"] == "Output":
+                raise ValueError("cannot serialize Output")
+            return json.dumps(obj).encode()
+
+        def loads(self, data: bytes, /) -> object:
+            return json.loads(data)
+
+    bus = EventBus(
+        str(tmp_path),
+        topology=BusTopology({"inputs": [Input], "outputs": [Output]}),
+        delivery=DeliveryPolicy(lease_seconds=1, max_retries=1),
+        serializer=FailingOutputSerializer(),
+    )
+
+    @bus.subscription("inputs").handler(Input)
+    def handle(event):
+        return Output(value=event.value)
+
+    bus.dispatch(Input(value="parent"))
+    run(bus.run_subscription("inputs", idle_timeout=0.2))
+
+    failed = bus.subscription("inputs").list_failed()
+    assert failed[0].attempts == 2
+    assert failed[0].reason is FailureReason.RETRIES_EXHAUSTED
+    assert "cannot serialize Output" in failed[0].last_error
+    assert stats(bus, "outputs")["ready"] == 0
+    bus.close()
+
+
+def test_existing_target_ids_are_reused_while_origin_is_acked(tmp_path):
+    bus = make_bus(tmp_path)
+    returned = Output(value="same-id")
+    receipt = bus.dispatch(returned)
+
+    @bus.subscription("inputs").handler(Input)
+    def handle(event):
+        return returned
+
+    bus.dispatch(Input(value="parent"))
+    run(bus.run_subscription("inputs", idle_timeout=0.2))
+
+    assert stats(bus, "inputs")["acked"] == 1
+    assert stats(bus, "a")["ready"] == 1
+    assert stats(bus, "b")["ready"] == 1
+    bus.close()
+
+    reopened = make_bus(tmp_path)
+    assert stats(reopened, "inputs")["acked"] == 1
+    assert stats(reopened, "a")["ready"] == 1
+    assert stats(reopened, "b")["ready"] == 1
+    assert len(receipt.message_ids) == 2
+    reopened.close()
