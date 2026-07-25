@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import math
 import random
+import sys
 from dataclasses import dataclass
 from typing import Literal
 
 from localqueue.policies import _delay_to_milliseconds
 
 _MAX_STORAGE_INTEGER = 2**63 - 1
+_MAX_FLOAT_LOG = math.log(sys.float_info.max)
 
 
 def _uniform(lower: float, upper: float) -> float:
@@ -123,13 +125,19 @@ class RetryPolicy:
             base_delay = 0.0
         else:
             exponent = attempt - 1
-            saturation_exponent = math.log(
-                self._max_delay / self._initial_delay, self._multiplier
-            )
-            if exponent >= saturation_exponent:
+            log_multiplier = math.log(self._multiplier)
+            log_power = exponent * log_multiplier
+            log_delay = math.log(self._initial_delay) + log_power
+            log_max_delay = math.log(self._max_delay)
+            if log_delay >= log_max_delay:
                 base_delay = self._max_delay
+            elif log_power <= _MAX_FLOAT_LOG:
+                base_delay = min(
+                    self._initial_delay * self._multiplier**exponent,
+                    self._max_delay,
+                )
             else:
-                base_delay = self._initial_delay * self._multiplier**exponent
+                base_delay = min(math.exp(log_delay), self._max_delay)
         if self._jitter:
             return _uniform(0.0, base_delay)
         return base_delay

@@ -3,7 +3,7 @@ import sqlite3
 from asyncio import run
 
 import pytest
-from localqueue import DeliveryPolicy, FailureReason, SimpleQueue
+from localqueue import DeliveryPolicy, Empty, FailureReason, SimpleQueue
 from localqueue.bus import (
     BaseEvent,
     BusTopology,
@@ -116,6 +116,18 @@ def test_exponential_delay_saturates_without_computing_a_huge_power() -> None:
     )
 
     assert policy._delay_for(2**30) == 60.0
+
+
+def test_exponential_delay_saturates_for_subnormal_initial_delay() -> None:
+    policy = RetryPolicy.exponential(
+        max_attempts=3000,
+        initial_delay=1e-320,
+        multiplier=2,
+        max_delay=60,
+        jitter=False,
+    )
+
+    assert policy._delay_for(2000) == 60.0
 
 
 def test_full_jitter_uses_single_injectable_uniform_draw(
@@ -389,5 +401,111 @@ def test_expired_lease_reclaim_uses_smaller_override(tmp_path) -> None:
         with pytest.raises(Exception, match="empty"):
             queue._get_with_max_attempts(max_attempts=1, block=False)
         assert _message_row(tmp_path, job.id)[3] == "retries_exhausted"
+    finally:
+        queue.close()
+
+
+def test_ready_message_exhausted_by_smaller_override_fails_without_claim(
+    tmp_path,
+) -> None:
+    queue = SimpleQueue(
+        str(tmp_path),
+        delivery=DeliveryPolicy(lease_seconds=10, max_retries=7),
+    )
+    try:
+        message_id = queue.put({"value": 1})
+        with sqlite3.connect(tmp_path / "localqueue.db") as connection:
+            connection.execute(
+                "UPDATE messages SET attempts = 3 WHERE id = ?", (message_id,)
+            )
+
+        with pytest.raises(Empty):
+            queue._get_with_max_attempts(max_attempts=2, block=False)
+
+        attempts, max_attempts, _, reason = _message_row(tmp_path, message_id)
+        assert attempts == 3
+        assert max_attempts == 2
+        assert reason == "retries_exhausted"
+    finally:
+        queue.close()
+
+
+def test_smaller_policy_does_not_run_handler_after_ready_budget_is_exhausted(
+    tmp_path,
+) -> None:
+    bus = EventBus(str(tmp_path))
+    calls = 0
+
+    @bus.handler(RetryEventA, retry=RetryPolicy.fixed(max_attempts=2, delay=0))
+    def handle(event):
+        nonlocal calls
+        calls += 1
+
+    try:
+        receipt = bus.dispatch(RetryEventA(value=1))
+        message_id = receipt.message_ids[0]
+        with sqlite3.connect(tmp_path / "localqueue.db") as connection:
+            connection.execute(
+                "UPDATE messages SET attempts = 3, max_attempts = 8 WHERE id = ?",
+                (message_id,),
+            )
+
+        run(bus.run(idle_timeout=0.05))
+
+        attempts, max_attempts, _, reason = _message_row(tmp_path, message_id)
+        assert calls == 0
+        assert attempts == 3
+        assert max_attempts == 2
+        assert reason == "retries_exhausted"
+    finally:
+        bus.close()
+
+
+def test_ready_message_below_smaller_override_allows_exact_final_attempt(
+    tmp_path,
+) -> None:
+    queue = SimpleQueue(
+        str(tmp_path),
+        delivery=DeliveryPolicy(lease_seconds=10, max_retries=7),
+    )
+    try:
+        message_id = queue.put({"value": 1})
+        with sqlite3.connect(tmp_path / "localqueue.db") as connection:
+            connection.execute(
+                "UPDATE messages SET attempts = 1 WHERE id = ?", (message_id,)
+            )
+
+        job = queue._get_with_max_attempts(max_attempts=2, block=False)
+
+        attempts, max_attempts, _, reason = _message_row(tmp_path, message_id)
+        assert job.id == message_id
+        assert job.attempts + 1 == 2
+        assert attempts == 2
+        assert max_attempts == 2
+        assert reason is None
+    finally:
+        queue.close()
+
+
+def test_claim_skips_ready_message_exhausted_by_override(tmp_path) -> None:
+    queue = SimpleQueue(
+        str(tmp_path),
+        delivery=DeliveryPolicy(lease_seconds=10, max_retries=7),
+    )
+    try:
+        exhausted_id = queue.put({"value": 1})
+        eligible_id = queue.put({"value": 2})
+        with sqlite3.connect(tmp_path / "localqueue.db") as connection:
+            connection.execute(
+                "UPDATE messages SET attempts = 3 WHERE id = ?", (exhausted_id,)
+            )
+
+        job = queue._get_with_max_attempts(max_attempts=2, block=False)
+
+        assert job.id == eligible_id
+        attempts, max_attempts, _, reason = _message_row(tmp_path, exhausted_id)
+        assert attempts == 3
+        assert max_attempts == 2
+        assert reason == "retries_exhausted"
     finally:
         queue.close()
