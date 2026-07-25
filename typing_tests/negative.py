@@ -1,6 +1,7 @@
 """Invalid consumer examples; the negative typing check must reject each call."""
 
 from dataclasses import dataclass
+from typing import TypedDict
 
 from localqueue import FailedMessage, Job, Serializer, SimpleQueue, Worker
 from localqueue.bus import (
@@ -135,3 +136,32 @@ typed_bus = EventBus[AppContext](
 @typed_bus.subscription("users").handler(UserCreated)
 def invalid_context_access(event: UserCreated, ctx: AppContext) -> None:
     ctx.nonexistent_service
+
+
+class ContactCreated(BaseEvent):
+    contact_id: str
+
+
+class Row(TypedDict):
+    contact_id: str
+
+
+class OtherRow(TypedDict):
+    order_id: str
+
+
+async def bad_transform(row: Row) -> str:
+    return row["contact_id"]
+
+
+def other_row_transform(row: OtherRow) -> ContactCreated:
+    return ContactCreated(contact_id=row["order_id"])
+
+
+async def run_bad_ingestion() -> None:
+    rows: list[Row] = [{"contact_id": "1"}]
+    await bus.ingest([1, 2, 3])
+    await bus.ingest(rows, transform="ContactCreated")
+    await bus.ingest(rows, transform=bad_transform)
+    await bus.ingest(rows, transform=other_row_transform)
+    await bus.ingest(42)

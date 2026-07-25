@@ -2,7 +2,7 @@
 
 import json
 from dataclasses import dataclass
-from typing import Awaitable, Callable
+from typing import AsyncIterator, Awaitable, Callable, Iterator, TypedDict
 
 from localqueue import (
     EnqueueItem,
@@ -20,6 +20,7 @@ from localqueue.bus import (
     EventBus,
     FailedDelivery,
     HandlerContext,
+    IngestionResult,
     Reject,
     Retry,
     RetryPolicy,
@@ -278,3 +279,64 @@ ergonomic_direct: Callable[[UserCreated], UserIndexed] = ergonomic_bus.handler(
     ergonomic_direct_handler,
     subscription="ergonomic-direct",
 )
+
+
+class ContactCreated(BaseEvent):
+    contact_id: str
+
+
+class Row(TypedDict):
+    contact_id: str
+
+
+ingestion_bus: EventBus[HandlerContext] = EventBus(
+    "./typing-ingestion-bus",
+    topology=BusTopology({"contacts": [ContactCreated]}),
+)
+
+
+def contact_rows() -> Iterator[ContactCreated]:
+    yield ContactCreated(contact_id="1")
+
+
+async def async_contact_rows() -> AsyncIterator[ContactCreated]:
+    yield ContactCreated(contact_id="2")
+
+
+def row_to_contact(row: Row) -> ContactCreated:
+    return ContactCreated(contact_id=row["contact_id"])
+
+
+async def async_row_to_contact(row: Row) -> ContactCreated:
+    return ContactCreated(contact_id=row["contact_id"])
+
+
+async def run_ingestion() -> None:
+    rows: list[Row] = [{"contact_id": "3"}]
+    from_list: IngestionResult = await ingestion_bus.ingest(
+        [ContactCreated(contact_id="0")]
+    )
+    from_iterable: IngestionResult = await ingestion_bus.ingest(contact_rows())
+    from_async_iterable: IngestionResult = await ingestion_bus.ingest(
+        async_contact_rows()
+    )
+    from_rows: IngestionResult = await ingestion_bus.ingest(
+        rows,
+        transform=row_to_contact,
+        batch_size=500,
+    )
+    from_rows_async: IngestionResult = await ingestion_bus.ingest(
+        rows,
+        transform=async_row_to_contact,
+        max_pending=10_000,
+    )
+    for result in (
+        from_list,
+        from_iterable,
+        from_async_iterable,
+        from_rows,
+        from_rows_async,
+    ):
+        deliveries: int = result.deliveries_total
+        batches: int = result.batches_committed
+        print(deliveries, batches)

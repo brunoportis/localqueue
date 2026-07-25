@@ -149,3 +149,10 @@ option, and the dispatch queue's `NativeQueue` policy is not applied to target
 subscription queues. Its per-subscription `concurrency` option instead bounds
 only active handlers in one consumer process; it neither limits fan-out nor
 creates producer backpressure. See [Event bus](event-bus.md#per-subscription-concurrency).
+
+The exception is bulk ingestion: `EventBus.ingest(..., max_pending=...)`
+applies asynchronous producer backpressure per subscription queue, waiting
+without blocking the event loop while READY plus LEASED deliveries are at the
+limit. The limit is ephemeral and per call — it is not persisted and does not
+constrain later plain `dispatch()` calls. See
+[Generic ingestion](event-bus.md#generic-ingestion).

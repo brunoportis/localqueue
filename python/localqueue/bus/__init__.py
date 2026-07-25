@@ -12,6 +12,7 @@ from localqueue.bus.context import ContextFactory, HandlerContext, RuntimeContex
 from localqueue.bus.control import Reject, Retry
 from localqueue.bus.deadletter import FailedDelivery
 from localqueue.bus.event import BaseEvent, InvalidEventIdentity, event
+from localqueue.bus.ingestion import IngestionResult
 from localqueue.bus.registry import EVENT_REGISTRY, EventRegistry
 from localqueue.bus.retry import RetryPolicy
 from localqueue.bus.subscription import Subscription
@@ -30,6 +31,7 @@ __all__ = [
     "EventBus",
     "FailedDelivery",
     "HandlerContext",
+    "IngestionResult",
     "EventRegistry",
     "NoSubscribers",
     "Reject",

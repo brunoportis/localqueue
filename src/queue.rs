@@ -13,6 +13,13 @@ pub const STATUS_LEASED: i64 = 1;
 pub const STATUS_ACKED: i64 = 2;
 pub const STATUS_FAILED: i64 = 3;
 type IdentityTarget = (String, Option<String>, Option<String>, Option<String>);
+type EnqueueIdentityEntry = (
+    String,
+    Vec<u8>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 
 #[derive(Debug, Clone)]
 #[pyclass(skip_from_py_object)]
@@ -156,10 +163,11 @@ impl NativeQueue {
                 dedup_key: None,
                 dedup_fingerprint: None,
             }];
+            let capacity = self.capacity_policy();
             let outcomes = self.storage.enqueue_batch_outcomes(
                 &entries,
                 self.max_attempts,
-                self.capacity_policy(),
+                capacity.as_slice(),
                 busy_timeout_ms,
             )?;
             Ok(outcomes[0].id)
@@ -194,12 +202,13 @@ impl NativeQueue {
                     dedup_fingerprint: None,
                 })
                 .collect();
+            let capacity = self.capacity_policy();
             Ok(self
                 .storage
                 .enqueue_batch_outcomes(
                     &entries,
                     self.max_attempts,
-                    self.capacity_policy(),
+                    capacity.as_slice(),
                     busy_timeout_ms,
                 )?
                 .into_iter()
@@ -231,7 +240,7 @@ impl NativeQueue {
                 .collect();
             Ok(self
                 .storage
-                .enqueue_batch(&entries, self.max_attempts, None, None)?)
+                .enqueue_batch(&entries, self.max_attempts, &[], None)?)
         })
     }
 
@@ -258,7 +267,60 @@ impl NativeQueue {
             // EventBus fanout deliberately remains unlimited in issue #25.
             Ok(self
                 .storage
-                .enqueue_batch_outcomes(&entries, self.max_attempts, None, None)?
+                .enqueue_batch_outcomes(&entries, self.max_attempts, &[], None)?
+                .into_iter()
+                .map(|outcome| (outcome.id, outcome.inserted))
+                .collect())
+        })
+    }
+
+    /// Ingest a heterogeneous batch of (queue, payload, identity) events in a
+    /// single transaction, honoring the given per-queue pending limits.
+    ///
+    /// Each entry carries its own payload, unlike `_fanout_with_identity`.
+    /// `capacity` is a list of (queue_name, max_pending) pairs; `None` means
+    /// unlimited. Outcomes are aligned 1:1 with the input entries.
+    #[pyo3(name = "_enqueue_batch_with_identity")]
+    pub fn enqueue_batch_with_identity(
+        &self,
+        py: Python<'_>,
+        entries: Vec<EnqueueIdentityEntry>,
+        capacity: Option<Vec<(String, i64)>>,
+    ) -> PyResult<Vec<(i64, bool)>> {
+        if let Some(policies) = &capacity {
+            for (_, max_pending) in policies {
+                if *max_pending < 1 {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "capacity limits must be at least 1",
+                    ));
+                }
+            }
+        }
+        py.detach(move || {
+            let entries: Vec<EnqueueEntry<'_>> = entries
+                .iter()
+                .map(
+                    |(queue_name, payload, job_id, dedup_key, dedup_fingerprint)| EnqueueEntry {
+                        queue_name,
+                        payload,
+                        job_id: job_id.as_deref(),
+                        dedup_key: dedup_key.as_deref(),
+                        dedup_fingerprint: dedup_fingerprint.as_deref(),
+                    },
+                )
+                .collect();
+            let policies: Vec<CapacityPolicy<'_>> = capacity
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .map(|(queue_name, max_pending_jobs)| CapacityPolicy {
+                    queue_name,
+                    max_pending_jobs: *max_pending_jobs,
+                })
+                .collect();
+            Ok(self
+                .storage
+                .enqueue_batch_outcomes(&entries, self.max_attempts, &policies, None)?
                 .into_iter()
                 .map(|outcome| (outcome.id, outcome.inserted))
                 .collect())
