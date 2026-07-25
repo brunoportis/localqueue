@@ -40,6 +40,15 @@ class _LeaseState(TypedDict):
     lease_lost: bool
 
 
+def _claim_delivery(
+    queue: SimpleQueue[object], policy: RetryPolicy | None
+) -> Job[object]:
+    """Claim with a policy budget or preserve the legacy claim exactly."""
+    if policy is None:
+        return queue.get(False)
+    return queue._get_with_max_attempts(max_attempts=policy.max_attempts, block=False)
+
+
 async def _deadline_timer(timeout: float) -> None:
     """Complete after an individual handler's configured deadline."""
     await asyncio.sleep(timeout)
@@ -274,21 +283,15 @@ async def run_consumer(
     try:
         queue = bus._open_subscription_queue(subscription)
         concurrency = bus._concurrency_for(subscription)
-        retry_policy = bus._retry_for(subscription)
         idle_since: Optional[float] = None
         while True:
             if len(active) >= concurrency:
                 await wait_for_delivery()
                 continue
             try:
-                if retry_policy is None:
-                    job = await asyncio.to_thread(queue.get, False)
-                else:
-                    job = await asyncio.to_thread(
-                        queue._get_with_max_attempts,
-                        max_attempts=retry_policy.max_attempts,
-                        block=False,
-                    )
+                job = await asyncio.to_thread(
+                    _claim_delivery, queue, bus._retry_for(subscription)
+                )
             except Empty:
                 if active:
                     await wait_for_delivery(timeout=_POLL_INTERVAL)
