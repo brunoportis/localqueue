@@ -9,7 +9,13 @@ from localqueue.core import (
 )
 from localqueue.deadletter import FailedMessage, FailureReason
 from localqueue.diagnostics import QueueDiagnostics
-from localqueue.exceptions import Empty, Full, LeaseExpired, LocalQueueError
+from localqueue.exceptions import (
+    DeduplicationConflict,
+    Empty,
+    Full,
+    LeaseExpired,
+    LocalQueueError,
+)
 from localqueue.job import Job
 from localqueue.maintenance import BackupResult, IntegrityCheckResult
 from localqueue.policies import DeliveryPolicy, DurabilityMode
@@ -17,6 +23,7 @@ from localqueue.worker import Worker
 
 __all__ = [
     "Empty",
+    "DeduplicationConflict",
     "Full",
     "BackupResult",
     "DeliveryPolicy",

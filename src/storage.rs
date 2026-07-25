@@ -1,4 +1,6 @@
-use rusqlite::{params, Connection, ErrorCode, OpenFlags, Transaction, TransactionBehavior};
+use rusqlite::{
+    params, Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
+};
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -7,7 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::error::{QueueError, Result};
-use crate::schema::SCHEMA_SQL;
+use crate::schema::{BASE_SCHEMA_SQL, SCHEMA_SQL};
 
 pub(crate) const BUSY_TIMEOUT_MS: u64 = 5_000;
 
@@ -17,8 +19,15 @@ pub struct EnqueueEntry<'a> {
     pub queue_name: &'a str,
     pub payload: &'a [u8],
     pub job_id: Option<&'a str>,
+    pub dedup_key: Option<&'a str>,
+    pub dedup_fingerprint: Option<&'a str>,
 }
 
+#[derive(Clone, Copy)]
+pub struct EnqueueOutcome {
+    pub id: i64,
+    pub inserted: bool,
+}
 #[derive(Clone, Copy)]
 pub struct CapacityPolicy<'a> {
     pub queue_name: &'a str,
@@ -46,9 +55,15 @@ impl Storage {
         conn.pragma_update(None, "synchronous", if fsync { "FULL" } else { "NORMAL" })?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
 
-        conn.execute_batch(SCHEMA_SQL)?;
+        let schema = if has_messages_table(&conn)? && !has_column(&conn, "dedup_key")? {
+            BASE_SCHEMA_SQL
+        } else {
+            SCHEMA_SQL
+        };
+        conn.execute_batch(schema)?;
         migrate_failure_reason(&mut conn)?;
         migrate_failure_category(&mut conn)?;
+        migrate_event_identity(&mut conn)?;
 
         Ok(Self {
             conn: Mutex::new(Some(conn)),
@@ -85,6 +100,20 @@ impl Storage {
         capacity: Option<CapacityPolicy<'_>>,
         busy_timeout_ms: Option<u64>,
     ) -> Result<Vec<i64>> {
+        Ok(self
+            .enqueue_batch_outcomes(entries, max_attempts, capacity, busy_timeout_ms)?
+            .into_iter()
+            .map(|outcome| outcome.id)
+            .collect())
+    }
+
+    pub fn enqueue_batch_outcomes(
+        &self,
+        entries: &[EnqueueEntry<'_>],
+        max_attempts: i64,
+        capacity: Option<CapacityPolicy<'_>>,
+        busy_timeout_ms: Option<u64>,
+    ) -> Result<Vec<EnqueueOutcome>> {
         if entries.is_empty() {
             return Ok(Vec::new());
         }
@@ -109,6 +138,21 @@ impl Storage {
         entries: &[EnqueueEntry<'_>],
         max_attempts: i64,
     ) -> Result<Vec<i64>> {
+        Ok(self
+            .ack_and_fanout_outcomes(queue_name, id, receipt, entries, max_attempts)?
+            .into_iter()
+            .map(|outcome| outcome.id)
+            .collect())
+    }
+
+    pub fn ack_and_fanout_outcomes(
+        &self,
+        queue_name: &str,
+        id: i64,
+        receipt: &str,
+        entries: &[EnqueueEntry<'_>],
+        max_attempts: i64,
+    ) -> Result<Vec<EnqueueOutcome>> {
         let now = now_ms();
         let mut guard = self.connection();
         let conn = guard.as_mut().ok_or(QueueError::Closed)?;
@@ -240,6 +284,36 @@ fn migrate_failure_category(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_event_identity(conn: &mut Connection) -> Result<()> {
+    let key = has_column(conn, "dedup_key")?;
+    let fingerprint = has_column(conn, "dedup_fingerprint")?;
+    let index: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_messages_dedup_key')",
+        [],
+        |row| row.get(0),
+    )?;
+    if key && fingerprint && index {
+        return Ok(());
+    }
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if !has_column(&tx, "dedup_key")? {
+        tx.execute("ALTER TABLE messages ADD COLUMN dedup_key TEXT", [])?;
+    }
+    if !has_column(&tx, "dedup_fingerprint")? {
+        tx.execute("ALTER TABLE messages ADD COLUMN dedup_fingerprint TEXT", [])?;
+    }
+    tx.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_dedup_key
+         ON messages(queue, dedup_key) WHERE dedup_key IS NOT NULL",
+        [],
+    )?;
+    if !has_column(&tx, "dedup_key")? || !has_column(&tx, "dedup_fingerprint")? {
+        return Err(QueueError::Sqlite(rusqlite::Error::InvalidQuery));
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 fn has_column(conn: &Connection, expected: &str) -> Result<bool> {
     let mut statement = conn.prepare("PRAGMA table_info(messages)")?;
     let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
@@ -251,12 +325,23 @@ fn has_column(conn: &Connection, expected: &str) -> Result<bool> {
     Ok(false)
 }
 
+fn has_messages_table(conn: &Connection) -> Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages'
+        )",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(QueueError::from)
+}
+
 fn enqueue_batch_on_connection(
     conn: &mut Connection,
     entries: &[EnqueueEntry<'_>],
     max_attempts: i64,
     capacity: Option<CapacityPolicy<'_>>,
-) -> Result<Vec<i64>> {
+) -> Result<Vec<EnqueueOutcome>> {
     let now = now_ms();
 
     let tx = conn
@@ -317,20 +402,23 @@ fn insert_entries_in_transaction(
     entries: &[EnqueueEntry<'_>],
     max_attempts: i64,
     now: i64,
-) -> Result<Vec<i64>> {
+) -> Result<Vec<EnqueueOutcome>> {
     let mut insert = tx
         .prepare(
             "INSERT OR IGNORE INTO messages (
                     queue, payload, status, attempts, max_attempts,
-                    available_at, lease_until, receipt, job_id,
-                    created_at, updated_at
-                ) VALUES (?1, ?2, ?3, 0, ?4, ?5, NULL, NULL, ?6, ?7, ?8)",
+                    available_at, lease_until, receipt, job_id, dedup_key,
+                    dedup_fingerprint, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, 0, ?4, ?5, NULL, NULL, ?6, ?7, ?8, ?9, ?10)",
         )
         .map_err(QueueError::from)?;
 
     let mut ids = Vec::with_capacity(entries.len());
     for entry in entries {
-        insert
+        if entry.dedup_key.is_some() != entry.dedup_fingerprint.is_some() {
+            return Err(QueueError::DeduplicationConflict);
+        }
+        let changed = insert
             .execute(params![
                 entry.queue_name,
                 entry.payload,
@@ -338,22 +426,79 @@ fn insert_entries_in_transaction(
                 max_attempts,
                 now,
                 entry.job_id,
+                entry.dedup_key,
+                entry.dedup_fingerprint,
                 now,
                 now,
             ])
             .map_err(QueueError::from)?;
 
-        let id = match entry.job_id {
-            Some(jid) => tx
-                .query_row(
-                    "SELECT id FROM messages WHERE queue = ?1 AND job_id = ?2",
-                    params![entry.queue_name, jid],
-                    |row| row.get(0),
+        if changed == 1 {
+            ids.push(EnqueueOutcome {
+                id: tx.last_insert_rowid(),
+                inserted: true,
+            });
+            continue;
+        }
+        let by_job = entry
+            .job_id
+            .map(|job_id| {
+                tx.query_row(
+                    "SELECT id, dedup_key, dedup_fingerprint FROM messages
+                     WHERE queue = ?1 AND job_id = ?2",
+                    params![entry.queue_name, job_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                        ))
+                    },
                 )
-                .map_err(QueueError::from)?,
-            None => tx.last_insert_rowid(),
-        };
-        ids.push(id);
+                .optional()
+            })
+            .transpose()?
+            .flatten();
+        let by_key = entry
+            .dedup_key
+            .map(|key| {
+                tx.query_row(
+                    "SELECT id, dedup_fingerprint FROM messages
+                     WHERE queue = ?1 AND dedup_key = ?2",
+                    params![entry.queue_name, key],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+                )
+                .optional()
+            })
+            .transpose()?
+            .flatten();
+        if let (Some(job), Some(key)) = (&by_job, &by_key) {
+            if job.0 != key.0 {
+                return Err(QueueError::DeduplicationConflict);
+            }
+        }
+        if let Some((_, stored_key, stored_fingerprint)) = &by_job {
+            if entry.dedup_key.is_some()
+                && (stored_key.as_deref() != entry.dedup_key
+                    || stored_fingerprint.as_deref() != entry.dedup_fingerprint)
+            {
+                return Err(QueueError::DeduplicationConflict);
+            }
+        }
+        if let Some((_, stored_fingerprint)) = &by_key {
+            if stored_fingerprint.as_deref() != entry.dedup_fingerprint {
+                return Err(QueueError::DeduplicationConflict);
+            }
+        }
+        let id = by_job
+            .as_ref()
+            .map(|row| row.0)
+            .or_else(|| by_key.as_ref().map(|row| row.0))
+            .ok_or(QueueError::NotFound)?;
+        ids.push(EnqueueOutcome {
+            id,
+            inserted: false,
+        });
     }
     drop(insert);
 
@@ -465,16 +610,22 @@ mod tests {
                 queue_name: "q",
                 payload: b"a",
                 job_id: None,
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
             EnqueueEntry {
                 queue_name: "q",
                 payload: b"b",
                 job_id: None,
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
             EnqueueEntry {
                 queue_name: "q",
                 payload: b"c",
                 job_id: None,
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
         ];
         let ids = storage.enqueue_batch(&entries, 3, None, None).unwrap();
@@ -500,6 +651,8 @@ mod tests {
             queue_name: "origin",
             payload: b"parent",
             job_id: Some("parent-id"),
+            dedup_key: None,
+            dedup_fingerprint: None,
         }];
         let origin_id = storage.enqueue_batch(&origin, 4, None, None).unwrap()[0];
         lease_message(&storage, origin_id, "origin", "receipt");
@@ -508,11 +661,15 @@ mod tests {
                 queue_name: "target-b",
                 payload: b"child",
                 job_id: Some("child-id"),
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
             EnqueueEntry {
                 queue_name: "target-a",
                 payload: b"child",
                 job_id: Some("child-id"),
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
         ];
 
@@ -551,6 +708,8 @@ mod tests {
             queue_name: "origin",
             payload: b"parent",
             job_id: None,
+            dedup_key: None,
+            dedup_fingerprint: None,
         }];
         let origin_id = storage.enqueue_batch(&origin, 3, None, None).unwrap()[0];
         lease_message(&storage, origin_id, "origin", "valid");
@@ -558,6 +717,8 @@ mod tests {
             queue_name: "target",
             payload: b"first",
             job_id: Some("child"),
+            dedup_key: None,
+            dedup_fingerprint: None,
         }];
         let existing_id = storage.enqueue_batch(&existing, 3, None, None).unwrap()[0];
         let targets = [
@@ -565,11 +726,15 @@ mod tests {
                 queue_name: "target",
                 payload: b"second",
                 job_id: Some("child"),
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
             EnqueueEntry {
                 queue_name: "new-target",
                 payload: b"second",
                 job_id: Some("child"),
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
         ];
 
@@ -603,6 +768,8 @@ mod tests {
             queue_name: "origin",
             payload: b"parent",
             job_id: None,
+            dedup_key: None,
+            dedup_fingerprint: None,
         }];
         let origin_id = storage.enqueue_batch(&origin, 3, None, None).unwrap()[0];
         lease_message(&storage, origin_id, "origin", "receipt");
@@ -624,11 +791,15 @@ mod tests {
                 queue_name: "target-1",
                 payload: b"child",
                 job_id: Some("child"),
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
             EnqueueEntry {
                 queue_name: "target-2",
                 payload: b"child",
                 job_id: Some("child"),
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
         ];
 
@@ -665,6 +836,8 @@ mod tests {
                     queue_name: "q",
                     payload: b"orig",
                     job_id: Some("j1"),
+                    dedup_key: None,
+                    dedup_fingerprint: None,
                 }],
                 3,
                 None,
@@ -677,16 +850,22 @@ mod tests {
                 queue_name: "q",
                 payload: b"dup",
                 job_id: Some("j1"),
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
             EnqueueEntry {
                 queue_name: "q",
                 payload: b"dup2",
                 job_id: Some("j1"),
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
             EnqueueEntry {
                 queue_name: "q",
                 payload: b"outro",
                 job_id: Some("j2"),
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
         ];
         let ids = storage.enqueue_batch(&entries, 3, None, None).unwrap();
@@ -703,11 +882,15 @@ mod tests {
                 queue_name: "qa",
                 payload: b"x",
                 job_id: Some("j1"),
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
             EnqueueEntry {
                 queue_name: "qb",
                 payload: b"x",
                 job_id: Some("j1"),
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
         ];
         let ids = storage.enqueue_batch(&entries, 3, None, None).unwrap();
@@ -724,6 +907,8 @@ mod tests {
             queue_name: "q",
             payload: b"first",
             job_id: None,
+            dedup_key: None,
+            dedup_fingerprint: None,
         }];
         storage
             .enqueue_batch(&first, 3, Some(policy), None)
@@ -733,11 +918,15 @@ mod tests {
                 queue_name: "q",
                 payload: b"second",
                 job_id: None,
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
             EnqueueEntry {
                 queue_name: "q",
                 payload: b"third",
                 job_id: None,
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
         ];
 
@@ -764,6 +953,8 @@ mod tests {
             queue_name: "q",
             payload: b"existing",
             job_id: Some("existing"),
+            dedup_key: None,
+            dedup_fingerprint: None,
         }];
         let existing_id = storage
             .enqueue_batch(&existing, 3, Some(policy), None)
@@ -773,16 +964,22 @@ mod tests {
                 queue_name: "q",
                 payload: b"ignored",
                 job_id: Some("existing"),
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
             EnqueueEntry {
                 queue_name: "q",
                 payload: b"new",
                 job_id: Some("new"),
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
             EnqueueEntry {
                 queue_name: "q",
                 payload: b"also ignored",
                 job_id: Some("new"),
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
         ];
 
@@ -802,6 +999,8 @@ mod tests {
                 queue_name: "q",
                 payload: b"original",
                 job_id: Some(job_id),
+                dedup_key: None,
+                dedup_fingerprint: None,
             })
             .collect();
         let original_ids = storage.enqueue_batch(&entries, 3, None, None).unwrap();
@@ -824,6 +1023,8 @@ mod tests {
                         queue_name: "q",
                         payload,
                         job_id: Some(job_id),
+                        dedup_key: None,
+                        dedup_fingerprint: None,
                     }
                 })
             })
@@ -843,6 +1044,8 @@ mod tests {
             queue_name: "q",
             payload: b"new",
             job_id: Some("new"),
+            dedup_key: None,
+            dedup_fingerprint: None,
         }];
         assert!(matches!(
             storage.enqueue_batch(&new_entry, 3, Some(policy), None),
@@ -861,16 +1064,22 @@ mod tests {
                 queue_name: "q",
                 payload: b"one",
                 job_id: None,
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
             EnqueueEntry {
                 queue_name: "q",
                 payload: b"two",
                 job_id: None,
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
             EnqueueEntry {
                 queue_name: "q",
                 payload: b"three",
                 job_id: None,
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
         ];
 
@@ -883,16 +1092,22 @@ mod tests {
                 queue_name: "q",
                 payload: b"one",
                 job_id: Some("one"),
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
             EnqueueEntry {
                 queue_name: "q",
                 payload: b"two",
                 job_id: Some("two"),
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
             EnqueueEntry {
                 queue_name: "q",
                 payload: b"three",
                 job_id: Some("three"),
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
         ];
         assert!(matches!(
@@ -915,11 +1130,15 @@ mod tests {
                 queue_name: "alpha",
                 payload: b"a",
                 job_id: None,
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
             EnqueueEntry {
                 queue_name: "beta",
                 payload: b"b",
                 job_id: None,
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
         ];
         storage.enqueue_batch(&entries, 3, None, None).unwrap();
@@ -928,6 +1147,8 @@ mod tests {
             queue_name: "alpha",
             payload: b"blocked",
             job_id: None,
+            dedup_key: None,
+            dedup_fingerprint: None,
         }];
         assert!(matches!(
             storage.enqueue_batch(
@@ -945,6 +1166,8 @@ mod tests {
             queue_name: "beta",
             payload: b"allowed",
             job_id: None,
+            dedup_key: None,
+            dedup_fingerprint: None,
         }];
         storage
             .enqueue_batch(
@@ -966,11 +1189,15 @@ mod tests {
                 queue_name: "q",
                 payload: b"a",
                 job_id: None,
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
             EnqueueEntry {
                 queue_name: "q",
                 payload: b"b",
                 job_id: None,
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
         ];
         storage.enqueue_batch(&entries, 3, None, None).unwrap();
@@ -978,6 +1205,8 @@ mod tests {
             queue_name: "q",
             payload: b"extra",
             job_id: None,
+            dedup_key: None,
+            dedup_fingerprint: None,
         }];
 
         assert!(matches!(
@@ -1016,6 +1245,8 @@ mod tests {
                         queue_name: "q",
                         payload: b"payload",
                         job_id: None,
+                        dedup_key: None,
+                        dedup_fingerprint: None,
                     }];
                     barrier.wait();
                     storage.enqueue_batch(
@@ -1055,6 +1286,8 @@ mod tests {
             queue_name: "q",
             payload: b"payload",
             job_id: None,
+            dedup_key: None,
+            dedup_fingerprint: None,
         }];
 
         let error = storage
@@ -1106,6 +1339,8 @@ mod tests {
             queue_name: "q",
             payload: b"committed",
             job_id: None,
+            dedup_key: None,
+            dedup_fingerprint: None,
         }];
         let ids = storage
             .enqueue_batch(
@@ -1139,6 +1374,8 @@ mod tests {
             queue_name: "q",
             payload: b"rejected",
             job_id: None,
+            dedup_key: None,
+            dedup_fingerprint: None,
         }];
         assert!(matches!(
             storage.enqueue_batch(
@@ -1177,11 +1414,15 @@ mod tests {
                 queue_name: "q",
                 payload: b"failed",
                 job_id: None,
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
             EnqueueEntry {
                 queue_name: "q",
                 payload: b"pending",
                 job_id: None,
+                dedup_key: None,
+                dedup_fingerprint: None,
             },
         ];
         let ids = storage.enqueue_batch(&entries, 3, None, None).unwrap();
@@ -1231,6 +1472,8 @@ mod tests {
             queue_name: "q",
             payload: b"payload",
             job_id: None,
+            dedup_key: None,
+            dedup_fingerprint: None,
         }];
 
         assert!(matches!(

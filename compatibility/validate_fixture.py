@@ -152,6 +152,20 @@ def main() -> None:
         }
         assertion(result, "failure_reason_migrated", "failure_reason" in columns)
         assertion(result, "failure_category_migrated", "failure_category" in columns)
+        assertion(result, "dedup_key_migrated", "dedup_key" in columns)
+        assertion(
+            result,
+            "dedup_fingerprint_migrated",
+            "dedup_fingerprint" in columns,
+        )
+        indexes = {
+            row[1] for row in db.execute("PRAGMA index_list(messages)").fetchall()
+        }
+        assertion(
+            result,
+            "dedup_key_index_migrated",
+            "idx_messages_dedup_key" in indexes,
+        )
         assertion(
             result,
             "sqlite_integrity",

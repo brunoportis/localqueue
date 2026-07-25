@@ -23,6 +23,7 @@ from uuid import UUID
 from localqueue import localqueue as _native
 from localqueue.bus.context import ContextFactory, ContextT
 from localqueue.bus.event import BaseEvent, event_type_of
+from localqueue.bus.identity import business_payload, prepare_persistence_identity
 from localqueue.bus.registry import EVENT_REGISTRY, EventRegistry
 from localqueue.bus.subscription import Subscription
 from localqueue.bus.topology import (
@@ -79,6 +80,31 @@ class DispatchReceipt:
     event_type: str
     subscriptions: tuple[str, ...]
     message_ids: tuple[int, ...]
+    inserted: tuple[bool, ...]
+
+    @property
+    def inserted_subscriptions(self) -> tuple[str, ...]:
+        return tuple(
+            subscription
+            for subscription, inserted in zip(self.subscriptions, self.inserted)
+            if inserted
+        )
+
+    @property
+    def deduplicated_subscriptions(self) -> tuple[str, ...]:
+        return tuple(
+            subscription
+            for subscription, inserted in zip(self.subscriptions, self.inserted)
+            if not inserted
+        )
+
+    @property
+    def inserted_count(self) -> int:
+        return sum(self.inserted)
+
+    @property
+    def deduplicated_count(self) -> int:
+        return len(self.inserted) - self.inserted_count
 
 
 @dataclass(frozen=True)
@@ -636,6 +662,12 @@ class EventBus(Generic[ContextT]):
 
     def serialize_envelope(self, event: BaseEvent) -> bytes:
         """Serialize the persistent envelope once per dispatch."""
+        return self._serialize_envelope(event, business_payload(event))
+
+    def _serialize_envelope(
+        self, event: BaseEvent, payload: dict[str, object]
+    ) -> bytes:
+        """Serialize an envelope from an already prepared business payload."""
         envelope: dict[str, object] = {
             "event_id": str(event.event_id),
             "correlation_id": str(event.correlation_id),
@@ -645,15 +677,7 @@ class EventBus(Generic[ContextT]):
             "event_type": event.event_type,
             "event_schema": event.event_schema,
             "event_created_at": event.event_created_at.isoformat(),
-            "payload": event.model_dump(
-                mode="json",
-                exclude={
-                    "event_id",
-                    "correlation_id",
-                    "causation_id",
-                    "event_created_at",
-                },
-            ),
+            "payload": payload,
         }
         serializer = self.serializer or JsonSerializer[object]()
         return serializer.dumps(envelope)
@@ -680,19 +704,28 @@ class EventBus(Generic[ContextT]):
                 event_type=event.event_type,
                 subscriptions=(),
                 message_ids=(),
+                inserted=(),
             )
 
-        payload = self.serialize_envelope(event)
-        targets: list[tuple[str, str | None]] = [
-            (self._queue_name(subscription), str(event.event_id))
+        business = business_payload(event)
+        identity = prepare_persistence_identity(event, business)
+        payload = self._serialize_envelope(event, business)
+        targets: list[tuple[str, str | None, str | None, str | None]] = [
+            (
+                self._queue_name(subscription),
+                identity.job_id,
+                identity.dedup_key,
+                identity.dedup_fingerprint,
+            )
             for subscription in subscriptions
         ]
-        message_ids = self._get_native().fanout(payload, targets)
+        outcomes = self._get_native()._fanout_with_identity(payload, targets)
         return DispatchReceipt(
             event_id=event.event_id,
             event_type=event.event_type,
             subscriptions=subscriptions,
-            message_ids=tuple(message_ids),
+            message_ids=tuple(outcome[0] for outcome in outcomes),
+            inserted=tuple(outcome[1] for outcome in outcomes),
         )
 
     async def dispatch_async(self, event: BaseEvent) -> DispatchReceipt:

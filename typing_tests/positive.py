@@ -23,6 +23,24 @@ from localqueue.bus import (
     Reject,
     Retry,
     RuntimeContext,
+    event,
+)
+
+
+@event(identity="user_id")
+class DurableTypedUserCreated(BaseEvent):
+    user_id: str
+
+
+@event(identity=("tenant_id", "user_id"))
+class DurableTypedTenantUserCreated(BaseEvent):
+    tenant_id: str
+    user_id: str
+
+
+durable_created: DurableTypedUserCreated = DurableTypedUserCreated(user_id="1")
+durable_tenant_created: DurableTypedTenantUserCreated = DurableTypedTenantUserCreated(
+    tenant_id="acme", user_id="1"
 )
 
 

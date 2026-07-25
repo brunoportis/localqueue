@@ -1,5 +1,16 @@
 # Delivery guarantees
 
+## Event identity
+
+`job_id` remains unique per queue while its row exists and keeps its existing
+SimpleQueue semantics. EventBus may additionally persist a hashed business
+identity declared with `@event(identity=...)`. That identity is unique per
+database and full subscription queue, includes the event schema namespace, and
+is retained until purge. Equal fingerprints reuse the original row without
+updates; different fingerprints raise `DeduplicationConflict` and roll back the
+transaction. This is not a distributed lock or an exactly-once guarantee for
+external side effects.
+
 `localqueue` is a persistent local queue backed by SQLite. It provides
 **at-least-once** delivery: a message may be delivered again when a previous
 attempt did not confirm processing.

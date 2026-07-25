@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, ClassVar, TypeVar
+from typing import Any, Callable, ClassVar, TypeVar, cast
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
@@ -12,6 +12,7 @@ _EventT = TypeVar("_EventT", bound="BaseEvent")
 _DERIVED_RESERVED_FIELDS = frozenset(
     {"event_id", "correlation_id", "causation_id", "event_created_at"}
 )
+_IdentityT = TypeVar("_IdentityT", bound=type["BaseEvent"])
 
 
 def _correlation_from_event_id(validated_data: dict[str, Any]) -> UUID:
@@ -73,6 +74,62 @@ class BaseEvent(BaseModel):
     @property
     def event_schema(self) -> str:
         return f"{self.event_type}@{self.schema_version}"
+
+
+def event(*, identity: str | tuple[str, ...]) -> Callable[[_IdentityT], _IdentityT]:
+    """Declare the business identity fields of one concrete event class."""
+    if isinstance(identity, str):
+        fields: tuple[str, ...] = (identity,)
+    elif isinstance(identity, tuple) and all(
+        isinstance(name, str) for name in identity
+    ):
+        fields = identity
+    else:
+        raise TypeError(
+            "event identity must be a non-empty string or non-empty tuple of strings"
+        )
+    if not fields or any(not name.strip() for name in fields):
+        raise ValueError(
+            "event identity must be a non-empty string or non-empty tuple of non-empty strings"
+        )
+    if len(set(fields)) != len(fields):
+        raise ValueError("event identity field names must be unique")
+
+    def decorate(cls: _IdentityT) -> _IdentityT:
+        if not isinstance(cls, type) or not issubclass(cls, BaseEvent):
+            raise TypeError(
+                f"event decorator target {getattr(cls, '__name__', cls)!r} "
+                "must be a subclass of BaseEvent"
+            )
+        event_cls = cast(type[BaseEvent], cls)
+        if "__event_identity_fields__" in cls.__dict__:
+            configured = cls.__dict__["__event_identity_fields__"]
+            if configured != fields:
+                raise ValueError(
+                    f"{cls.__name__} already has a conflicting event identity; "
+                    "configure identity only once"
+                )
+            return cls
+        for name in fields:
+            if name in _DERIVED_RESERVED_FIELDS:
+                raise ValueError(
+                    f"{cls.__name__} identity field {name!r} is event metadata; "
+                    "identity must name a business model field"
+                )
+            if name in event_cls.model_computed_fields:
+                raise ValueError(
+                    f"{cls.__name__} identity field {name!r} is computed; "
+                    "identity must name a persisted model field"
+                )
+            if name not in event_cls.model_fields:
+                raise ValueError(
+                    f"{cls.__name__} identity field {name!r} does not exist; "
+                    "identity must name a Python model field"
+                )
+        setattr(cls, "__event_identity_fields__", cast(object, fields))
+        return cls
+
+    return decorate
 
 
 def event_type_of(cls: type[BaseEvent]) -> str:

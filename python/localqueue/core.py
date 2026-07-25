@@ -328,10 +328,12 @@ class SimpleQueue(Generic[_PayloadT]):
         job: Job[_PayloadT],
         *,
         payload: bytes,
-        targets: list[tuple[str, str | None]],
-    ) -> list[int]:
+        targets: list[tuple[str, str | None, str | None, str | None]],
+    ) -> list[tuple[int, bool]]:
         """Atomically ACK ``job`` and insert one payload into private targets."""
-        return self._get_native().ack_and_fanout(job.id, job.receipt, payload, targets)
+        return self._get_native()._ack_and_fanout_with_identity(
+            job.id, job.receipt, payload, targets
+        )
 
     def nack(
         self,

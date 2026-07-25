@@ -12,6 +12,7 @@ pub const STATUS_READY: i64 = 0;
 pub const STATUS_LEASED: i64 = 1;
 pub const STATUS_ACKED: i64 = 2;
 pub const STATUS_FAILED: i64 = 3;
+type IdentityTarget = (String, Option<String>, Option<String>, Option<String>);
 
 #[derive(Debug, Clone)]
 #[pyclass(skip_from_py_object)]
@@ -152,14 +153,16 @@ impl NativeQueue {
                 queue_name: &self.queue,
                 payload: &payload,
                 job_id: job_id.as_deref(),
+                dedup_key: None,
+                dedup_fingerprint: None,
             }];
-            let ids = self.storage.enqueue_batch(
+            let outcomes = self.storage.enqueue_batch_outcomes(
                 &entries,
                 self.max_attempts,
                 self.capacity_policy(),
                 busy_timeout_ms,
             )?;
-            Ok(ids[0])
+            Ok(outcomes[0].id)
         })
     }
 
@@ -187,14 +190,21 @@ impl NativeQueue {
                     queue_name: &self.queue,
                     payload,
                     job_id: job_ids.as_ref().and_then(|ids| ids[index].as_deref()),
+                    dedup_key: None,
+                    dedup_fingerprint: None,
                 })
                 .collect();
-            Ok(self.storage.enqueue_batch(
-                &entries,
-                self.max_attempts,
-                self.capacity_policy(),
-                busy_timeout_ms,
-            )?)
+            Ok(self
+                .storage
+                .enqueue_batch_outcomes(
+                    &entries,
+                    self.max_attempts,
+                    self.capacity_policy(),
+                    busy_timeout_ms,
+                )?
+                .into_iter()
+                .map(|outcome| outcome.id)
+                .collect())
         })
     }
 
@@ -215,12 +225,43 @@ impl NativeQueue {
                     queue_name,
                     payload: &payload,
                     job_id: job_id.as_deref(),
+                    dedup_key: None,
+                    dedup_fingerprint: None,
                 })
+                .collect();
+            Ok(self
+                .storage
+                .enqueue_batch(&entries, self.max_attempts, None, None)?)
+        })
+    }
+
+    #[pyo3(name = "_fanout_with_identity")]
+    pub fn fanout_with_identity(
+        &self,
+        py: Python<'_>,
+        payload: Vec<u8>,
+        targets: Vec<IdentityTarget>,
+    ) -> PyResult<Vec<(i64, bool)>> {
+        py.detach(move || {
+            let entries: Vec<EnqueueEntry<'_>> = targets
+                .iter()
+                .map(
+                    |(queue_name, job_id, dedup_key, dedup_fingerprint)| EnqueueEntry {
+                        queue_name,
+                        payload: &payload,
+                        job_id: job_id.as_deref(),
+                        dedup_key: dedup_key.as_deref(),
+                        dedup_fingerprint: dedup_fingerprint.as_deref(),
+                    },
+                )
                 .collect();
             // EventBus fanout deliberately remains unlimited in issue #25.
             Ok(self
                 .storage
-                .enqueue_batch(&entries, self.max_attempts, None, None)?)
+                .enqueue_batch_outcomes(&entries, self.max_attempts, None, None)?
+                .into_iter()
+                .map(|outcome| (outcome.id, outcome.inserted))
+                .collect())
         })
     }
 
@@ -242,6 +283,8 @@ impl NativeQueue {
                     queue_name,
                     payload: &payload,
                     job_id: job_id.as_deref(),
+                    dedup_key: None,
+                    dedup_fingerprint: None,
                 })
                 .collect();
             Ok(self.storage.ack_and_fanout(
@@ -251,6 +294,38 @@ impl NativeQueue {
                 &entries,
                 self.max_attempts,
             )?)
+        })
+    }
+
+    #[pyo3(name = "_ack_and_fanout_with_identity")]
+    pub fn ack_and_fanout_with_identity(
+        &self,
+        py: Python<'_>,
+        id: i64,
+        receipt: &str,
+        payload: Vec<u8>,
+        targets: Vec<IdentityTarget>,
+    ) -> PyResult<Vec<(i64, bool)>> {
+        let receipt = receipt.to_owned();
+        py.detach(move || {
+            let entries: Vec<EnqueueEntry<'_>> = targets
+                .iter()
+                .map(
+                    |(queue_name, job_id, dedup_key, dedup_fingerprint)| EnqueueEntry {
+                        queue_name,
+                        payload: &payload,
+                        job_id: job_id.as_deref(),
+                        dedup_key: dedup_key.as_deref(),
+                        dedup_fingerprint: dedup_fingerprint.as_deref(),
+                    },
+                )
+                .collect();
+            Ok(self
+                .storage
+                .ack_and_fanout_outcomes(&self.queue, id, &receipt, &entries, self.max_attempts)?
+                .into_iter()
+                .map(|outcome| (outcome.id, outcome.inserted))
+                .collect())
         })
     }
 
