@@ -109,6 +109,11 @@ bus.subscription("users").handler(UserCreated, returns_integer)
 bus.subscription("users").handler(UserCreated, returns_events)
 bus.subscription("users").handler(UserCreated, returns_response)
 bus.subscription("users").handler(UserCreated, returns_object)
+bus.handler(UserCreated, wrong_event_handler)
+bus.handler(UserCreated, returns_string)
+bus.handler(UserCreated, returns_events)
+bus.handler("UserCreated", returns_string)
+bus.handler(UserCreated, object())
 
 
 class AppContext(HandlerContext):

@@ -214,3 +214,47 @@ async def handle_user_with_context(event: UserCreated, ctx: AppContext) -> None:
     attempt: int = ctx.attempt
     handler_name: str = ctx.handler_name
     print(event_id, attempt, handler_name)
+
+
+class UserIndexed(BaseEvent):
+    user_id: str
+
+
+ergonomic_bus = EventBus[AppContext](
+    "./typing-ergonomic-bus",
+    context_factory=create_context,
+)
+
+
+@ergonomic_bus.handler(UserCreated)
+def ergonomic_sync(event: UserCreated) -> None:
+    print(event.user_id)
+
+
+@ergonomic_bus.handler(UserCreated, subscription="ergonomic-async")
+async def ergonomic_async(event: UserCreated) -> None:
+    print(event.user_id)
+
+
+@ergonomic_bus.handler(UserCreated, subscription="ergonomic-context")
+def ergonomic_context(event: UserCreated, ctx: AppContext) -> UserIndexed:
+    print(ctx.handler_name)
+    return UserIndexed(user_id=event.user_id)
+
+
+@ergonomic_bus.handler(UserCreated, subscription="ergonomic-awaitable")
+def ergonomic_awaitable(
+    event: UserCreated,
+) -> Awaitable[BaseEvent | None]:
+    return awaitable_emission(event)
+
+
+def ergonomic_direct_handler(event: UserCreated) -> UserIndexed:
+    return UserIndexed(user_id=event.user_id)
+
+
+ergonomic_direct: Callable[[UserCreated], UserIndexed] = ergonomic_bus.handler(
+    UserCreated,
+    ergonomic_direct_handler,
+    subscription="ergonomic-direct",
+)

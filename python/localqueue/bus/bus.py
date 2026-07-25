@@ -269,7 +269,9 @@ class EventBus(Generic[ContextT]):
                 "use bus.on for string patterns"
             )
         event_class = cast(type[BaseEvent], event)
-        resolved_subscription = subscription or event_type_of(event_class)
+        resolved_subscription = (
+            event_type_of(event_class) if subscription is None else subscription
+        )
         try:
             validate_name(resolved_subscription, "subscription")
         except ValueError as error:
