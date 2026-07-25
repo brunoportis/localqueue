@@ -2,11 +2,19 @@ import asyncio
 import importlib
 import pickle
 import sys
+import threading
 import time
 
 import pytest
 from localqueue import DeliveryPolicy, DurabilityMode, FailureReason
-from localqueue.bus import BaseEvent, BusTopology, EventBus, NoSubscribers
+from localqueue.bus import (
+    BaseEvent,
+    BusTopology,
+    EventBus,
+    HandlerContext,
+    NoSubscribers,
+    RuntimeContext,
+)
 
 
 class UserCreated(BaseEvent):
@@ -56,6 +64,69 @@ class TestImportGuard:
 
 
 class TestRegistration:
+    def test_context_is_only_passed_to_explicit_two_argument_handlers(self, tmp_path):
+        dependency = object()
+        dependency_values = []
+        optional_events = []
+        variadic_arguments = []
+        contexts = []
+
+        def create_context(runtime: RuntimeContext) -> HandlerContext:
+            context = HandlerContext(runtime)
+            contexts.append(context)
+            return context
+
+        bus = EventBus(
+            str(tmp_path / "bus"),
+            topology=BusTopology(
+                {
+                    "default": [UserCreated],
+                    "context": [UserCreated],
+                    "dependency": [UserCreated],
+                    "optional-event": [UserCreated],
+                    "variadic": [UserCreated],
+                }
+            ),
+            context_factory=create_context,
+        )
+
+        @bus.subscription("default").handler(UserCreated)
+        def default_handler(event):
+            dependency_values.append(event.user_id)
+
+        @bus.subscription("context").handler(UserCreated)
+        def context_handler(event, ctx):
+            assert isinstance(ctx, HandlerContext)
+
+        @bus.subscription("dependency").handler(UserCreated)
+        def dependency_handler(event, supplied_dependency=dependency):
+            dependency_values.append(supplied_dependency)
+
+        @bus.subscription("optional-event").handler(UserCreated)
+        def optional_event_handler(event=None):
+            optional_events.append(event)
+
+        @bus.subscription("variadic").handler(UserCreated)
+        def variadic_handler(event, *args):
+            variadic_arguments.append(args)
+
+        bus.dispatch(UserCreated(user_id="42"))
+        run(bus.run(idle_timeout=0.2))
+
+        assert set(dependency_values) == {"42", dependency}
+        assert len(optional_events) == 1
+        assert optional_events[0].user_id == "42"
+        assert variadic_arguments == [()]
+        assert len(contexts) == 5
+        bus.close()
+
+    def test_rejects_handler_with_unsupported_required_arity(self, bus):
+        def invalid_handler(event, ctx, other):
+            pass
+
+        with pytest.raises(TypeError, match=r"either \(event\) or \(event, context\)"):
+            bus.on(UserCreated, invalid_handler, subscription="s1")
+
     def test_registro_direto_e_decorator(self, bus):
         calls = []
 
@@ -197,6 +268,137 @@ class TestDispatch:
 
 
 class TestConsumption:
+    def test_default_handler_context_exposes_runtime_metadata(self, tmp_path):
+        bus = EventBus(
+            str(tmp_path / "bus"),
+            topology=BusTopology({"users": [UserCreated]}),
+        )
+        seen = []
+
+        @bus.subscription("users").handler(UserCreated)
+        async def handle_user(event, ctx):
+            assert isinstance(ctx, HandlerContext)
+            seen.append((ctx.event_id, ctx.attempt, ctx.handler_name))
+
+        event = UserCreated(user_id="42")
+        bus.dispatch(event)
+        run(bus.run(idle_timeout=0.2))
+
+        assert seen == [(str(event.event_id), 1, "handle_user")]
+        bus.close()
+
+    def test_custom_context_is_created_for_each_attempt(self, tmp_path):
+        shared_dependency = object()
+        contexts = []
+
+        class AppContext(HandlerContext):
+            def __init__(self, runtime: RuntimeContext, *, dependency: object):
+                super().__init__(runtime)
+                self.dependency = dependency
+
+        def create_context(runtime: RuntimeContext) -> AppContext:
+            context = AppContext(runtime, dependency=shared_dependency)
+            contexts.append(context)
+            return context
+
+        bus = EventBus[AppContext](
+            str(tmp_path / "bus"),
+            topology=BusTopology({"users": [UserCreated]}),
+            delivery=DeliveryPolicy(max_retries=1),
+            context_factory=create_context,
+        )
+        attempts = []
+
+        @bus.subscription("users").handler(UserCreated)
+        def handle_user(event, ctx):
+            assert ctx.dependency is shared_dependency
+            attempts.append(ctx.attempt)
+            if len(attempts) == 1:
+                raise RuntimeError("retry")
+
+        bus.dispatch(UserCreated(user_id="42"))
+        run(bus.run(idle_timeout=0.2))
+
+        assert attempts == [1, 2]
+        assert len(contexts) == 2
+        assert contexts[0] is not contexts[1]
+        assert contexts[0].dependency is contexts[1].dependency
+        bus.close()
+
+    def test_async_context_factory_is_awaited_and_failures_retry(self, tmp_path):
+        factory_attempts = []
+        handler_attempts = []
+
+        class AppContext(HandlerContext):
+            pass
+
+        async def create_context(runtime: RuntimeContext) -> AppContext:
+            factory_attempts.append(runtime.attempt)
+            await asyncio.sleep(0)
+            if runtime.attempt == 1:
+                raise RuntimeError("context unavailable")
+            return AppContext(runtime)
+
+        bus = EventBus[AppContext](
+            str(tmp_path / "bus"),
+            topology=BusTopology({"users": [UserCreated]}),
+            delivery=DeliveryPolicy(max_retries=1),
+            context_factory=create_context,
+        )
+
+        @bus.subscription("users").handler(UserCreated)
+        def handle_user(event, ctx):
+            handler_attempts.append(ctx.attempt)
+
+        bus.dispatch(UserCreated(user_id="42"))
+        run(bus.run(idle_timeout=0.2))
+
+        assert factory_attempts == [1, 2]
+        assert handler_attempts == [2]
+        queue = bus._open_subscription_queue("users")
+        assert queue.stats()["acked"] == 1
+        queue.close()
+        bus.close()
+
+    def test_sync_context_factory_does_not_block_the_event_loop(self, tmp_path):
+        factory_started = threading.Event()
+        loop_progressed = threading.Event()
+        factory_observed_progress = []
+
+        class AppContext(HandlerContext):
+            pass
+
+        def create_context(runtime: RuntimeContext) -> AppContext:
+            factory_started.set()
+            factory_observed_progress.append(loop_progressed.wait(timeout=0.5))
+            return AppContext(runtime)
+
+        bus = EventBus[AppContext](
+            str(tmp_path / "bus"),
+            topology=BusTopology({"users": [UserCreated]}),
+            context_factory=create_context,
+        )
+
+        @bus.subscription("users").handler(UserCreated)
+        def handle_user(event, ctx):
+            assert isinstance(ctx, AppContext)
+
+        async def allow_loop_progress() -> None:
+            await asyncio.to_thread(factory_started.wait)
+            await asyncio.sleep(0)
+            loop_progressed.set()
+
+        async def consume() -> None:
+            progress_task = asyncio.create_task(allow_loop_progress())
+            bus.dispatch(UserCreated(user_id="42"))
+            await bus.run(idle_timeout=0.2)
+            await progress_task
+
+        run(consume())
+
+        assert factory_observed_progress == [True]
+        bus.close()
+
     def test_handler_sync_e_async_ack(self, tmp_path):
         bus = EventBus(
             str(tmp_path / "bus"),

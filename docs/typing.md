@@ -160,6 +160,31 @@ permanent-failure policy. Handler `timeout` remains runtime-validated and is
 accepted only for async callables; the public overloads preserve callable
 types without attempting to encode that runtime inspection rule.
 
+## Custom handler contexts
+
+`EventBus[ContextT]` carries a custom `HandlerContext` subtype into handlers,
+so type checkers and editor completion understand application dependencies.
+See [Custom handler contexts](custom-handler-contexts.md) for the runtime and
+lifecycle semantics.
+
+```python
+from localqueue.bus import HandlerContext, RuntimeContext
+
+
+class AppContext(HandlerContext):
+    def __init__(self, runtime: RuntimeContext, *, http: HttpClient) -> None:
+        super().__init__(runtime)
+        self.http = http
+
+
+@bus.subscription("welcome").handler(UserCreated)
+async def send_welcome(event: UserCreated, ctx: AppContext) -> None:
+    await ctx.http.post("/welcome")
+```
+
+The context type is a static contract only: `localqueue` does not inspect
+annotations or resolve dependencies at runtime.
+
 ## Installed wheels
 
 The distribution includes `py.typed` and the native extension stub, so these

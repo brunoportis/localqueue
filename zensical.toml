@@ -19,6 +19,7 @@ nav = [
   {"Storage compatibility" = "storage-compatibility.md"},
   {"Operational envelope" = "operational-envelope.md"},
   {"Event bus" = "event-bus.md"},
+  {"Custom handler contexts" = "custom-handler-contexts.md"},
   {"Benchmarks" = "benchmarks.md"},
   {"Internal release gate" = "internal/release-gate.md"},
   {"GitHub" = "https://github.com/brunoportis/localqueue"},

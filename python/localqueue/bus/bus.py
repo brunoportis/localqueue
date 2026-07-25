@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import (
     Awaitable,
     Callable,
+    Generic,
     Optional,
     Protocol,
     TypeGuard,
@@ -20,6 +21,7 @@ from typing import (
 from uuid import UUID
 
 from localqueue import localqueue as _native
+from localqueue.bus.context import ContextFactory, ContextT
 from localqueue.bus.event import BaseEvent
 from localqueue.bus.registry import EVENT_REGISTRY, EventRegistry
 from localqueue.bus.subscription import Subscription
@@ -35,8 +37,8 @@ from localqueue.policies import DeliveryPolicy, DurabilityMode, _durability_fsyn
 
 _EventT = TypeVar("_EventT", bound=BaseEvent)
 _HandlerResultT = TypeVar("_HandlerResultT")
-_StoredEventHandler = Callable[[BaseEvent], object]
-_AsyncStoredEventHandler = Callable[[BaseEvent], Awaitable[object]]
+_StoredEventHandler = Callable[..., object]
+_AsyncStoredEventHandler = Callable[..., Awaitable[object]]
 
 
 class _EventBusSerializer(Protocol):
@@ -47,12 +49,20 @@ class _EventBusSerializer(Protocol):
     def loads(self, data: bytes, /) -> object: ...
 
 
-class _EventHandlerDecorator(Protocol[_EventT]):
+class _EventHandlerDecorator(Protocol[_EventT, ContextT]):
+    @overload
     def __call__(
         self,
         handler: Callable[[_EventT], _HandlerResultT],
         /,
     ) -> Callable[[_EventT], _HandlerResultT]: ...
+
+    @overload
+    def __call__(
+        self,
+        handler: Callable[[_EventT, ContextT], _HandlerResultT],
+        /,
+    ) -> Callable[[_EventT, ContextT], _HandlerResultT]: ...
 
 
 class NoSubscribers(Exception):
@@ -74,6 +84,8 @@ class _HandlerRegistration:
     handler: _StoredEventHandler
     permanent_errors: tuple[type[BaseException], ...]
     timeout: float | None
+    handler_name: str
+    accepts_context: bool
 
 
 def _is_async_callable(
@@ -85,7 +97,30 @@ def _is_async_callable(
     )
 
 
-class EventBus:
+def _accepts_context(handler: _StoredEventHandler) -> bool:
+    """Return whether a handler explicitly requires a context argument."""
+    try:
+        signature = inspect.signature(handler)
+    except (TypeError, ValueError):
+        return False
+    marker = object()
+    if _can_bind(signature, marker):
+        return False
+    if _can_bind(signature, marker, marker):
+        return True
+    raise TypeError("handler must accept either (event) or (event, context)")
+
+
+def _can_bind(signature: inspect.Signature, *args: object) -> bool:
+    """Return whether a handler signature can be called with ``args``."""
+    try:
+        signature.bind(*args)
+    except TypeError:
+        return False
+    return True
+
+
+class EventBus(Generic[ContextT]):
     """Atomically fan events out to durable subscriptions.
 
     Each subscription is an internal ``__bus__:{bus}:{subscription}`` queue in
@@ -93,7 +128,7 @@ class EventBus:
     same queue as a consumer group.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - additive public EventBus configuration
         self,
         path: str,
         name: str = "default",
@@ -104,6 +139,7 @@ class EventBus:
         require_subscribers: bool = True,
         serializer: Optional[_EventBusSerializer] = None,
         registry: EventRegistry = EVENT_REGISTRY,
+        context_factory: ContextFactory[ContextT] | None = None,
     ) -> None:
         """Initialize an EventBus with explicit routing and shared policies.
 
@@ -115,6 +151,7 @@ class EventBus:
         :param require_subscribers: reject dispatches with no matching route.
         :param serializer: optional event-envelope serialization strategy.
         :param registry: event reconstruction strategy.
+        :param context_factory: optional factory called for every delivery attempt.
         """
         self._validate_name(name, "name")
         if not isinstance(topology, BusTopology):
@@ -131,6 +168,7 @@ class EventBus:
         self.require_subscribers = require_subscribers
         self.serializer = serializer
         self.registry = registry
+        self.context_factory: ContextFactory[ContextT] | None = context_factory
 
         self.path.mkdir(parents=True, exist_ok=True)
         db_path = self.path / "localqueue.db"
@@ -172,7 +210,7 @@ class EventBus:
         subscription: str,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
-    ) -> _EventHandlerDecorator[_EventT]: ...
+    ) -> _EventHandlerDecorator[_EventT, ContextT]: ...
 
     @overload
     def on(
@@ -188,13 +226,24 @@ class EventBus:
     @overload
     def on(
         self,
+        pattern: type[_EventT],
+        handler: Callable[[_EventT, ContextT], _HandlerResultT],
+        *,
+        subscription: str,
+        permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
+    ) -> Callable[[_EventT, ContextT], _HandlerResultT]: ...
+
+    @overload
+    def on(
+        self,
         pattern: str,
         handler: None = None,
         *,
         subscription: str,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
-    ) -> _EventHandlerDecorator[BaseEvent]: ...
+    ) -> _EventHandlerDecorator[BaseEvent, ContextT]: ...
 
     @overload
     def on(
@@ -206,6 +255,17 @@ class EventBus:
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
     ) -> Callable[[BaseEvent], _HandlerResultT]: ...
+
+    @overload
+    def on(
+        self,
+        pattern: str,
+        handler: Callable[[BaseEvent, ContextT], _HandlerResultT],
+        *,
+        subscription: str,
+        permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
+    ) -> Callable[[BaseEvent, ContextT], _HandlerResultT]: ...
 
     def on(
         self,
@@ -228,7 +288,7 @@ class EventBus:
 
     def subscription(
         self, name: str, *, concurrency: int | None = None
-    ) -> Subscription:
+    ) -> Subscription[ContextT]:
         """Return a local handler binder for a declared subscription."""
         if not self.topology.has_subscription(name):
             raise ValueError(
@@ -276,7 +336,7 @@ class EventBus:
         *,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
-    ) -> _EventHandlerDecorator[_EventT]: ...
+    ) -> _EventHandlerDecorator[_EventT, ContextT]: ...
 
     @overload
     def _register_handler(
@@ -293,12 +353,23 @@ class EventBus:
     def _register_handler(
         self,
         subscription: str,
+        pattern: type[_EventT],
+        handler: Callable[[_EventT, ContextT], _HandlerResultT],
+        *,
+        permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
+    ) -> Callable[[_EventT, ContextT], _HandlerResultT]: ...
+
+    @overload
+    def _register_handler(
+        self,
+        subscription: str,
         pattern: str,
         handler: None = None,
         *,
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
-    ) -> _EventHandlerDecorator[BaseEvent]: ...
+    ) -> _EventHandlerDecorator[BaseEvent, ContextT]: ...
 
     @overload
     def _register_handler(
@@ -310,6 +381,17 @@ class EventBus:
         permanent_errors: tuple[type[BaseException], ...] = (),
         timeout: float | None = None,
     ) -> Callable[[BaseEvent], _HandlerResultT]: ...
+
+    @overload
+    def _register_handler(
+        self,
+        subscription: str,
+        pattern: str,
+        handler: Callable[[BaseEvent, ContextT], _HandlerResultT],
+        *,
+        permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
+    ) -> Callable[[BaseEvent, ContextT], _HandlerResultT]: ...
 
     @overload
     def _register_handler(
@@ -374,6 +456,8 @@ class EventBus:
                 handler=stored_handler,
                 permanent_errors=tuple(permanent_errors),
                 timeout=float(timeout) if timeout is not None else None,
+                handler_name=getattr(fn, "__name__", type(fn).__name__),
+                accepts_context=_accepts_context(stored_handler),
             )
             return fn
 

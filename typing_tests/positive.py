@@ -14,7 +14,14 @@ from localqueue import (
     SimpleQueue,
     Worker,
 )
-from localqueue.bus import BaseEvent, BusTopology, EventBus, FailedDelivery
+from localqueue.bus import (
+    BaseEvent,
+    BusTopology,
+    EventBus,
+    FailedDelivery,
+    HandlerContext,
+    RuntimeContext,
+)
 
 
 @dataclass(frozen=True)
@@ -78,6 +85,17 @@ class EventEnvelopeSerializer:
         return json.loads(data.decode("utf-8"))
 
 
+class HttpClient:
+    async def get(self, path: str) -> None:
+        pass
+
+
+class AppContext(HandlerContext):
+    def __init__(self, runtime: RuntimeContext, *, http: HttpClient) -> None:
+        super().__init__(runtime)
+        self.http = http
+
+
 class CallableHandler:
     def __call__(self, event: UserCreated) -> int:
         return len(event.user_id)
@@ -90,7 +108,7 @@ untrusted_envelope: object = event_serializer.loads(
 if isinstance(untrusted_envelope, dict):
     narrowed_event_type = untrusted_envelope.get("event_type")
 
-bus = EventBus(
+bus: EventBus[HandlerContext] = EventBus(
     "./typing-bus",
     topology=BusTopology(
         {
@@ -142,3 +160,26 @@ registered_event: type[UserCreated] = bus.register(UserCreated)
 failed_delivery: FailedDelivery = bus.subscription("users_sync").list_failed()[0]
 failed_event: BaseEvent | None = failed_delivery.event
 failed_event_type: str | None = failed_delivery.event_type
+
+
+http = HttpClient()
+
+
+def create_context(runtime: RuntimeContext) -> AppContext:
+    return AppContext(runtime, http=http)
+
+
+typed_bus = EventBus[AppContext](
+    "./typing-context-bus",
+    topology=BusTopology({"users": [UserCreated]}),
+    context_factory=create_context,
+)
+
+
+@typed_bus.subscription("users").handler(UserCreated)
+async def handle_user_with_context(event: UserCreated, ctx: AppContext) -> None:
+    await ctx.http.get("/")
+    event_id: str = ctx.event_id
+    attempt: int = ctx.attempt
+    handler_name: str = ctx.handler_name
+    print(event_id, attempt, handler_name)

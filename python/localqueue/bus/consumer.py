@@ -6,13 +6,15 @@ import asyncio
 import contextlib
 import inspect
 import logging
-from typing import TYPE_CHECKING, Literal, Optional, TypedDict
+from typing import TYPE_CHECKING, Literal, Optional, TypedDict, cast
 
 from localqueue.bus.bus import (
     WILDCARD,
     _AsyncStoredEventHandler,
     _is_async_callable,
+    _StoredEventHandler,
 )
+from localqueue.bus.context import ContextT, HandlerContext, RuntimeContext
 from localqueue.bus.envelope import (
     EnvelopeError,
     parse_envelope,
@@ -56,6 +58,8 @@ async def _observe_cancelled_handler(
 async def _run_async_handler(
     handler: _AsyncStoredEventHandler,
     event: BaseEvent,
+    context: HandlerContext,
+    accepts_context: bool,
     timeout: float | None,
 ) -> bool:
     """Run an async handler and return whether its internal deadline elapsed.
@@ -64,7 +68,8 @@ async def _run_async_handler(
     wins, the deadline remains authoritative even when cancellation is
     suppressed or cleanup raises.
     """
-    handler_task = asyncio.ensure_future(handler(event))
+    result = handler(event, context) if accepts_context else handler(event)
+    handler_task = asyncio.ensure_future(result)
     if timeout is None:
         await handler_task
         return False
@@ -109,8 +114,50 @@ async def _run_async_handler(
         raise
 
 
+async def _create_handler_context(
+    bus: "EventBus[ContextT]",
+    event: BaseEvent,
+    job: Job[object],
+    handler_name: str,
+) -> HandlerContext:
+    """Create the configured context for one delivery attempt."""
+    runtime = RuntimeContext(
+        event_id=str(event.event_id),
+        attempt=job.attempts + 1,
+        handler_name=handler_name,
+    )
+    factory = bus.context_factory
+    if factory is None:
+        return HandlerContext(runtime)
+    if _is_async_callable(cast(_StoredEventHandler, factory)):
+        context = factory(runtime)
+    else:
+        context = await asyncio.to_thread(factory, runtime)
+    if inspect.isawaitable(context):
+        context = await context
+    return cast(HandlerContext, context)
+
+
+async def _invoke_sync_handler(
+    handler: _StoredEventHandler,
+    event: BaseEvent,
+    context: HandlerContext,
+    accepts_context: bool,
+) -> None:
+    """Run a synchronous handler outside the event loop."""
+    if accepts_context:
+        result = await asyncio.to_thread(handler, event, context)
+    else:
+        result = await asyncio.to_thread(handler, event)
+    if result is not None and inspect.isawaitable(result):
+        await result
+
+
 async def run_consumer(
-    bus: "EventBus", subscription: str, *, idle_timeout: Optional[float] = None
+    bus: "EventBus[ContextT]",
+    subscription: str,
+    *,
+    idle_timeout: Optional[float] = None,
 ) -> None:
     """Consume ``subscription`` until cancellation or an idle timeout.
 
@@ -240,7 +287,7 @@ async def _transition(
 
 
 async def _process_delivery(
-    bus: "EventBus",
+    bus: "EventBus[ContextT]",
     subscription: str,
     queue: SimpleQueue[object],
     job: Job[object],
@@ -290,8 +337,17 @@ async def _process_delivery(
     )
     try:
         handler = registration.handler
+        context = await _create_handler_context(
+            bus, event, job, registration.handler_name
+        )
         if _is_async_callable(handler):
-            timed_out = await _run_async_handler(handler, event, registration.timeout)
+            timed_out = await _run_async_handler(
+                handler,
+                event,
+                context,
+                registration.accepts_context,
+                registration.timeout,
+            )
             if timed_out:
                 # Keep renewing the lease through cooperative handler cleanup,
                 # then stop the heartbeat before making the final decision.
@@ -318,11 +374,9 @@ async def _process_delivery(
                 )
                 return
         else:
-            # Run synchronous handlers outside the event-loop thread.
-            result = await asyncio.to_thread(handler, event)
-            if result is not None and inspect.isawaitable(result):
-                # Safety net for a synchronous handler that returned an awaitable.
-                await result
+            await _invoke_sync_handler(
+                handler, event, context, registration.accepts_context
+            )
     except registration.permanent_errors as exc:
         await _transition(
             queue,
