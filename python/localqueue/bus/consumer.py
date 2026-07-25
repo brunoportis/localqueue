@@ -9,7 +9,6 @@ import logging
 from typing import TYPE_CHECKING, Literal, Optional, TypedDict, cast
 
 from localqueue.bus.bus import (
-    WILDCARD,
     _AsyncStoredEventHandler,
     _is_async_callable,
     _StoredEventHandler,
@@ -21,10 +20,12 @@ from localqueue.bus.envelope import (
     parse_envelope,
     reconstruct_event,
 )
-from localqueue.bus.event import BaseEvent, derive_from_returned
+from localqueue.bus.event import BaseEvent, InvalidEventIdentity, derive_from_returned
+from localqueue.bus.identity import prepare_event_persistence
+from localqueue.bus.topology import WILDCARD
 from localqueue.core import SimpleQueue
 from localqueue.deadletter import FailureReason
-from localqueue.exceptions import Empty, LeaseExpired
+from localqueue.exceptions import DeduplicationConflict, Empty, LeaseExpired
 from localqueue.job import Job
 
 if TYPE_CHECKING:
@@ -200,9 +201,16 @@ async def _commit_handler_result(
             await _transition(queue, "ack", job)
         return
 
-    payload = await asyncio.to_thread(bus.serialize_envelope, event)
-    targets: list[tuple[str, str | None]] = [
-        (bus._queue_name(subscription), str(event.event_id))
+    prepared = prepare_event_persistence(event)
+    identity = prepared.identity
+    payload = await asyncio.to_thread(bus._serialize_envelope, event, prepared.payload)
+    targets: list[tuple[str, str | None, str | None, str | None]] = [
+        (
+            bus._queue_name(subscription),
+            identity.job_id,
+            identity.dedup_key,
+            identity.dedup_fingerprint,
+        )
         for subscription in subscriptions
     ]
     try:
@@ -393,6 +401,42 @@ async def _handle_delivery_exception(
         raise error
 
 
+async def _handle_commit_exception(
+    queue: SimpleQueue[object],
+    job: Job[object],
+    error: Exception,
+    *,
+    handler_name: str,
+    result: object,
+) -> None:
+    if isinstance(error, InvalidEventIdentity):
+        await _transition(
+            queue,
+            "fail",
+            job,
+            last_error=(
+                f"handler {handler_name!r} returned invalid "
+                f"{type(result).__name__} identity: {error}"
+            ),
+            reason=FailureReason.PERMANENT_HANDLER_ERROR,
+            failure_category="invalid_event_identity",
+        )
+    elif isinstance(error, DeduplicationConflict):
+        await _transition(
+            queue,
+            "fail",
+            job,
+            last_error=(
+                f"handler {handler_name!r} returned {type(result).__name__} "
+                "with an event identity conflict"
+            ),
+            reason=FailureReason.PERMANENT_HANDLER_ERROR,
+            failure_category="deduplication_conflict",
+        )
+    else:
+        await _transition(queue, "nack", job, last_error=str(error))
+
+
 async def _process_delivery(
     bus: "EventBus[ContextT]",
     subscription: str,
@@ -507,8 +551,14 @@ async def _process_delivery(
                 result,
                 registration.handler_name,
             )
-        except Exception as exc:  # noqa: BLE001 - preparation/commit is retryable
-            await _transition(queue, "nack", job, last_error=str(exc))
+        except Exception as exc:  # noqa: BLE001 - classified by commit phase
+            await _handle_commit_exception(
+                queue,
+                job,
+                exc,
+                handler_name=registration.handler_name,
+                result=result,
+            )
     finally:
         if heartbeat is not None:
             heartbeat.cancel()

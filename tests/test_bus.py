@@ -245,9 +245,9 @@ class TestDispatch:
         native = bus._native_queue
 
         class SpyNative:
-            def fanout(self, payload, targets):
+            def _fanout_with_identity(self, payload, targets):
                 calls.append(targets)
-                return native.fanout(payload, targets)
+                return native._fanout_with_identity(payload, targets)
 
             def close(self):
                 return native.close()

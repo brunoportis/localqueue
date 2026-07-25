@@ -7,6 +7,12 @@ pyo3::create_exception!(
     pyo3::exceptions::PyException,
     "Base exception for localqueue errors."
 );
+pyo3::create_exception!(
+    localqueue,
+    DeduplicationConflict,
+    LocalQueueError,
+    "Raised when an existing business identity has a different payload."
+);
 
 pyo3::create_exception!(
     localqueue,
@@ -50,6 +56,12 @@ pub enum QueueError {
     #[error("lease has expired")]
     LeaseExpired,
 
+    #[error("an event with the same identity already exists with a different payload")]
+    DeduplicationConflict,
+
+    #[error("dedup_key and dedup_fingerprint must be provided together")]
+    InvalidDeduplicationMetadata,
+
     #[error("job not found")]
     NotFound,
 
@@ -87,6 +99,12 @@ impl From<QueueError> for PyErr {
             QueueError::Full => PyErr::new::<Full, _>("queue is full"),
             QueueError::FullImpossible => PyErr::new::<_FullImpossible, _>("queue is full"),
             QueueError::LeaseExpired => PyErr::new::<LeaseExpired, _>("lease has expired"),
+            QueueError::DeduplicationConflict => PyErr::new::<DeduplicationConflict, _>(
+                "an event with the same identity already exists with a different payload",
+            ),
+            QueueError::InvalidDeduplicationMetadata => {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string())
+            }
             QueueError::NotFound => PyErr::new::<LocalQueueError, _>("job not found"),
             QueueError::Closed => PyErr::new::<LocalQueueError, _>("queue is closed"),
             QueueError::InvalidDelay => {

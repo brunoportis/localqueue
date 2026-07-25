@@ -1,5 +1,67 @@
 # Event bus
 
+## Durable event identity
+
+Use `@event(identity=...)` when independently constructed occurrences represent
+the same logical operation:
+
+```python
+from localqueue.bus import BaseEvent, EventBus, event
+
+
+@event(identity="cnpj")
+class ContactCreationRequested(BaseEvent):
+    cnpj: str
+    nome: str
+
+
+@event(identity=("tenant_id", "cnpj"))
+class TenantContactCreationRequested(BaseEvent):
+    tenant_id: str
+    cnpj: str
+    nome: str
+```
+
+`event_id` remains the random UUID of the occurrence passed to `dispatch`.
+Identity creates a separate SHA-256 deduplication key. It is namespaced by
+`event_type@schema_version`, canonicalized from validated JSON field values,
+and unique per full queue name—therefore per bus name and subscription. Two
+processes using the same database coordinate through SQLite's unique index;
+different databases do not share identities.
+
+Identity fields must be present in the persisted business payload. Statically
+excluded fields are rejected by the decorator; conditional exclusions and
+values that cannot produce deterministic finite JSON raise
+`InvalidEventIdentity` before any insert.
+
+Identity is opt-in for each concrete event class. A subclass does not inherit a
+parent's identity declaration; decorate the subclass explicitly when it should
+also use durable business identity.
+
+The payload fingerprint excludes `event_id`, creation time, correlation, and
+causation metadata. Equal identity and equal business payload reuse the
+existing message ID without replacing its envelope. `DispatchReceipt.inserted`
+is aligned with `subscriptions` and `message_ids`; mixed fanout can report
+`(False, True)`. A different payload for the same identity raises
+`DeduplicationConflict` and rolls back the complete fanout.
+
+ACKed and failed rows continue to reserve their identity. A duplicate does not
+reactivate them or clear failure state. `retry_failed` reuses the same row;
+`purge` deletes the row and releases both its `job_id` and identity.
+
+### Choosing a good identity
+
+Identity should name an idempotent operation or logical event, not necessarily
+an entity forever. An import row ID or `(tenant_id, cnpj)` can be appropriate
+for a one-time contact-creation request. `account_id` alone is dangerous for
+`AccountBalanceChanged` when several legitimate changes can occur; prefer
+`(account_id, transaction_id)` or include a revision.
+
+This is durable local ingestion deduplication, not exactly-once execution. It
+does not deduplicate lease-expiration deliveries or HTTP side effects. Handlers
+must still make external calls idempotent, commonly with
+`idempotency_key=ctx.event_id`.
+
 Failed deliveries are inspectable and replayable without discovering internal
 queue names:
 

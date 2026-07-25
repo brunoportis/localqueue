@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 from localqueue import DeliveryPolicy, FailureReason
-from localqueue.bus import BaseEvent, BusTopology, EventBus
+from localqueue.bus import BaseEvent, BusTopology, EventBus, event
 
 
 class Input(BaseEvent):
@@ -14,6 +14,18 @@ class Input(BaseEvent):
 
 class Output(BaseEvent):
     value: str
+
+
+@event(identity="value")
+class DurableOutput(BaseEvent):
+    value: str
+    detail: str
+
+
+@event(identity="request_id")
+class NonFiniteDurableOutput(BaseEvent):
+    request_id: str
+    value: float
 
 
 def run(coro):
@@ -92,6 +104,90 @@ def test_sync_handler_returned_awaitable_is_awaited(tmp_path):
 
     assert stats(bus, "inputs")["acked"] == 1
     assert stats(bus, "a")["ready"] == 1
+    bus.close()
+
+
+def test_returned_duplicate_is_success_and_origin_is_acked(tmp_path):
+    bus = EventBus(
+        str(tmp_path),
+        topology=BusTopology({"inputs": [Input], "outputs": [DurableOutput]}),
+    )
+    bus.dispatch(DurableOutput(value="1", detail="same"))
+
+    @bus.subscription("inputs").handler(Input)
+    def handle(event):
+        return DurableOutput(value="1", detail="same")
+
+    bus.dispatch(Input(value="source"))
+    run(bus.run_subscription("inputs", idle_timeout=0.2))
+
+    assert stats(bus, "inputs")["acked"] == 1
+    assert stats(bus, "outputs")["ready"] == 1
+    bus.close()
+
+
+def test_returned_identity_conflict_fails_permanently_without_partial_output(
+    tmp_path,
+):
+    seed = EventBus(
+        str(tmp_path),
+        topology=BusTopology({"existing": [DurableOutput]}),
+    )
+    seed.dispatch(DurableOutput(value="1", detail="first"))
+    seed.close()
+    bus = EventBus(
+        str(tmp_path),
+        topology=BusTopology(
+            {
+                "inputs": [Input],
+                "existing": [DurableOutput],
+                "other": [DurableOutput],
+            }
+        ),
+    )
+
+    @bus.subscription("inputs").handler(Input)
+    def handle(event):
+        return DurableOutput(value="1", detail="different")
+
+    bus.dispatch(Input(value="source"))
+    run(bus.run_subscription("inputs", idle_timeout=0.2))
+
+    failed = bus.subscription("inputs").list_failed()
+    assert failed[0].attempts == 1
+    assert failed[0].reason is FailureReason.PERMANENT_HANDLER_ERROR
+    assert failed[0].failure_category == "deduplication_conflict"
+    assert stats(bus, "other")["ready"] == 0
+    bus.close()
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf")])
+def test_returned_non_finite_payload_fails_permanently_without_fanout(tmp_path, value):
+    bus = EventBus(
+        str(tmp_path),
+        topology=BusTopology(
+            {
+                "inputs": [Input],
+                "output-a": [NonFiniteDurableOutput],
+                "output-b": [NonFiniteDurableOutput],
+            }
+        ),
+        delivery=DeliveryPolicy(lease_seconds=1, max_retries=3),
+    )
+
+    @bus.subscription("inputs").handler(Input)
+    def handle(event):
+        return NonFiniteDurableOutput(request_id="1", value=value)
+
+    bus.dispatch(Input(value="source"))
+    run(bus.run_subscription("inputs", idle_timeout=0.2))
+
+    failed = bus.subscription("inputs").list_failed()
+    assert failed[0].attempts == 1
+    assert failed[0].reason is FailureReason.PERMANENT_HANDLER_ERROR
+    assert failed[0].failure_category == "invalid_event_identity"
+    assert stats(bus, "output-a")["ready"] == 0
+    assert stats(bus, "output-b")["ready"] == 0
     bus.close()
 
 
