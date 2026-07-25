@@ -35,7 +35,7 @@ def _validate_delay(value: object, *, field: str) -> float:
     return delay
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class RetryPolicy:
     """Immutable delivery retry budget and backoff for one subscription."""
 
@@ -46,18 +46,41 @@ class RetryPolicy:
     _max_delay: float
     _jitter: bool
 
+    def __init__(self) -> None:
+        raise TypeError("use RetryPolicy.fixed() or RetryPolicy.exponential()")
+
+    @classmethod
+    def _create(
+        cls,
+        *,
+        max_attempts: int,
+        kind: Literal["fixed", "exponential"],
+        initial_delay: float,
+        multiplier: float,
+        max_delay: float,
+        jitter: bool,
+    ) -> RetryPolicy:
+        policy = object.__new__(cls)
+        object.__setattr__(policy, "max_attempts", max_attempts)
+        object.__setattr__(policy, "_kind", kind)
+        object.__setattr__(policy, "_initial_delay", initial_delay)
+        object.__setattr__(policy, "_multiplier", multiplier)
+        object.__setattr__(policy, "_max_delay", max_delay)
+        object.__setattr__(policy, "_jitter", jitter)
+        return policy
+
     @classmethod
     def fixed(cls, *, max_attempts: int, delay: float) -> RetryPolicy:
         """Create a policy whose retries always use ``delay`` seconds."""
         attempts = _validate_max_attempts(max_attempts)
         fixed_delay = _validate_delay(delay, field="delay")
-        return cls(
+        return cls._create(
             max_attempts=attempts,
-            _kind="fixed",
-            _initial_delay=fixed_delay,
-            _multiplier=1.0,
-            _max_delay=fixed_delay,
-            _jitter=False,
+            kind="fixed",
+            initial_delay=fixed_delay,
+            multiplier=1.0,
+            max_delay=fixed_delay,
+            jitter=False,
         )
 
     @classmethod
@@ -83,13 +106,13 @@ class RetryPolicy:
             raise TypeError("'jitter' must be a boolean")
         if maximum < initial:
             raise ValueError("'max_delay' must be at least 'initial_delay'")
-        return cls(
+        return cls._create(
             max_attempts=attempts,
-            _kind="exponential",
-            _initial_delay=initial,
-            _multiplier=factor,
-            _max_delay=maximum,
-            _jitter=jitter,
+            kind="exponential",
+            initial_delay=initial,
+            multiplier=factor,
+            max_delay=maximum,
+            jitter=jitter,
         )
 
     def _delay_for(self, attempt: int) -> float:

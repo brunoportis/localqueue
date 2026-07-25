@@ -25,6 +25,11 @@ def test_fixed_policy_is_immutable_and_compares_by_value() -> None:
         policy.max_attempts = 4  # type: ignore[misc]
 
 
+def test_policy_must_be_constructed_through_named_factories() -> None:
+    with pytest.raises(TypeError, match=r"RetryPolicy\.fixed"):
+        RetryPolicy()
+
+
 @pytest.mark.parametrize("value", [True, 1.0, "3", object()])
 def test_max_attempts_must_be_an_integer(value: object) -> None:
     with pytest.raises(TypeError, match="max_attempts.*integer"):
