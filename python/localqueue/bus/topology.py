@@ -98,3 +98,17 @@ class BusTopology:
         """Return whether the declared subscription routes ``event_type``."""
         patterns = self._subscriptions.get(subscription)
         return patterns is not None and (event_type in patterns or WILDCARD in patterns)
+
+    def _with_route(
+        self,
+        subscription: str,
+        event_pattern: EventPattern,
+    ) -> BusTopology:
+        """Return a new snapshot containing one additional route."""
+        validate_name(subscription, "subscription")
+        normalized_pattern = normalize_event_pattern(event_pattern)
+        subscriptions: dict[str, Iterable[EventPattern]] = dict(self._subscriptions)
+        subscriptions[subscription] = self._subscriptions.get(
+            subscription, frozenset()
+        ) | {normalized_pattern}
+        return BusTopology(subscriptions)
