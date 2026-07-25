@@ -21,7 +21,7 @@ from localqueue.bus.envelope import (
     parse_envelope,
     reconstruct_event,
 )
-from localqueue.bus.event import BaseEvent
+from localqueue.bus.event import BaseEvent, derive_from_returned
 from localqueue.core import SimpleQueue
 from localqueue.deadletter import FailureReason
 from localqueue.exceptions import Empty, LeaseExpired
@@ -62,7 +62,7 @@ async def _run_async_handler(
     context: HandlerContext,
     accepts_context: bool,
     timeout: float | None,
-) -> bool:
+) -> tuple[bool, object]:
     """Run an async handler and return whether its internal deadline elapsed.
 
     A completed handler wins a simultaneous timer completion. Once the timer
@@ -72,8 +72,7 @@ async def _run_async_handler(
     result = handler(event, context) if accepts_context else handler(event)
     handler_task = asyncio.ensure_future(result)
     if timeout is None:
-        await handler_task
-        return False
+        return False, await handler_task
 
     timer_task = asyncio.create_task(_deadline_timer(timeout))
     try:
@@ -83,8 +82,7 @@ async def _run_async_handler(
         if handler_task in done:
             timer_task.cancel()
             await asyncio.gather(timer_task, return_exceptions=True)
-            await handler_task
-            return False
+            return False, await handler_task
 
         # The timer won. Preserve that state even if cooperative cancellation
         # lets the handler return normally or raise during cleanup.
@@ -107,7 +105,7 @@ async def _run_async_handler(
                 type(cleanup_error).__name__,
             )
         await asyncio.gather(timer_task, return_exceptions=True)
-        return True
+        return True, None
     except asyncio.CancelledError:
         handler_task.cancel()
         timer_task.cancel()
@@ -144,14 +142,78 @@ async def _invoke_sync_handler(
     event: BaseEvent,
     context: HandlerContext,
     accepts_context: bool,
-) -> None:
+) -> object:
     """Run a synchronous handler outside the event loop."""
     if accepts_context:
         result = await asyncio.to_thread(handler, event, context)
     else:
         result = await asyncio.to_thread(handler, event)
-    if result is not None and inspect.isawaitable(result):
-        await result
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
+def _unsupported_result_error(handler_name: str, result: object) -> str:
+    return (
+        f"handler {handler_name!r} returned unsupported result type "
+        f"{type(result).__name__!r}; expected None or BaseEvent"
+    )
+
+
+async def _commit_handler_result(
+    bus: "EventBus[ContextT]",
+    queue: SimpleQueue[object],
+    job: Job[object],
+    parent: BaseEvent,
+    result: object,
+    handler_name: str,
+) -> None:
+    if result is None:
+        await _transition(queue, "ack", job)
+        return
+    if not isinstance(result, BaseEvent):
+        await _transition(
+            queue,
+            "fail",
+            job,
+            last_error=_unsupported_result_error(handler_name, result),
+            reason=FailureReason.PERMANENT_HANDLER_ERROR,
+        )
+        return
+
+    event = derive_from_returned(result, parent)
+    bus.registry.register(type(event))
+    subscriptions = bus._subscriptions_for(event.event_type)
+    if not subscriptions:
+        if bus.require_subscribers:
+            await _transition(
+                queue,
+                "fail",
+                job,
+                last_error=(
+                    f"handler {handler_name!r} returned event type "
+                    f"{event.event_type!r} with no subscribers"
+                ),
+                reason=FailureReason.PERMANENT_HANDLER_ERROR,
+            )
+        else:
+            await _transition(queue, "ack", job)
+        return
+
+    payload = bus.serialize_envelope(event)
+    targets: list[tuple[str, str | None]] = [
+        (bus._queue_name(subscription), str(event.event_id))
+        for subscription in subscriptions
+    ]
+    try:
+        await asyncio.to_thread(
+            queue._ack_and_fanout, job, payload=payload, targets=targets
+        )
+    except LeaseExpired:
+        log.warning(
+            "Job %s lost its lease before the transition; discarding the result",
+            job.id,
+        )
 
 
 async def run_consumer(
@@ -371,7 +433,7 @@ async def _process_delivery(
 
     # The heartbeat renews the lease while the handler runs. If the lease is
     # lost, discard the result because another worker may have claimed it.
-    state = {"lease_lost": False}
+    state: _LeaseState = {"lease_lost": False}
     interval = max(queue.delivery.lease_seconds / 3, 0.05)
     heartbeat: asyncio.Task[None] | None = asyncio.create_task(
         _heartbeat(queue, job, interval, state)
@@ -382,7 +444,7 @@ async def _process_delivery(
             bus, event, job, registration.handler_name
         )
         if _is_async_callable(handler):
-            timed_out = await _run_async_handler(
+            timed_out, result = await _run_async_handler(
                 handler,
                 event,
                 context,
@@ -415,10 +477,10 @@ async def _process_delivery(
                 )
                 return
         else:
-            await _invoke_sync_handler(
+            result = await _invoke_sync_handler(
                 handler, event, context, registration.accepts_context
             )
-    except (Reject, Retry, *registration.permanent_errors) as exc:
+    except (Reject, Retry) as exc:
         await _handle_delivery_exception(
             queue,
             job,
@@ -439,7 +501,17 @@ async def _process_delivery(
                 job.id,
             )
             return
-        await _transition(queue, "ack", job)
+        try:
+            await _commit_handler_result(
+                bus,
+                queue,
+                job,
+                event,
+                result,
+                registration.handler_name,
+            )
+        except Exception as exc:  # noqa: BLE001 - preparation/commit is retryable
+            await _transition(queue, "nack", job, last_error=str(exc))
     finally:
         if heartbeat is not None:
             heartbeat.cancel()

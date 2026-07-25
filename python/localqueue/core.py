@@ -323,6 +323,16 @@ class SimpleQueue(Generic[_PayloadT]):
         """Acknowledge successful processing of a job."""
         self._get_native().ack(job.id, job.receipt)
 
+    def _ack_and_fanout(
+        self,
+        job: Job[_PayloadT],
+        *,
+        payload: bytes,
+        targets: list[tuple[str, str | None]],
+    ) -> list[int]:
+        """Atomically ACK ``job`` and insert one payload into private targets."""
+        return self._get_native().ack_and_fanout(job.id, job.receipt, payload, targets)
+
     def nack(
         self,
         job: Job[_PayloadT],

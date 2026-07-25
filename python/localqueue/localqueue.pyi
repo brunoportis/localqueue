@@ -102,6 +102,13 @@ class NativeQueue:
         payload: bytes,
         targets: list[tuple[str, Optional[str]]],
     ) -> list[int]: ...
+    def ack_and_fanout(
+        self,
+        id: int,
+        receipt: str,
+        payload: bytes,
+        targets: list[tuple[str, Optional[str]]],
+    ) -> list[int]: ...
     def get(self, lease_ms: int) -> Optional[Lease]: ...
     def ack(self, id: int, receipt: str) -> None: ...
     def nack(
