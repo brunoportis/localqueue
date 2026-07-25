@@ -597,6 +597,66 @@ mod tests {
     }
 
     #[test]
+    fn ack_and_fanout_rolls_back_ack_and_all_targets_on_insert_error() {
+        let (_dir, storage) = open_storage();
+        let origin = [EnqueueEntry {
+            queue_name: "origin",
+            payload: b"parent",
+            job_id: None,
+        }];
+        let origin_id = storage.enqueue_batch(&origin, 3, None, None).unwrap()[0];
+        lease_message(&storage, origin_id, "origin", "receipt");
+        {
+            let mut guard = storage.connection();
+            guard
+                .as_mut()
+                .unwrap()
+                .execute_batch(
+                    "CREATE TRIGGER reject_second_target
+                     BEFORE INSERT ON messages
+                     WHEN NEW.queue = 'target-2'
+                     BEGIN SELECT RAISE(ABORT, 'injected insert failure'); END;",
+                )
+                .unwrap();
+        }
+        let targets = [
+            EnqueueEntry {
+                queue_name: "target-1",
+                payload: b"child",
+                job_id: Some("child"),
+            },
+            EnqueueEntry {
+                queue_name: "target-2",
+                payload: b"child",
+                job_id: Some("child"),
+            },
+        ];
+
+        assert!(storage
+            .ack_and_fanout("origin", origin_id, "receipt", &targets, 3)
+            .is_err());
+
+        let mut guard = storage.connection();
+        let conn = guard.as_mut().unwrap();
+        let status: i64 = conn
+            .query_row(
+                "SELECT status FROM messages WHERE id = ?1",
+                params![origin_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let target_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE queue LIKE 'target-%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, 1);
+        assert_eq!(target_count, 0);
+    }
+
+    #[test]
     fn enqueue_batch_dedup_por_job_id() {
         let (_dir, storage) = open_storage();
         let first = storage

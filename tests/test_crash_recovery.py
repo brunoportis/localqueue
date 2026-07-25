@@ -20,6 +20,7 @@ CRASH_SCENARIOS = (
     "enqueue-before-commit",
     "claim-before-commit",
     "ack-before-commit",
+    "ack-fanout-before-commit",
     "nack-before-commit",
     "fail-before-commit",
 )

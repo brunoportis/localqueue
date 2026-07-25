@@ -164,3 +164,26 @@ def test_returned_event_without_subscribers_obeys_policy(tmp_path):
         else:
             assert stats(bus, "inputs")["acked"] == 1
         bus.close()
+
+
+def test_timeout_discards_event_returned_during_cancellation_cleanup(tmp_path):
+    bus = EventBus(
+        str(tmp_path),
+        topology=BusTopology({"inputs": [Input], "outputs": [Output]}),
+        delivery=DeliveryPolicy(lease_seconds=1, max_retries=0),
+    )
+
+    @bus.subscription("inputs").handler(Input, timeout=0.01)
+    async def handle(event):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            return Output(value="too-late")
+
+    bus.dispatch(Input(value="parent"))
+    run(bus.run_subscription("inputs", idle_timeout=0.2))
+
+    failed = bus.subscription("inputs").list_failed()
+    assert failed[0].reason is FailureReason.HANDLER_TIMEOUT
+    assert stats(bus, "outputs")["ready"] == 0
+    bus.close()

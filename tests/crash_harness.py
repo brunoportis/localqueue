@@ -48,6 +48,12 @@ SCENARIOS: dict[str, dict[str, Any]] = {
         "initial": {"ready": 0, "processing": 1, "acked": 0, "failed": 0},
         "expected": {"ready": 0, "processing": 1, "acked": 0, "failed": 0},
     },
+    "ack-fanout-before-commit": {
+        "failpoint": "ack-fanout-before-commit",
+        "operation": "ack-fanout",
+        "initial": {"ready": 0, "processing": 1, "acked": 0, "failed": 0},
+        "expected": {"ready": 0, "processing": 1, "acked": 0, "failed": 0},
+    },
     "nack-before-commit": {
         "failpoint": "nack-before-commit",
         "operation": "nack",
@@ -111,6 +117,12 @@ else:
     job = queue.get(block=False)
     if OPERATION == "ack":
         queue.ack(job)
+    elif OPERATION == "ack-fanout":
+        queue._ack_and_fanout(
+            job,
+            payload=b'{"derived":true}',
+            targets=[("target", "derived-id"), ("target-2", "derived-id")],
+        )
     elif OPERATION == "nack":
         queue.nack(job, last_error="crash-harness")
     elif OPERATION == "fail":
@@ -130,6 +142,9 @@ with sqlite3.connect(DB_PATH + "/localqueue.db") as connection:
     rows = connection.execute(
         "SELECT status, COUNT(*) FROM messages WHERE queue = 'default' GROUP BY status"
     ).fetchall()
+    target_count = connection.execute(
+        "SELECT COUNT(*) FROM messages WHERE queue IN ('target', 'target-2')"
+    ).fetchone()[0]
 counts = {"ready": 0, "processing": 0, "acked": 0, "failed": 0}
 for status, count in rows:
     counts[{0: "ready", 1: "processing", 2: "acked", 3: "failed"}[status]] = count
@@ -158,7 +173,7 @@ elif CHECK_RECEIPT and counts["processing"]:
 else:
     recovery["processable_after_reopen"] = True
 queue.close()
-print(json.dumps({"integrity_check": integrity, "observed_counts": counts, "recovery": recovery}))
+print(json.dumps({"integrity_check": integrity, "observed_counts": counts, "target_count": target_count, "recovery": recovery}))
 """
 
 
@@ -313,7 +328,8 @@ def run(scenario: str, output: Path) -> int:
                 ),
                 _invariant(
                     "logical_counts_match",
-                    report["observed_counts"] == report["expected_counts"],
+                    report["observed_counts"] == report["expected_counts"]
+                    and validation["target_count"] == 0,
                     "uncommitted work is not visible after reopen",
                 ),
                 _invariant(

@@ -165,6 +165,60 @@ after commit. The receipt contains the event id, event type, sorted
 subscriptions, and internal message ids. Re-dispatching the same event id is
 deduplicated independently in each subscription queue.
 
+## Emit one event from a handler
+
+A handler may return one `BaseEvent`:
+
+```python
+@bus.subscription("contacts").handler(ContactCreationRequested)
+async def create_contact(event, ctx):
+    response = await ctx.http.post(...)
+    if response.status_code == 201:
+        return ContactCreated(
+            cnpj=event.cnpj,
+            contact_id="123",
+        )
+    if response.status_code == 409:
+        return ContactAlreadyExists(cnpj=event.cnpj)
+    if response.status_code == 422:
+        raise Reject(response.text, category="validation")
+    raise Retry()
+```
+
+`None`, including the implicit result of a function without `return`, means a
+normal ACK without emission. A returned `BaseEvent` means fanout to every
+matching subscription plus ACK of the current delivery in one local SQLite
+transaction. Only one event is accepted: lists, tuples, generators, batches,
+responses, and arbitrary objects are programming errors and move the delivery
+immediately to DLQ with `PERMANENT_HANDLER_ERROR`. `Retry` and `Reject` remain
+explicit control-flow exceptions. There is no `ctx.publish()` API.
+
+The returned object is not mutated. If its `correlation_id` was omitted, the
+persisted copy inherits the parent's correlation. If its `causation_id` was
+omitted, the persisted copy points to the parent's `event_id`. Explicit values
+are preserved, as are the child's own `event_id`, creation time, and business
+fields. `BaseEvent.from_parent()` remains available when lineage should be set
+at construction time.
+
+When the returned event has no route, `require_subscribers=True` moves the
+current delivery immediately to DLQ without emitting anything.
+`require_subscribers=False` permits the dropped emission and ACKs normally.
+
+### Local atomicity guarantee
+
+The atomic commit covers only local EventBus state: the delivery ACK and the
+fanout of the returned event. Either all local targets and the ACK commit, or
+none do.
+
+It does **not** make exactly-once the handler's HTTP request, an external
+database write, email delivery, or any other side effect performed before the
+return. Handler execution remains at-least-once. External integrations still
+need idempotency, for example:
+
+```python
+await client.post(..., idempotency_key=ctx.event_id)
+```
+
 ## Delivery and durability policies
 
 EventBus shares the same immutable delivery policy and durability intent as
