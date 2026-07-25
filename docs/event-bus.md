@@ -705,7 +705,10 @@ independent of HTTP.
 Retry policies do not know about HTTP clients, status codes, or domain
 exceptions, and do not decide whether a failure is retryable. Handlers continue
 to use `Retry` and `Reject` for explicit classification; configured
-`permanent_errors` also remain permanent.
+`permanent_errors` also remain permanent. When a retryable failure exhausts the
+policy budget, the terminal failure reason is `RETRIES_EXHAUSTED`;
+`last_error` preserves the concrete timeout or exception from the final
+attempt.
 
 The budget is written during each atomic claim so lease recovery observes it
 even if the worker crashes before the handler starts. Consequently, changing a

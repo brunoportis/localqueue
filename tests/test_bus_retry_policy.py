@@ -130,6 +130,31 @@ def test_exponential_delay_saturates_for_subnormal_initial_delay() -> None:
     assert policy._delay_for(2000) == 60.0
 
 
+def test_exponential_delay_uses_logarithmic_path_without_saturating() -> None:
+    policy = RetryPolicy.exponential(
+        max_attempts=2000,
+        initial_delay=1e-320,
+        multiplier=2,
+        max_delay=60,
+        jitter=False,
+    )
+
+    delay = policy._delay_for(1041)
+
+    assert 0 < delay < 60
+
+
+def test_zero_initial_delay_keeps_exponential_retries_immediate() -> None:
+    policy = RetryPolicy.exponential(
+        max_attempts=3,
+        initial_delay=0,
+        jitter=False,
+    )
+
+    assert policy._delay_for(1) == 0
+    assert policy._delay_for(2) == 0
+
+
 def test_full_jitter_uses_single_injectable_uniform_draw(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

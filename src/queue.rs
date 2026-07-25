@@ -414,36 +414,47 @@ impl NativeQueue {
             )
             .map_err(QueueError::from)?;
 
-            let (id, payload, attempts) = loop {
-                let row: Option<(i64, Vec<u8>, i64)> = tx
-                    .query_row(
-                        "SELECT id, payload, attempts FROM messages
-                         WHERE queue = ?1 AND status = ?2 AND available_at <= ?3
-                         ORDER BY id LIMIT 1",
-                        params![self.queue, STATUS_READY, now],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                    )
-                    .optional()
-                    .map_err(QueueError::from)?;
+            // Fail every currently deliverable READY message that has already
+            // exhausted a reduced EventBus budget in one set-based statement.
+            if let Some(override_attempts) = max_attempts {
+                tx.execute(
+                    "UPDATE messages SET
+                        status = ?1,
+                        max_attempts = ?2,
+                        failure_reason = 'retries_exhausted',
+                        updated_at = ?3
+                     WHERE queue = ?4 AND status = ?5 AND available_at <= ?6
+                        AND attempts >= ?7",
+                    params![
+                        STATUS_FAILED,
+                        override_attempts,
+                        now,
+                        self.queue,
+                        STATUS_READY,
+                        now,
+                        override_attempts
+                    ],
+                )
+                .map_err(QueueError::from)?;
+            }
 
-                let Some((id, payload, attempts)) = row else {
+            let row: Option<(i64, Vec<u8>, i64)> = tx
+                .query_row(
+                    "SELECT id, payload, attempts FROM messages
+                     WHERE queue = ?1 AND status = ?2 AND available_at <= ?3
+                     ORDER BY id LIMIT 1",
+                    params![self.queue, STATUS_READY, now],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .map_err(QueueError::from)?;
+
+            let (id, payload, attempts) = match row {
+                Some(row) => row,
+                None => {
                     tx.commit().map_err(QueueError::from)?;
                     return Ok(None);
-                };
-                if let Some(limit) = max_attempts.filter(|limit| attempts >= *limit) {
-                    tx.execute(
-                        "UPDATE messages SET
-                            status = ?1,
-                            max_attempts = ?2,
-                            failure_reason = 'retries_exhausted',
-                            updated_at = ?3
-                         WHERE id = ?4 AND queue = ?5 AND status = ?6",
-                        params![STATUS_FAILED, limit, now, id, self.queue, STATUS_READY],
-                    )
-                    .map_err(QueueError::from)?;
-                    continue;
                 }
-                break (id, payload, attempts);
             };
 
             let new_attempts = attempts + 1;
