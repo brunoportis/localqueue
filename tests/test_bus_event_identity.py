@@ -13,7 +13,8 @@ from localqueue.bus import (
     InvalidEventIdentity,
     event,
 )
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, computed_field
+from pydantic_core import PydanticSerializationError
 
 
 @event(identity="user_id")
@@ -208,7 +209,32 @@ def test_decorator_rejects_statically_excluded_identity_field():
         event(identity="cnpj")(Candidate)
 
 
-def test_identity_is_opt_in_per_concrete_class():
+def test_decorator_rejects_non_event_target_and_computed_field():
+    with pytest.raises(TypeError, match="subclass of BaseEvent"):
+        event(identity="value")(object)  # type: ignore[arg-type]
+
+    class ComputedIdentityEvent(BaseEvent):
+        @computed_field
+        @property
+        def identity(self) -> str:
+            return "computed"
+
+    with pytest.raises(ValueError, match="computed"):
+        event(identity="identity")(ComputedIdentityEvent)
+
+
+def test_redecorating_requires_the_same_identity_configuration():
+    class Candidate(BaseEvent):
+        first: str
+        second: str
+
+    decorated = event(identity="first")(Candidate)
+    assert event(identity="first")(decorated) is decorated
+    with pytest.raises(ValueError, match="conflicting"):
+        event(identity="second")(decorated)
+
+
+def test_identity_is_opt_in_per_concrete_class(tmp_path):
     @event(identity="id")
     class Parent(BaseEvent):
         id: str
@@ -218,6 +244,17 @@ def test_identity_is_opt_in_per_concrete_class():
 
     assert "__event_identity_fields__" in Parent.__dict__
     assert "__event_identity_fields__" not in Child.__dict__
+    bus = EventBus(
+        tmp_path,
+        topology=BusTopology({"children": [Child]}),
+    )
+    try:
+        first = bus.dispatch(Child(id="same"))
+        second = bus.dispatch(Child(id="same"))
+        assert first.message_ids != second.message_ids
+        assert first.inserted == second.inserted == (True,)
+    finally:
+        bus.close()
 
 
 @pytest.mark.parametrize("invalid", [None, "", "   ", float("nan"), float("inf")])
@@ -272,6 +309,30 @@ def test_non_json_identity_fails_without_insert(tmp_path):
         assert count == 0
     finally:
         bus.close()
+
+
+def test_non_identity_serialization_error_keeps_its_original_type():
+    class PlainOpaqueEvent(BaseEvent):
+        model_config = ConfigDict(arbitrary_types_allowed=True)
+
+        token: _OpaqueToken
+
+    from localqueue.bus.identity import prepare_event_persistence
+
+    with pytest.raises(PydanticSerializationError):
+        prepare_event_persistence(PlainOpaqueEvent(token=_OpaqueToken()))
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf")])
+def test_non_finite_identity_field_is_invalid(value):
+    @event(identity="identity")
+    class NonFiniteIdentityEvent(BaseEvent):
+        identity: float
+
+    from localqueue.bus.identity import prepare_event_persistence
+
+    with pytest.raises(InvalidEventIdentity, match="finite JSON"):
+        prepare_event_persistence(NonFiniteIdentityEvent(identity=value))
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])

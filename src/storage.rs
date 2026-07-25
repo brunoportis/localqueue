@@ -416,7 +416,7 @@ fn insert_entries_in_transaction(
     let mut ids = Vec::with_capacity(entries.len());
     for entry in entries {
         if entry.dedup_key.is_some() != entry.dedup_fingerprint.is_some() {
-            return Err(QueueError::DeduplicationConflict);
+            return Err(QueueError::InvalidDeduplicationMetadata);
         }
         let changed = insert
             .execute(params![
@@ -600,6 +600,23 @@ mod tests {
         let (_dir, storage) = open_storage();
         let ids = storage.enqueue_batch(&[], 3, None, None).unwrap();
         assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn enqueue_rejects_incomplete_deduplication_metadata_as_invalid_input() {
+        let (_dir, storage) = open_storage();
+        let entries = [EnqueueEntry {
+            queue_name: "events",
+            payload: b"payload",
+            job_id: Some("occurrence"),
+            dedup_key: Some("identity"),
+            dedup_fingerprint: None,
+        }];
+
+        assert!(matches!(
+            storage.enqueue_batch_outcomes(&entries, 3, None, None),
+            Err(QueueError::InvalidDeduplicationMetadata)
+        ));
     }
 
     #[test]

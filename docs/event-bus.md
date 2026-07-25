@@ -34,6 +34,10 @@ excluded fields are rejected by the decorator; conditional exclusions and
 values that cannot produce deterministic finite JSON raise
 `InvalidEventIdentity` before any insert.
 
+Identity is opt-in for each concrete event class. A subclass does not inherit a
+parent's identity declaration; decorate the subclass explicitly when it should
+also use durable business identity.
+
 The payload fingerprint excludes `event_id`, creation time, correlation, and
 causation metadata. Equal identity and equal business payload reuse the
 existing message ID without replacing its envelope. `DispatchReceipt.inserted`

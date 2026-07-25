@@ -59,6 +59,9 @@ pub enum QueueError {
     #[error("an event with the same identity already exists with a different payload")]
     DeduplicationConflict,
 
+    #[error("dedup_key and dedup_fingerprint must be provided together")]
+    InvalidDeduplicationMetadata,
+
     #[error("job not found")]
     NotFound,
 
@@ -99,6 +102,9 @@ impl From<QueueError> for PyErr {
             QueueError::DeduplicationConflict => PyErr::new::<DeduplicationConflict, _>(
                 "an event with the same identity already exists with a different payload",
             ),
+            QueueError::InvalidDeduplicationMetadata => {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string())
+            }
             QueueError::NotFound => PyErr::new::<LocalQueueError, _>("job not found"),
             QueueError::Closed => PyErr::new::<LocalQueueError, _>("queue is closed"),
             QueueError::InvalidDelay => {

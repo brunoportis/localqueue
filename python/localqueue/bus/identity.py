@@ -49,6 +49,9 @@ def canonical_json(value: object) -> bytes:
 def prepare_persistence_identity(
     event: BaseEvent, payload: dict[str, object]
 ) -> _EventPersistenceIdentity:
+    # Identity is deliberately opt-in per concrete class. Looking only in the
+    # class dictionary prevents a decorated parent from silently changing a
+    # child's persistence semantics.
     fields = type(event).__dict__.get("__event_identity_fields__")
     if fields is None:
         return _EventPersistenceIdentity(str(event.event_id), None, None)
