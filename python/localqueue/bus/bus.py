@@ -830,7 +830,14 @@ class EventBus(Generic[ContextT]):
         fails; the whole run is not all-or-nothing.
 
         ``transform`` (when given) runs exactly once per consumed item and
-        may return a BaseEvent or an awaitable resolving to one.
+        may return a BaseEvent or an awaitable resolving to one. Synchronous
+        source iteration and synchronous transforms run on the event-loop
+        thread; use an async source/transform or explicitly offload blocking
+        work.
+
+        ``batch_size`` limits source items, not deliveries. Memory use and
+        native transaction size also grow with payload size and subscription
+        fan-out.
 
         ``max_pending`` is an ephemeral per-subscription-queue pending bound
         for this run only: it is not durable queue configuration, plain
@@ -843,6 +850,11 @@ class EventBus(Generic[ContextT]):
         source re-consumes it from the beginning. Events that opt into
         durable identity are deduplicated on re-ingestion; events without
         identity are persisted as new occurrences.
+
+        Cancellation while a native batch is in flight waits for that batch
+        to settle before ``CancelledError`` is propagated. The batch may
+        commit; once cancellation is observed by the caller, no commit
+        remains running in the background.
         """
         return await run_ingestion(
             self,

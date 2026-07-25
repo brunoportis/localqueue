@@ -721,7 +721,8 @@ workers competing for that subscription.
 `EventBus.ingest()` routes events from any synchronous or asynchronous
 iterable into the bus. Lists, tuples, generators, and async generators are
 already valid sources; no adapter class is needed. Future sources (for
-example, CSV readers) only need to implement `Iterable` or `AsyncIterable`.
+example, CSV readers) only need to support Python's `iter()` or `aiter()`
+protocol.
 
 ```python
 from localqueue.bus import BaseEvent, EventBus, IngestionResult
@@ -764,10 +765,13 @@ async def async_to_event(row: dict) -> ContactCreated:
 result = await bus.ingest(stream_rows(), transform=async_to_event)
 ```
 
-The source is never materialized in full: at most `batch_size` items are
-prepared in memory at a time. `batch_size` therefore bounds both peak memory
-and the maximum commit size. Use `max_pending` to apply backpressure per
-subscription queue:
+The source is never materialized in full: at most `batch_size` source items
+are prepared at a time. Fan-out creates one delivery entry per subscription,
+including a payload buffer at the Python/Rust boundary, so delivery count,
+transaction size, and peak memory are approximately proportional to
+`batch_size × fan-out × payload size`, plus intermediate Python and Rust
+structures. `batch_size` bounds source items, not delivery entries. Use
+`max_pending` to apply backpressure per subscription queue:
 
 ```python
 result = await bus.ingest(
@@ -787,6 +791,16 @@ larger than the available capacity is split internally into smaller commits;
 atomicity applies per effective commit and each split counts in
 `batches_committed`.
 
+Synchronous source iteration and synchronous transforms execute on the
+event-loop thread. This avoids a thread handoff for every item, but a blocking
+CSV reader or CPU-heavy transform can delay unrelated async tasks. Use an
+`AsyncIterable`, an async transform, or explicitly offload blocking work.
+
+If ingestion is cancelled while a native transaction is in flight, that
+transaction cannot be stopped safely. `ingest()` waits for it to settle before
+propagating `CancelledError`; the batch may commit, but when the caller
+observes cancellation there is no commit still running in the background.
+
 Ingestion is incremental and batch-atomic, not all-or-nothing: batches
 committed before a later failure stay committed. There is no checkpoint or
 resume in this version; restarting a generic source re-consumes it from the
@@ -794,6 +808,12 @@ start. Events with a durable identity (`@event(identity=...)`) are
 deduplicated on re-ingestion, so re-running an identified source is safe;
 events without identity are new occurrences. Future resumable sources will
 handle checkpoints explicitly.
+
+The first source, transform, serialization, routing, or native error stops the
+run. There is no `continue_on_error`, invalid-item skip policy, partial result,
+or source position in `IngestionResult`. For multi-million-item imports,
+`ingest()` is therefore a batch-dispatch primitive; applications that need
+restartable ingestion must own checkpoints and error policy around it.
 
 The returned `IngestionResult` aggregates counters for the run:
 

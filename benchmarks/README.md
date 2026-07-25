@@ -42,3 +42,22 @@ O benchmark usa payloads equivalentes serializados com pickle nos dois
 backends. Ele mede o caminho single-processo; concorrência e multiprocessos
 devem ser executados em um cenário separado, porque `persist-queue` documenta
 principalmente segurança em threads.
+
+## Ingestão genérica
+
+O benchmark específico de `EventBus.ingest()` cobre eventos com e sem
+identidade durável, `max_pending` desligado e ligado, fan-out 1 e 5 e batches
+100, 1.000 e 10.000. Ele também compara `dispatch()` repetido e registra
+throughput, duração das transações nativas, pico RSS e pico de alocações
+Python:
+
+```bash
+python benchmarks/ingestion_bench.py \
+  --rows 20000 \
+  --output ingestion.json
+```
+
+Cada cenário usa um processo e banco novos. `capacity=true` define
+`max_pending=rows`, exercitando a verificação de capacidade sem introduzir
+espera proposital por backpressure. RSS inclui o baseline do interpretador;
+o pico rastreado pelo Python não inclui alocações Rust/SQLite.

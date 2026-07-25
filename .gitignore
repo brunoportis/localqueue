@@ -20,4 +20,7 @@ site/
 target/
 *.so
 /artifacts/
+!/artifacts/
+/artifacts/*
+!/artifacts/ingestion-benchmark.json
 /compatibility-report.json

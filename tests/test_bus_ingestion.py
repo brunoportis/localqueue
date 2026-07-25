@@ -4,6 +4,7 @@ import asyncio
 import json
 import math
 import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
@@ -172,6 +173,22 @@ class TestSources:
 
         try:
             result = run(bus.ingest(CustomIterable()))
+            assert result.items_read == 2
+            assert queue_seqs(tmp_path / "bus", S1) == [1, 2]
+        finally:
+            bus.close()
+
+    def test_classic_sequence_protocol_source(self, tmp_path):
+        bus = make_bus(tmp_path / "bus")
+
+        class ClassicSequence:
+            def __getitem__(self, index):
+                if index >= 2:
+                    raise IndexError
+                return Ping(seq=index + 1)
+
+        try:
+            result = run(bus.ingest(ClassicSequence()))
             assert result.items_read == 2
             assert queue_seqs(tmp_path / "bus", S1) == [1, 2]
         finally:
@@ -363,6 +380,45 @@ class TestSources:
             # The first item was consumed but never committed.
             assert queue_seqs(tmp_path / "bus", S1) == []
         finally:
+            bus.close()
+
+    def test_cancellation_waits_for_in_flight_native_commit(
+        self, tmp_path, monkeypatch
+    ):
+        bus = make_bus(tmp_path / "bus", {"s1": ["*"]})
+        native = bus._native_queue
+        transaction_started = threading.Event()
+        release_transaction = threading.Event()
+
+        class PausedCommit:
+            def _enqueue_batch_with_identity(self, entries, capacity):
+                transaction_started.set()
+                assert release_transaction.wait(timeout=5)
+                return native._enqueue_batch_with_identity(entries, capacity)
+
+            def close(self):
+                return native.close()
+
+        monkeypatch.setattr(bus, "_native_queue", PausedCommit())
+
+        async def main():
+            task = asyncio.create_task(bus.ingest([Ping(seq=1)], batch_size=1))
+            assert await asyncio.to_thread(transaction_started.wait, 5)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+            release_transaction.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 5)
+
+        try:
+            run(main())
+            assert queue_seqs(tmp_path / "bus", S1) == [1]
+        finally:
+            release_transaction.set()
             bus.close()
 
 

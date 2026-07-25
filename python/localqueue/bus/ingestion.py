@@ -11,7 +11,13 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
-from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable
+from collections.abc import (
+    AsyncIterable,
+    AsyncIterator,
+    Callable,
+    Iterable,
+    Iterator,
+)
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar
 from uuid import UUID
@@ -82,17 +88,16 @@ class _IngestionCounters:
     batches: int = 0
 
 
-async def _iterate_async(source: AsyncIterable[object]) -> AsyncIterator[object]:
-    async for item in source:
+async def _iterate_async(iterator: AsyncIterator[object]) -> AsyncIterator[object]:
+    async for item in iterator:
         yield item
 
 
-async def _iterate_sync(source: Iterable[object]) -> AsyncIterator[object]:
+async def _iterate_sync(iterator: Iterator[object]) -> AsyncIterator[object]:
     # Sync sources are advanced incrementally in the event loop, one next()
     # per item. Blocking I/O sources should provide an AsyncIterable instead;
     # per-item next() is deliberately not wrapped in asyncio.to_thread so the
     # source is never read ahead of the current group.
-    iterator = iter(source)
     while True:
         try:
             yield next(iterator)
@@ -196,9 +201,28 @@ async def _commit_group(
         # Every attempt re-checks that the bus is still open.
         native = bus._get_native()
         try:
-            outcomes = await asyncio.to_thread(
-                native._enqueue_batch_with_identity, entries, capacity
+            commit = asyncio.create_task(
+                asyncio.to_thread(
+                    native._enqueue_batch_with_identity, entries, capacity
+                )
             )
+            try:
+                outcomes = await asyncio.shield(commit)
+            except asyncio.CancelledError:
+                # A Python task cannot stop SQLite work already running in a
+                # worker thread. Do not expose cancellation while that commit
+                # is still in flight: settle it first, then propagate the
+                # original cancellation.
+                while not commit.done():
+                    try:
+                        await asyncio.shield(commit)
+                    except asyncio.CancelledError:
+                        # Repeated cancellation requests must not reopen the
+                        # same ambiguity while SQLite is still running.
+                        continue
+                if not commit.cancelled():
+                    commit.exception()
+                raise
             break
         except _native._FullImpossible:
             if len(group) == 1:
@@ -249,10 +273,14 @@ def _open_source(
             )
     if transform is not None and not callable(transform):
         raise TypeError("'transform' must be callable or None")
-    if isinstance(source, AsyncIterable):
-        return _iterate_async(source)
-    if isinstance(source, Iterable):
-        return _iterate_sync(source)
+    try:
+        return _iterate_async(aiter(source))  # type: ignore[arg-type]
+    except TypeError:
+        pass
+    try:
+        return _iterate_sync(iter(source))  # type: ignore[arg-type]
+    except TypeError:
+        pass
     raise TypeError("'source' must be an Iterable or AsyncIterable")
 
 
@@ -288,10 +316,14 @@ async def run_ingestion(
     :param bus: the EventBus that owns routing, serialization, and identity.
     :param source: iterable or async iterable; never materialized, never
         measured with ``len()``, and never read ahead of the current group.
-        Blocking I/O sources should provide an AsyncIterable.
+        Synchronous iteration runs on the event-loop thread. Blocking I/O
+        sources should provide an AsyncIterable or be offloaded explicitly.
     :param transform: optional callable applied exactly once per consumed
         item; it may return a BaseEvent or an awaitable resolving to one.
+        Synchronous transforms run on the event-loop thread.
     :param batch_size: maximum number of source items per native transaction.
+        Delivery count and memory also depend on subscription fan-out and
+        payload size.
     :param max_pending: optional per-subscription-queue pending bound for
         this run; ephemeral and never persisted as queue configuration.
     :returns: aggregate counters for the completed run.
