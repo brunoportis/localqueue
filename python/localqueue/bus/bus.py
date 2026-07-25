@@ -23,7 +23,7 @@ from uuid import UUID
 from localqueue import localqueue as _native
 from localqueue.bus.context import ContextFactory, ContextT
 from localqueue.bus.event import BaseEvent, event_type_of
-from localqueue.bus.identity import business_payload, prepare_persistence_identity
+from localqueue.bus.identity import business_payload, prepare_event_persistence
 from localqueue.bus.registry import EVENT_REGISTRY, EventRegistry
 from localqueue.bus.subscription import Subscription
 from localqueue.bus.topology import (
@@ -707,9 +707,9 @@ class EventBus(Generic[ContextT]):
                 inserted=(),
             )
 
-        business = business_payload(event)
-        identity = prepare_persistence_identity(event, business)
-        payload = self._serialize_envelope(event, business)
+        prepared = prepare_event_persistence(event)
+        identity = prepared.identity
+        payload = self._serialize_envelope(event, prepared.payload)
         targets: list[tuple[str, str | None, str | None, str | None]] = [
             (
                 self._queue_name(subscription),

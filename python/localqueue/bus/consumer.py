@@ -20,12 +20,8 @@ from localqueue.bus.envelope import (
     parse_envelope,
     reconstruct_event,
 )
-from localqueue.bus.event import BaseEvent, derive_from_returned
-from localqueue.bus.identity import (
-    InvalidEventIdentity,
-    business_payload,
-    prepare_persistence_identity,
-)
+from localqueue.bus.event import BaseEvent, InvalidEventIdentity, derive_from_returned
+from localqueue.bus.identity import prepare_event_persistence
 from localqueue.bus.topology import WILDCARD
 from localqueue.core import SimpleQueue
 from localqueue.deadletter import FailureReason
@@ -205,9 +201,9 @@ async def _commit_handler_result(
             await _transition(queue, "ack", job)
         return
 
-    business = business_payload(event)
-    identity = prepare_persistence_identity(event, business)
-    payload = await asyncio.to_thread(bus._serialize_envelope, event, business)
+    prepared = prepare_event_persistence(event)
+    identity = prepared.identity
+    payload = await asyncio.to_thread(bus._serialize_envelope, event, prepared.payload)
     targets: list[tuple[str, str | None, str | None, str | None]] = [
         (
             bus._queue_name(subscription),

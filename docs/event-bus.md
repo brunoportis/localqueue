@@ -29,6 +29,11 @@ and unique per full queue name—therefore per bus name and subscription. Two
 processes using the same database coordinate through SQLite's unique index;
 different databases do not share identities.
 
+Identity fields must be present in the persisted business payload. Statically
+excluded fields are rejected by the decorator; conditional exclusions and
+values that cannot produce deterministic finite JSON raise
+`InvalidEventIdentity` before any insert.
+
 The payload fingerprint excludes `event_id`, creation time, correlation, and
 causation metadata. Equal identity and equal business payload reuse the
 existing message ID without replacing its envelope. `DispatchReceipt.inserted`

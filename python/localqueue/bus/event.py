@@ -15,6 +15,10 @@ _DERIVED_RESERVED_FIELDS = frozenset(
 _IdentityT = TypeVar("_IdentityT", bound=type["BaseEvent"])
 
 
+class InvalidEventIdentity(ValueError):
+    """Raised before persistence when a declared event identity is invalid."""
+
+
 def _correlation_from_event_id(validated_data: dict[str, Any]) -> UUID:
     """Read Pydantic's dynamically typed validated-data mapping."""
     return validated_data["event_id"]
@@ -125,6 +129,11 @@ def event(*, identity: str | tuple[str, ...]) -> Callable[[_IdentityT], _Identit
                 raise ValueError(
                     f"{cls.__name__} identity field {name!r} does not exist; "
                     "identity must name a Python model field"
+                )
+            if event_cls.model_fields[name].exclude is True:
+                raise InvalidEventIdentity(
+                    f"{cls.__name__} identity field {name!r} is excluded; "
+                    "identity must be present in the persisted payload"
                 )
         setattr(cls, "__event_identity_fields__", cast(object, fields))
         return cls

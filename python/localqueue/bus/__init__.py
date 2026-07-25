@@ -11,8 +11,7 @@ from localqueue.bus.bus import DispatchReceipt, EventBus, NoSubscribers
 from localqueue.bus.context import ContextFactory, HandlerContext, RuntimeContext
 from localqueue.bus.control import Reject, Retry
 from localqueue.bus.deadletter import FailedDelivery
-from localqueue.bus.event import BaseEvent, event
-from localqueue.bus.identity import InvalidEventIdentity
+from localqueue.bus.event import BaseEvent, InvalidEventIdentity, event
 from localqueue.bus.registry import EVENT_REGISTRY, EventRegistry
 from localqueue.bus.subscription import Subscription
 from localqueue.bus.topology import BusTopology

@@ -22,6 +22,12 @@ class DurableOutput(BaseEvent):
     detail: str
 
 
+@event(identity="request_id")
+class NonFiniteDurableOutput(BaseEvent):
+    request_id: str
+    value: float
+
+
 def run(coro):
     return asyncio.run(coro)
 
@@ -152,6 +158,36 @@ def test_returned_identity_conflict_fails_permanently_without_partial_output(
     assert failed[0].reason is FailureReason.PERMANENT_HANDLER_ERROR
     assert failed[0].failure_category == "deduplication_conflict"
     assert stats(bus, "other")["ready"] == 0
+    bus.close()
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf")])
+def test_returned_non_finite_payload_fails_permanently_without_fanout(tmp_path, value):
+    bus = EventBus(
+        str(tmp_path),
+        topology=BusTopology(
+            {
+                "inputs": [Input],
+                "output-a": [NonFiniteDurableOutput],
+                "output-b": [NonFiniteDurableOutput],
+            }
+        ),
+        delivery=DeliveryPolicy(lease_seconds=1, max_retries=3),
+    )
+
+    @bus.subscription("inputs").handler(Input)
+    def handle(event):
+        return NonFiniteDurableOutput(request_id="1", value=value)
+
+    bus.dispatch(Input(value="source"))
+    run(bus.run_subscription("inputs", idle_timeout=0.2))
+
+    failed = bus.subscription("inputs").list_failed()
+    assert failed[0].attempts == 1
+    assert failed[0].reason is FailureReason.PERMANENT_HANDLER_ERROR
+    assert failed[0].failure_category == "invalid_event_identity"
+    assert stats(bus, "output-a")["ready"] == 0
+    assert stats(bus, "output-b")["ready"] == 0
     bus.close()
 
 

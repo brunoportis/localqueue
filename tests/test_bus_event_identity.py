@@ -13,6 +13,7 @@ from localqueue.bus import (
     InvalidEventIdentity,
     event,
 )
+from pydantic import ConfigDict, Field
 
 
 @event(identity="user_id")
@@ -70,6 +71,23 @@ class DurableCompositeEvent(BaseEvent):
 @event(identity="identity")
 class DurableInvalidIdentityEvent(BaseEvent):
     identity: object
+
+
+@event(identity="request_id")
+class DurableNonFinitePayloadEvent(BaseEvent):
+    request_id: str
+    value: float
+
+
+class _OpaqueToken:
+    pass
+
+
+@event(identity="token")
+class DurableOpaqueIdentityEvent(BaseEvent):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    token: _OpaqueToken
 
 
 def _dispatch_identity_process(path, barrier, results, name):
@@ -182,6 +200,14 @@ def test_decorator_rejects_invalid_field(field):
         event(identity=field)(Candidate)
 
 
+def test_decorator_rejects_statically_excluded_identity_field():
+    class Candidate(BaseEvent):
+        cnpj: str = Field(exclude=True)
+
+    with pytest.raises(InvalidEventIdentity, match="persisted payload"):
+        event(identity="cnpj")(Candidate)
+
+
 def test_identity_is_opt_in_per_concrete_class():
     @event(identity="id")
     class Parent(BaseEvent):
@@ -203,6 +229,62 @@ def test_invalid_identity_fails_before_any_insert(tmp_path, invalid):
     try:
         with pytest.raises(InvalidEventIdentity):
             bus.dispatch(DurableInvalidIdentityEvent(identity=invalid))
+        connection = sqlite3.connect(tmp_path / "localqueue.db")
+        count = connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        connection.close()
+        assert count == 0
+    finally:
+        bus.close()
+
+
+def test_conditionally_excluded_identity_fails_without_insert(tmp_path):
+    @event(identity="cnpj")
+    class ConditionallyExcludedIdentityEvent(BaseEvent):
+        event_name = "DurableConditionallyExcludedIdentityEvent"
+        cnpj: str = Field(exclude_if=lambda value: value == "hidden")
+
+    bus = EventBus(
+        tmp_path,
+        topology=BusTopology({"target": [ConditionallyExcludedIdentityEvent]}),
+    )
+    try:
+        with pytest.raises(InvalidEventIdentity, match="persisted payload"):
+            bus.dispatch(ConditionallyExcludedIdentityEvent(cnpj="hidden"))
+        connection = sqlite3.connect(tmp_path / "localqueue.db")
+        count = connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        connection.close()
+        assert count == 0
+    finally:
+        bus.close()
+
+
+def test_non_json_identity_fails_without_insert(tmp_path):
+    bus = EventBus(
+        tmp_path,
+        topology=BusTopology({"target": [DurableOpaqueIdentityEvent]}),
+    )
+    try:
+        with pytest.raises(InvalidEventIdentity, match="deterministic"):
+            bus.dispatch(DurableOpaqueIdentityEvent(token=_OpaqueToken()))
+        connection = sqlite3.connect(tmp_path / "localqueue.db")
+        count = connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        connection.close()
+        assert count == 0
+    finally:
+        bus.close()
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_non_identity_payload_fails_without_insert(tmp_path, value):
+    bus = EventBus(
+        tmp_path,
+        topology=BusTopology({"target": [DurableNonFinitePayloadEvent]}),
+    )
+    try:
+        with pytest.raises(InvalidEventIdentity, match="deterministic"):
+            bus.dispatch(
+                DurableNonFinitePayloadEvent(request_id="request-1", value=value)
+            )
         connection = sqlite3.connect(tmp_path / "localqueue.db")
         count = connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
         connection.close()

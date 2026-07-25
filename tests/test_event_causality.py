@@ -241,9 +241,9 @@ class TestEnvelopeSerialization:
         fanout_calls = []
 
         class SpyNative:
-            def fanout(self, payload, targets):
+            def _fanout_with_identity(self, payload, targets):
                 fanout_calls.append((payload, targets))
-                return native.fanout(payload, targets)
+                return native._fanout_with_identity(payload, targets)
 
             def close(self):
                 return native.close()
@@ -259,9 +259,9 @@ class TestEnvelopeSerialization:
         payload, targets = fanout_calls[0]
         assert payload == json.dumps(serializer.dumped[0]).encode("utf-8")
         assert targets == [
-            ("__bus__:causality:audit", str(event.event_id)),
-            ("__bus__:causality:email", str(event.event_id)),
-            ("__bus__:causality:wildcard", str(event.event_id)),
+            ("__bus__:causality:audit", str(event.event_id), None, None),
+            ("__bus__:causality:email", str(event.event_id), None, None),
+            ("__bus__:causality:wildcard", str(event.event_id), None, None),
         ]
         assert receipt.event_id == event.event_id
 
@@ -488,9 +488,9 @@ class TestDeduplicationAndRegressions:
         targets_seen = []
 
         class SpyNative:
-            def fanout(self, payload, targets):
+            def _fanout_with_identity(self, payload, targets):
                 targets_seen.extend(targets)
-                return native.fanout(payload, targets)
+                return native._fanout_with_identity(payload, targets)
 
             def close(self):
                 return native.close()
@@ -512,7 +512,7 @@ class TestDeduplicationAndRegressions:
         assert first_receipt.event_id == first.event_id
         assert second_receipt.event_id == second.event_id
         assert ready == 2
-        assert [job_id for _queue, job_id in targets_seen] == [
+        assert [job_id for _queue, job_id, _key, _fingerprint in targets_seen] == [
             str(first.event_id),
             str(second.event_id),
         ]

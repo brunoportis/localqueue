@@ -6,7 +6,9 @@ import hashlib
 import json
 from dataclasses import dataclass
 
-from localqueue.bus.event import BaseEvent
+from pydantic_core import PydanticSerializationError
+
+from localqueue.bus.event import BaseEvent, InvalidEventIdentity
 
 _EVENT_METADATA_FIELDS = {
     "event_id",
@@ -16,15 +18,17 @@ _EVENT_METADATA_FIELDS = {
 }
 
 
-class InvalidEventIdentity(ValueError):
-    """Raised before persistence when a declared event identity is invalid."""
-
-
 @dataclass(frozen=True)
 class _EventPersistenceIdentity:
     job_id: str
     dedup_key: str | None
     dedup_fingerprint: str | None
+
+
+@dataclass(frozen=True)
+class _PreparedEvent:
+    payload: dict[str, object]
+    identity: _EventPersistenceIdentity
 
 
 def business_payload(event: BaseEvent) -> dict[str, object]:
@@ -48,9 +52,15 @@ def prepare_persistence_identity(
     fields = type(event).__dict__.get("__event_identity_fields__")
     if fields is None:
         return _EventPersistenceIdentity(str(event.event_id), None, None)
-    identity = event.model_dump(mode="json", include=set(fields))
+    identity: dict[str, object] = {}
     for field in fields:
-        value = identity[field]
+        if field not in payload:
+            raise InvalidEventIdentity(
+                f"{event.event_type} identity field {field!r} is not present "
+                "in the persisted payload"
+            )
+        value = payload[field]
+        identity[field] = value
         if value is None or (isinstance(value, str) and not value.strip()):
             raise InvalidEventIdentity(
                 f"{event.event_type} identity field {field!r} must be non-null "
@@ -74,3 +84,21 @@ def prepare_persistence_identity(
         f"event-identity:v1:{key_digest}",
         f"event-payload:v1:{fingerprint}",
     )
+
+
+def prepare_event_persistence(event: BaseEvent) -> _PreparedEvent:
+    """Prepare one event before opening any native transaction."""
+    has_identity = "__event_identity_fields__" in type(event).__dict__
+    try:
+        payload = business_payload(event)
+        identity = prepare_persistence_identity(event, payload)
+    except InvalidEventIdentity:
+        raise
+    except (PydanticSerializationError, TypeError, ValueError) as error:
+        if not has_identity:
+            raise
+        raise InvalidEventIdentity(
+            f"{event.event_type} cannot produce a deterministic persistence "
+            "identity and fingerprint"
+        ) from error
+    return _PreparedEvent(payload=payload, identity=identity)
