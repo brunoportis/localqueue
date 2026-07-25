@@ -200,7 +200,7 @@ async def _commit_handler_result(
             await _transition(queue, "ack", job)
         return
 
-    payload = bus.serialize_envelope(event)
+    payload = await asyncio.to_thread(bus.serialize_envelope, event)
     targets: list[tuple[str, str | None]] = [
         (bus._queue_name(subscription), str(event.event_id))
         for subscription in subscriptions
@@ -360,6 +360,8 @@ async def _handle_delivery_exception(
     *,
     permanent_errors: tuple[type[BaseException], ...],
 ) -> None:
+    if isinstance(error, asyncio.CancelledError):
+        raise error
     if isinstance(error, Reject):
         await _transition(
             queue,
@@ -385,8 +387,10 @@ async def _handle_delivery_exception(
             last_error=f"permanent failure: {error}",
             reason=FailureReason.PERMANENT_HANDLER_ERROR,
         )
-    else:
+    elif isinstance(error, Exception):
         await _transition(queue, "nack", job, last_error=str(error))
+    else:
+        raise error
 
 
 async def _process_delivery(
@@ -480,14 +484,7 @@ async def _process_delivery(
             result = await _invoke_sync_handler(
                 handler, event, context, registration.accepts_context
             )
-    except (Reject, Retry) as exc:
-        await _handle_delivery_exception(
-            queue,
-            job,
-            exc,
-            permanent_errors=registration.permanent_errors,
-        )
-    except Exception as exc:  # noqa: BLE001 - transient failure, retry it
+    except BaseException as exc:
         await _handle_delivery_exception(
             queue,
             job,

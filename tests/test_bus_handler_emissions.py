@@ -1,5 +1,6 @@
 import asyncio
 import json
+import threading
 from uuid import uuid4
 
 import pytest
@@ -245,3 +246,47 @@ def test_existing_target_ids_are_reused_while_origin_is_acked(tmp_path):
     assert stats(reopened, "b")["ready"] == 1
     assert len(receipt.message_ids) == 2
     reopened.close()
+
+
+def test_sync_serializer_does_not_block_the_event_loop(tmp_path):
+    serializer_started = threading.Event()
+    loop_progressed = threading.Event()
+    serializer_observed_progress = []
+
+    class BlockingOutputSerializer:
+        def dumps(self, obj: dict[str, object], /) -> bytes:
+            if obj["event_type"] == "Output":
+                serializer_started.set()
+                serializer_observed_progress.append(loop_progressed.wait(timeout=0.5))
+            return json.dumps(obj).encode()
+
+        def loads(self, data: bytes, /) -> object:
+            return json.loads(data)
+
+    bus = EventBus(
+        str(tmp_path),
+        topology=BusTopology({"inputs": [Input], "outputs": [Output]}),
+        serializer=BlockingOutputSerializer(),
+    )
+
+    @bus.subscription("inputs").handler(Input)
+    def handle(event):
+        return Output(value=event.value)
+
+    async def allow_loop_progress() -> None:
+        await asyncio.to_thread(serializer_started.wait)
+        await asyncio.sleep(0)
+        loop_progressed.set()
+
+    async def consume() -> None:
+        progress_task = asyncio.create_task(allow_loop_progress())
+        bus.dispatch(Input(value="parent"))
+        await bus.run_subscription("inputs", idle_timeout=0.2)
+        await progress_task
+
+    run(consume())
+
+    assert serializer_observed_progress == [True]
+    assert stats(bus, "inputs")["acked"] == 1
+    assert stats(bus, "outputs")["ready"] == 1
+    bus.close()

@@ -226,6 +226,46 @@ def test_reject_survives_reopen_and_remains_replayable(tmp_path):
     reopened.close()
 
 
+def test_registered_base_exception_goes_directly_to_dlq(tmp_path):
+    class AbortWork(BaseException):
+        pass
+
+    bus = make_bus(tmp_path, max_retries=3)
+
+    @bus.subscription("work").handler(
+        WorkRequested,
+        permanent_errors=(AbortWork,),
+    )
+    def handle(event):
+        raise AbortWork("abort permanently")
+
+    bus.dispatch(WorkRequested(value="abort"))
+    run(bus.run_subscription("work", idle_timeout=0.2))
+
+    failed = bus.subscription("work").list_failed()
+    assert len(failed) == 1
+    assert failed[0].attempts == 1
+    assert failed[0].reason is FailureReason.PERMANENT_HANDLER_ERROR
+    assert "abort permanently" in failed[0].last_error
+    bus.close()
+
+
+def test_cancelled_error_propagates_even_when_registered_as_permanent(tmp_path):
+    bus = make_bus(tmp_path)
+
+    @bus.subscription("work").handler(
+        WorkRequested,
+        permanent_errors=(asyncio.CancelledError,),
+    )
+    def handle(event):
+        raise asyncio.CancelledError
+
+    bus.dispatch(WorkRequested(value="cancel"))
+    with pytest.raises(asyncio.CancelledError):
+        run(bus.run_subscription("work", idle_timeout=0.2))
+    bus.close()
+
+
 def test_opening_older_database_adds_failure_category_idempotently(tmp_path):
     bus = make_bus(tmp_path)
     bus.close()
