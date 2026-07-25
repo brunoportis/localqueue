@@ -38,7 +38,12 @@ from localqueue.maintenance import (
     build_backup_result,
     build_integrity_result,
 )
-from localqueue.policies import DeliveryPolicy, DurabilityMode, _durability_fsync
+from localqueue.policies import (
+    DeliveryPolicy,
+    DurabilityMode,
+    _delay_to_milliseconds,
+    _durability_fsync,
+)
 
 log = logging.getLogger(__name__)
 _ResultT = TypeVar("_ResultT")
@@ -339,9 +344,7 @@ class SimpleQueue(Generic[_PayloadT]):
         last_error: str | None = None,
         reason: FailureReason | None = None,
     ) -> None:
-        if not delay >= 0:
-            raise ValueError("'delay' must be non-negative")
-        delay_ms = int(delay * 1000)
+        delay_ms = _delay_to_milliseconds(delay, field="delay")
         stored_reason = None if reason is None else reason.value
         self._get_native().nack(
             job.id, job.receipt, delay_ms, last_error, stored_reason

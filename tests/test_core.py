@@ -2,6 +2,7 @@ import time
 
 import pytest
 from localqueue import DeliveryPolicy, Empty, SimpleQueue
+from localqueue.policies import _MAX_DELAY_SECONDS
 
 
 @pytest.fixture
@@ -53,6 +54,24 @@ class TestSimpleQueue:
 
         with pytest.raises(ValueError, match="delay.*non-negative"):
             queue.nack(job, delay=delay)
+
+        queue.ack(job)
+
+    def test_nack_accepts_maximum_persistable_delay(self, queue):
+        queue.put({"task": "maximum-delay"})
+        job = queue.get(block=False)
+
+        queue.nack(job, delay=_MAX_DELAY_SECONDS)
+
+        with pytest.raises(Empty):
+            queue.get(block=False)
+
+    def test_nack_rejects_delay_above_persistable_limit(self, queue):
+        queue.put({"task": "excessive-delay"})
+        job = queue.get(block=False)
+
+        with pytest.raises(ValueError, match="delay.*supported maximum"):
+            queue.nack(job, delay=_MAX_DELAY_SECONDS + 1)
 
         queue.ack(job)
 

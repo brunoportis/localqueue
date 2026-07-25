@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import math
+from localqueue.policies import _delay_to_milliseconds
 
 
 class Retry(Exception):
@@ -17,10 +17,10 @@ class Retry(Exception):
         if reason is not None and not isinstance(reason, str):
             raise TypeError("'reason' must be a string or None")
         if after is not None:
-            if isinstance(after, bool) or not isinstance(after, (int, float)):
-                raise TypeError("'after' must be a number or None")
-            if not math.isfinite(after) or after < 0:
-                raise ValueError("'after' must be a non-negative finite number")
+            try:
+                _delay_to_milliseconds(after, field="after")
+            except TypeError:
+                raise TypeError("'after' must be a number or None") from None
             after = float(after)
         super().__init__("" if reason is None else reason)
         self.reason = reason

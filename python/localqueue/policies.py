@@ -6,6 +6,25 @@ import math
 from dataclasses import dataclass
 from enum import Enum
 
+# Largest whole-second delay whose milliseconds remain an exact IEEE-754
+# safe integer. It also leaves ample headroom for adding the current epoch
+# timestamp within SQLite's signed 64-bit INTEGER range.
+_MAX_DELAY_SECONDS = 9_007_199_254_740
+_MAX_DELAY_MILLISECONDS = _MAX_DELAY_SECONDS * 1000
+
+
+def _delay_to_milliseconds(delay: float, *, field: str) -> int:
+    if isinstance(delay, bool) or not isinstance(delay, (int, float)):
+        raise TypeError(f"'{field}' must be a number")
+    if not math.isfinite(delay) or delay < 0:
+        raise ValueError(f"'{field}' must be a non-negative finite number")
+    if delay > _MAX_DELAY_SECONDS:
+        raise ValueError(f"'{field}' exceeds the supported maximum")
+    milliseconds = int(delay * 1000)
+    if milliseconds > _MAX_DELAY_MILLISECONDS:
+        raise ValueError(f"'{field}' exceeds the supported maximum")
+    return milliseconds
+
 
 class DurabilityMode(str, Enum):
     """Durability intent translated to the corresponding native SQLite mode.

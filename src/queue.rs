@@ -428,7 +428,7 @@ impl NativeQueue {
                 STATUS_READY
             };
             let available_at = if new_status == STATUS_READY {
-                now + delay_ms
+                checked_available_at(now, delay_ms)?
             } else {
                 now
             };
@@ -819,4 +819,30 @@ fn generate_receipt() -> String {
         .as_nanos();
     let pid = std::process::id();
     format!("{}-{}", pid, nanos)
+}
+
+fn checked_available_at(now: i64, delay_ms: i64) -> Result<i64, QueueError> {
+    if delay_ms < 0 {
+        return Err(QueueError::InvalidDelay);
+    }
+    now.checked_add(delay_ms).ok_or(QueueError::InvalidDelay)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checked_available_at;
+    use crate::error::QueueError;
+
+    #[test]
+    fn available_at_rejects_negative_and_overflowing_delays() {
+        assert!(matches!(
+            checked_available_at(1, -1),
+            Err(QueueError::InvalidDelay)
+        ));
+        assert!(matches!(
+            checked_available_at(i64::MAX, 1),
+            Err(QueueError::InvalidDelay)
+        ));
+        assert_eq!(checked_available_at(10, 20).unwrap(), 30);
+    }
 }

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from localqueue import DeliveryPolicy, FailureReason
 from localqueue.bus import BaseEvent, BusTopology, EventBus, Reject, Retry
+from localqueue.policies import _MAX_DELAY_SECONDS
 
 
 class WorkRequested(BaseEvent):
@@ -44,6 +45,23 @@ def test_retry_rejects_bool_after():
         Retry(after=True)
 
 
+def test_retry_rejects_invalid_reason_and_after_types():
+    with pytest.raises(TypeError, match="reason.*string or None"):
+        Retry(reason=123)
+    with pytest.raises(TypeError, match="after.*number or None"):
+        Retry(after="30")
+
+
+def test_retry_accepts_maximum_persistable_delay():
+    assert Retry(after=_MAX_DELAY_SECONDS).after == _MAX_DELAY_SECONDS
+
+
+@pytest.mark.parametrize("after", [_MAX_DELAY_SECONDS + 1, 1e20, 1e308])
+def test_retry_rejects_delay_above_persistable_limit(after):
+    with pytest.raises(ValueError, match="after.*supported maximum"):
+        Retry(after=after)
+
+
 @pytest.mark.parametrize(
     ("args", "kwargs", "error", "message"),
     [
@@ -60,7 +78,11 @@ def test_reject_validates_reason_and_category(args, kwargs, error, message):
         Reject(*args, **kwargs)
 
 
-def test_retry_supports_sync_handler_and_uses_default_retry_delay(tmp_path):
+def test_reject_allows_an_omitted_category():
+    assert Reject("invalid input").category is None
+
+
+def test_retry_supports_sync_handler_and_retries_immediately_by_default(tmp_path):
     bus = make_bus(tmp_path)
     attempts = []
 

@@ -291,6 +291,42 @@ async def _transition(
         )
 
 
+async def _handle_delivery_exception(
+    queue: SimpleQueue[object],
+    job: Job[object],
+    error: BaseException,
+    *,
+    permanent_errors: tuple[type[BaseException], ...],
+) -> None:
+    if isinstance(error, Reject):
+        await _transition(
+            queue,
+            "fail",
+            job,
+            last_error=error.reason,
+            reason=FailureReason.REJECTED,
+            failure_category=error.category,
+        )
+    elif isinstance(error, Retry):
+        await _transition(
+            queue,
+            "nack",
+            job,
+            last_error=error.reason,
+            delay=0.0 if error.after is None else error.after,
+        )
+    elif isinstance(error, permanent_errors):
+        await _transition(
+            queue,
+            "fail",
+            job,
+            last_error=f"permanent failure: {error}",
+            reason=FailureReason.PERMANENT_HANDLER_ERROR,
+        )
+    else:
+        await _transition(queue, "nack", job, last_error=str(error))
+
+
 async def _process_delivery(
     bus: "EventBus[ContextT]",
     subscription: str,
@@ -382,33 +418,20 @@ async def _process_delivery(
             await _invoke_sync_handler(
                 handler, event, context, registration.accepts_context
             )
-    except Reject as exc:
-        await _transition(
+    except (Reject, Retry, *registration.permanent_errors) as exc:
+        await _handle_delivery_exception(
             queue,
-            "fail",
             job,
-            last_error=exc.reason,
-            reason=FailureReason.REJECTED,
-            failure_category=exc.category,
-        )
-    except Retry as exc:
-        await _transition(
-            queue,
-            "nack",
-            job,
-            last_error=exc.reason,
-            delay=0.0 if exc.after is None else exc.after,
-        )
-    except registration.permanent_errors as exc:
-        await _transition(
-            queue,
-            "fail",
-            job,
-            last_error=f"permanent failure: {exc}",
-            reason=FailureReason.PERMANENT_HANDLER_ERROR,
+            exc,
+            permanent_errors=registration.permanent_errors,
         )
     except Exception as exc:  # noqa: BLE001 - transient failure, retry it
-        await _transition(queue, "nack", job, last_error=str(exc))
+        await _handle_delivery_exception(
+            queue,
+            job,
+            exc,
+            permanent_errors=registration.permanent_errors,
+        )
     else:
         if state["lease_lost"]:
             log.warning(
