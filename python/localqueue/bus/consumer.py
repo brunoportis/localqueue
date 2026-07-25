@@ -12,6 +12,7 @@ from localqueue.bus.bus import (
     WILDCARD,
     _AsyncStoredEventHandler,
     _is_async_callable,
+    _StoredEventHandler,
 )
 from localqueue.bus.context import ContextT, HandlerContext, RuntimeContext
 from localqueue.bus.envelope import (
@@ -111,6 +112,42 @@ async def _run_async_handler(
         timer_task.cancel()
         await asyncio.gather(handler_task, timer_task, return_exceptions=True)
         raise
+
+
+async def _create_handler_context(
+    bus: "EventBus[ContextT]",
+    event: BaseEvent,
+    job: Job[object],
+    handler_name: str,
+) -> HandlerContext:
+    """Create the configured context for one delivery attempt."""
+    runtime = RuntimeContext(
+        event_id=str(event.event_id),
+        attempt=job.attempts + 1,
+        handler_name=handler_name,
+    )
+    factory = bus.context_factory
+    if factory is None:
+        return HandlerContext(runtime)
+    context = factory(runtime)
+    if inspect.isawaitable(context):
+        context = await context
+    return cast(HandlerContext, context)
+
+
+async def _invoke_sync_handler(
+    handler: _StoredEventHandler,
+    event: BaseEvent,
+    context: HandlerContext,
+    accepts_context: bool,
+) -> None:
+    """Run a synchronous handler outside the event loop."""
+    if accepts_context:
+        result = await asyncio.to_thread(handler, event, context)
+    else:
+        result = await asyncio.to_thread(handler, event)
+    if result is not None and inspect.isawaitable(result):
+        await result
 
 
 async def run_consumer(
@@ -297,20 +334,9 @@ async def _process_delivery(
     )
     try:
         handler = registration.handler
-        runtime = RuntimeContext(
-            event_id=str(event.event_id),
-            attempt=job.attempts + 1,
-            handler_name=registration.handler_name,
-            _publish=bus.dispatch_async,
+        context = await _create_handler_context(
+            bus, event, job, registration.handler_name
         )
-        factory = bus.context_factory
-        if factory is None:
-            context: HandlerContext = HandlerContext(runtime)
-        else:
-            created = factory(runtime)
-            if inspect.isawaitable(created):
-                created = await created
-            context = cast(HandlerContext, created)
         if _is_async_callable(handler):
             timed_out = await _run_async_handler(
                 handler,
@@ -345,14 +371,9 @@ async def _process_delivery(
                 )
                 return
         else:
-            # Run synchronous handlers outside the event-loop thread.
-            if registration.accepts_context:
-                result = await asyncio.to_thread(handler, event, context)
-            else:
-                result = await asyncio.to_thread(handler, event)
-            if result is not None and inspect.isawaitable(result):
-                # Safety net for a synchronous handler that returned an awaitable.
-                await result
+            await _invoke_sync_handler(
+                handler, event, context, registration.accepts_context
+            )
     except registration.permanent_errors as exc:
         await _transition(
             queue,

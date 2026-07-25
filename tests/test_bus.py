@@ -63,6 +63,61 @@ class TestImportGuard:
 
 
 class TestRegistration:
+    def test_context_is_only_passed_to_explicit_two_argument_handlers(self, tmp_path):
+        dependency = object()
+        dependency_values = []
+        variadic_arguments = []
+        contexts = []
+
+        def create_context(runtime: RuntimeContext) -> HandlerContext:
+            context = HandlerContext(runtime)
+            contexts.append(context)
+            return context
+
+        bus = EventBus(
+            str(tmp_path / "bus"),
+            topology=BusTopology(
+                {
+                    "default": [UserCreated],
+                    "context": [UserCreated],
+                    "dependency": [UserCreated],
+                    "variadic": [UserCreated],
+                }
+            ),
+            context_factory=create_context,
+        )
+
+        @bus.subscription("default").handler(UserCreated)
+        def default_handler(event):
+            dependency_values.append(event.user_id)
+
+        @bus.subscription("context").handler(UserCreated)
+        def context_handler(event, ctx):
+            assert isinstance(ctx, HandlerContext)
+
+        @bus.subscription("dependency").handler(UserCreated)
+        def dependency_handler(event, supplied_dependency=dependency):
+            dependency_values.append(supplied_dependency)
+
+        @bus.subscription("variadic").handler(UserCreated)
+        def variadic_handler(event, *args):
+            variadic_arguments.append(args)
+
+        bus.dispatch(UserCreated(user_id="42"))
+        run(bus.run(idle_timeout=0.2))
+
+        assert dependency_values == ["42", dependency]
+        assert variadic_arguments == [()]
+        assert len(contexts) == 4
+        bus.close()
+
+    def test_rejects_handler_with_unsupported_required_arity(self, bus):
+        def invalid_handler(event, ctx, other):
+            pass
+
+        with pytest.raises(TypeError, match=r"either \(event\) or \(event, context\)"):
+            bus.on(UserCreated, invalid_handler, subscription="s1")
+
     def test_registro_direto_e_decorator(self, bus):
         calls = []
 
@@ -204,10 +259,10 @@ class TestDispatch:
 
 
 class TestConsumption:
-    def test_default_handler_context_exposes_runtime_capabilities(self, tmp_path):
+    def test_default_handler_context_exposes_runtime_metadata(self, tmp_path):
         bus = EventBus(
             str(tmp_path / "bus"),
-            topology=BusTopology({"users": [UserCreated], "orders": [OrderPlaced]}),
+            topology=BusTopology({"users": [UserCreated]}),
         )
         seen = []
 
@@ -215,18 +270,12 @@ class TestConsumption:
         async def handle_user(event, ctx):
             assert isinstance(ctx, HandlerContext)
             seen.append((ctx.event_id, ctx.attempt, ctx.handler_name))
-            await ctx.publish(OrderPlaced(order_id=event.user_id))
-
-        @bus.subscription("orders").handler(OrderPlaced)
-        def handle_order(event):
-            seen.append(("order", event.order_id))
 
         event = UserCreated(user_id="42")
         bus.dispatch(event)
         run(bus.run(idle_timeout=0.2))
 
-        assert seen[0] == (str(event.event_id), 1, "handle_user")
-        assert ("order", "42") in seen
+        assert seen == [(str(event.event_id), 1, "handle_user")]
         bus.close()
 
     def test_custom_context_is_created_for_each_attempt(self, tmp_path):

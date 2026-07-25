@@ -98,21 +98,26 @@ def _is_async_callable(
 
 
 def _accepts_context(handler: _StoredEventHandler) -> bool:
-    """Return whether the callable accepts the optional context argument."""
+    """Return whether a handler explicitly requires a context argument."""
     try:
         parameters = inspect.signature(handler).parameters.values()
     except (TypeError, ValueError):
         return False
-    positional = 0
-    for parameter in parameters:
-        if parameter.kind is inspect.Parameter.VAR_POSITIONAL:
-            return True
-        if parameter.kind in (
+    required = [
+        parameter
+        for parameter in parameters
+        if parameter.kind
+        in (
             inspect.Parameter.POSITIONAL_ONLY,
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
-        ):
-            positional += 1
-    return positional >= 2
+        )
+        and parameter.default is inspect.Parameter.empty
+    ]
+    if len(required) == 1:
+        return False
+    if len(required) == 2:
+        return True
+    raise TypeError("handler must accept either (event) or (event, context)")
 
 
 class EventBus(Generic[ContextT]):
@@ -123,7 +128,7 @@ class EventBus(Generic[ContextT]):
     same queue as a consumer group.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - additive public EventBus configuration
         self,
         path: str,
         name: str = "default",

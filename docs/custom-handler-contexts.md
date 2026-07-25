@@ -58,10 +58,9 @@ async def main() -> None:
         await bus.run()
 ```
 
-`HandlerContext` provides four reserved, read-only runtime capabilities:
-`event_id`, `attempt` (starting at 1), `handler_name`, and `publish(event)`.
-Do not redefine these names in custom contexts. `publish()` dispatches through
-the current bus; it does not manage the lifecycle of application resources.
+`HandlerContext` provides three reserved, read-only runtime capabilities:
+`event_id`, `attempt` (starting at 1), and `handler_name`. Do not redefine
+these names in custom contexts.
 
 The factory receives a read-only `RuntimeContext` and may be synchronous or
 async. It runs once for each delivery attempt, before the handler. A factory
@@ -78,4 +77,6 @@ async def create_context(runtime: RuntimeContext) -> AppContext:
 Without `context_factory`, handlers may still accept the built-in
 `HandlerContext`; existing one-argument handlers continue to work unchanged.
 The EventBus does not perform dependency resolution or automatically close
-resources supplied by an application.
+resources supplied by an application. It also does not offer contextual event
+publication: publishing a new event and acknowledging the current delivery are
+separate durable operations until a transactional outbox-style primitive exists.
