@@ -1,8 +1,18 @@
 import math
+import sqlite3
+from asyncio import run
 
 import pytest
-
-from localqueue.bus import RetryPolicy
+from localqueue import DeliveryPolicy, FailureReason, SimpleQueue
+from localqueue.bus import (
+    BaseEvent,
+    BusTopology,
+    EventBus,
+    EventRegistry,
+    Retry,
+    RetryPolicy,
+)
+from localqueue.bus.consumer import _process_delivery
 from localqueue.policies import _MAX_DELAY_SECONDS
 
 
@@ -65,9 +75,7 @@ def test_jitter_must_be_boolean() -> None:
 
 def test_max_delay_must_not_be_less_than_initial_delay() -> None:
     with pytest.raises(ValueError, match="max_delay.*initial_delay"):
-        RetryPolicy.exponential(
-            max_attempts=2, initial_delay=2, max_delay=1
-        )
+        RetryPolicy.exponential(max_attempts=2, initial_delay=2, max_delay=1)
 
 
 def test_fixed_delay_is_constant() -> None:
@@ -114,9 +122,7 @@ def test_full_jitter_uses_single_injectable_uniform_draw(
         draws.append((lower, upper))
         return upper / 4
 
-    monkeypatch.setattr(
-        "localqueue.bus.retry._uniform", deterministic_uniform
-    )
+    monkeypatch.setattr("localqueue.bus.retry._uniform", deterministic_uniform)
     policy = RetryPolicy.exponential(
         max_attempts=3,
         initial_delay=2,
@@ -127,3 +133,256 @@ def test_full_jitter_uses_single_injectable_uniform_draw(
 
     assert policy._delay_for(2) == 1.0
     assert draws == [(0.0, 4.0)]
+
+
+class RetryEventA(BaseEvent):
+    value: int
+
+
+class RetryEventB(BaseEvent):
+    value: int
+
+
+def test_retry_policy_belongs_to_subscription_and_omission_inherits(
+    tmp_path,
+) -> None:
+    policy = RetryPolicy.fixed(max_attempts=3, delay=1)
+    bus = EventBus(str(tmp_path), topology=BusTopology({"workers": ["*"]}))
+    try:
+        bus.on(RetryEventA, lambda event: None, subscription="workers", retry=policy)
+        bus.on(RetryEventB, lambda event: None, subscription="workers")
+
+        assert bus._retry_for("workers") == policy
+    finally:
+        bus.close()
+
+
+def test_registration_order_does_not_change_subscription_policy(tmp_path) -> None:
+    policy = RetryPolicy.fixed(max_attempts=3, delay=1)
+    bus = EventBus(str(tmp_path), topology=BusTopology({"workers": ["*"]}))
+    try:
+        bus.on(RetryEventA, lambda event: None, subscription="workers")
+        bus.on(RetryEventB, lambda event: None, subscription="workers", retry=policy)
+
+        assert bus._retry_for("workers") == policy
+    finally:
+        bus.close()
+
+
+def test_structurally_equal_policies_are_compatible(tmp_path) -> None:
+    bus = EventBus(str(tmp_path), topology=BusTopology({"workers": ["*"]}))
+    try:
+        bus.on(
+            RetryEventA,
+            lambda event: None,
+            subscription="workers",
+            retry=RetryPolicy.fixed(max_attempts=3, delay=1),
+        )
+        bus.on(
+            RetryEventB,
+            lambda event: None,
+            subscription="workers",
+            retry=RetryPolicy.fixed(max_attempts=3, delay=1),
+        )
+    finally:
+        bus.close()
+
+
+def test_conflicting_policy_fails_without_partial_registration(tmp_path) -> None:
+    original = RetryPolicy.fixed(max_attempts=3, delay=1)
+    registry = EventRegistry()
+    bus = EventBus(str(tmp_path), registry=registry)
+    bus.handler(
+        RetryEventA,
+        lambda event: None,
+        subscription="workers",
+        concurrency=2,
+        retry=original,
+    )
+    topology = bus.topology
+    handlers = dict(bus._handlers)
+    concurrency = dict(bus._subscription_concurrency)
+    try:
+        with pytest.raises(ValueError, match="retry policy"):
+            bus.handler(
+                RetryEventB,
+                lambda event: None,
+                subscription="workers",
+                concurrency=4,
+                retry=RetryPolicy.exponential(max_attempts=8),
+            )
+
+        assert bus.topology is topology
+        assert bus._handlers == handlers
+        assert bus._subscription_concurrency == concurrency
+        assert bus._retry_for("workers") == original
+        assert registry.resolve("RetryEventB") is None
+    finally:
+        bus.close()
+
+
+def test_retry_parameter_rejects_invalid_values_without_mutation(tmp_path) -> None:
+    bus = EventBus(str(tmp_path))
+    try:
+        with pytest.raises(TypeError, match="retry.*RetryPolicy"):
+            bus.handler(RetryEventA, lambda event: None, retry="fixed")  # type: ignore[arg-type]
+        assert bus.topology.subscription_names == ()
+        assert bus._handlers == {}
+    finally:
+        bus.close()
+
+
+def test_exact_and_wildcard_handlers_share_subscription_policy(tmp_path) -> None:
+    policy = RetryPolicy.exponential(max_attempts=4)
+    bus = EventBus(str(tmp_path), topology=BusTopology({"workers": ["*"]}))
+    try:
+        bus.on("*", lambda event: None, subscription="workers", retry=policy)
+        bus.on(RetryEventA, lambda event: None, subscription="workers", retry=policy)
+        assert bus._retry_for("workers") == policy
+    finally:
+        bus.close()
+
+
+def _message_row(tmp_path, message_id: int) -> tuple[int, int, int, str | None]:
+    with sqlite3.connect(tmp_path / "localqueue.db") as connection:
+        return connection.execute(
+            "SELECT attempts, max_attempts, available_at, failure_reason "
+            "FROM messages WHERE id = ?",
+            (message_id,),
+        ).fetchone()
+
+
+def _process_once(bus: EventBus[None], subscription: str) -> int:
+    queue = bus._open_subscription_queue(subscription)
+    try:
+        policy = bus._retry_for(subscription)
+        assert policy is not None
+        job = queue._get_with_max_attempts(
+            max_attempts=policy.max_attempts, block=False
+        )
+        run(_process_delivery(bus, subscription, queue, job))
+        return job.id
+    finally:
+        queue.close()
+
+
+def test_fixed_backoff_persists_available_at(tmp_path) -> None:
+    bus = EventBus(
+        str(tmp_path),
+        delivery=DeliveryPolicy(lease_seconds=10, max_retries=1),
+    )
+
+    @bus.handler(RetryEventA, retry=RetryPolicy.fixed(max_attempts=3, delay=10))
+    def handle(event):
+        raise RuntimeError("transient")
+
+    try:
+        receipt = bus.dispatch(RetryEventA(value=1))
+        message_id = _process_once(bus, "RetryEventA")
+        attempts, max_attempts, available_at, reason = _message_row(
+            tmp_path, message_id
+        )
+        assert message_id == receipt.message_ids[0]
+        assert attempts == 1
+        assert max_attempts == 3
+        assert 9_900 <= available_at - int(__import__("time").time() * 1000) <= 10_000
+        assert reason is None
+    finally:
+        bus.close()
+
+
+def test_retry_after_zero_overrides_policy_backoff(tmp_path) -> None:
+    bus = EventBus(str(tmp_path))
+
+    @bus.handler(RetryEventA, retry=RetryPolicy.fixed(max_attempts=2, delay=60))
+    def handle(event):
+        raise Retry("now", after=0)
+
+    try:
+        bus.dispatch(RetryEventA(value=1))
+        message_id = _process_once(bus, "RetryEventA")
+        _, _, available_at, _ = _message_row(tmp_path, message_id)
+        assert abs(available_at - int(__import__("time").time() * 1000)) < 1_000
+    finally:
+        bus.close()
+
+
+def test_policy_allows_exactly_max_attempts_and_preserves_last_error(tmp_path) -> None:
+    bus = EventBus(str(tmp_path))
+    attempts: list[int] = []
+
+    @bus.handler(RetryEventA, retry=RetryPolicy.fixed(max_attempts=3, delay=0))
+    def handle(event, ctx):
+        attempts.append(ctx.attempt)
+        raise RuntimeError(f"failure {ctx.attempt}")
+
+    try:
+        bus.dispatch(RetryEventA(value=1))
+        run(bus.run(idle_timeout=0.05))
+        failed = bus.subscription("RetryEventA").list_failed()
+        assert attempts == [1, 2, 3]
+        assert failed[0].reason is FailureReason.RETRIES_EXHAUSTED
+        assert failed[0].last_error == "failure 3"
+    finally:
+        bus.close()
+
+
+def test_max_attempts_one_does_not_retry(tmp_path) -> None:
+    bus = EventBus(str(tmp_path))
+    calls = 0
+
+    @bus.handler(RetryEventA, retry=RetryPolicy.fixed(max_attempts=1, delay=0))
+    def handle(event):
+        nonlocal calls
+        calls += 1
+        raise Retry("no budget")
+
+    try:
+        bus.dispatch(RetryEventA(value=1))
+        run(bus.run(idle_timeout=0.05))
+        assert calls == 1
+        assert (
+            bus.subscription("RetryEventA").list_failed()[0].reason
+            is FailureReason.RETRIES_EXHAUSTED
+        )
+    finally:
+        bus.close()
+
+
+def test_expired_lease_reclaim_uses_larger_override(tmp_path) -> None:
+    queue = SimpleQueue(
+        str(tmp_path),
+        delivery=DeliveryPolicy(lease_seconds=10, max_retries=1),
+    )
+    try:
+        queue.put({"value": 1})
+        first = queue._get_with_max_attempts(max_attempts=5, block=False)
+        with sqlite3.connect(tmp_path / "localqueue.db") as connection:
+            connection.execute(
+                "UPDATE messages SET lease_until = 0 WHERE id = ?", (first.id,)
+            )
+        second = queue._get_with_max_attempts(max_attempts=5, block=False)
+        attempts, max_attempts, _, _ = _message_row(tmp_path, second.id)
+        assert attempts == 2
+        assert max_attempts == 5
+    finally:
+        queue.close()
+
+
+def test_expired_lease_reclaim_uses_smaller_override(tmp_path) -> None:
+    queue = SimpleQueue(
+        str(tmp_path),
+        delivery=DeliveryPolicy(lease_seconds=10, max_retries=8),
+    )
+    try:
+        queue.put({"value": 1})
+        job = queue._get_with_max_attempts(max_attempts=1, block=False)
+        with sqlite3.connect(tmp_path / "localqueue.db") as connection:
+            connection.execute(
+                "UPDATE messages SET lease_until = 0 WHERE id = ?", (job.id,)
+            )
+        with pytest.raises(Exception, match="empty"):
+            queue._get_with_max_attempts(max_attempts=1, block=False)
+        assert _message_row(tmp_path, job.id)[3] == "retries_exhausted"
+    finally:
+        queue.close()

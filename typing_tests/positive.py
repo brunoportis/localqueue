@@ -22,6 +22,7 @@ from localqueue.bus import (
     HandlerContext,
     Reject,
     Retry,
+    RetryPolicy,
     RuntimeContext,
     event,
 )
@@ -141,15 +142,16 @@ bus: EventBus[HandlerContext] = EventBus(
     ),
     serializer=event_serializer,
 )
+policy: RetryPolicy = RetryPolicy.fixed(max_attempts=3, delay=1)
 
 
-@bus.on(UserCreated, subscription="users_sync")
+@bus.on(UserCreated, subscription="users_sync", retry=policy)
 def handle_user_created(event: UserCreated) -> None:
     user_id: str = event.user_id
     print(user_id)
 
 
-@bus.subscription("users_async").handler(UserCreated)
+@bus.subscription("users_async").handler(UserCreated, retry=policy)
 async def handle_user_created_async(event: UserCreated) -> None:
     user_created: UserCreated = event
     print(user_created.user_id)

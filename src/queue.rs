@@ -329,7 +329,18 @@ impl NativeQueue {
         })
     }
 
-    pub fn get(&self, py: Python<'_>, lease_ms: i64) -> PyResult<Option<Lease>> {
+    #[pyo3(signature = (lease_ms, max_attempts = None))]
+    pub fn get(
+        &self,
+        py: Python<'_>,
+        lease_ms: i64,
+        max_attempts: Option<i64>,
+    ) -> PyResult<Option<Lease>> {
+        if matches!(max_attempts, Some(attempts) if attempts < 1) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "'max_attempts' must be at least 1",
+            ));
+        }
         py.detach(move || {
             let now = now_ms();
             let lease_until = now + lease_ms;
@@ -364,6 +375,18 @@ impl NativeQueue {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(QueueError::from)?;
+
+            // An EventBus retry policy owns the subscription budget. Apply
+            // it to only the expired leases processed by this reclaim before
+            // deciding whether each lease is ready or exhausted.
+            if let Some(override_attempts) = max_attempts {
+                tx.execute(
+                    "UPDATE messages SET max_attempts = ?1
+                     WHERE queue = ?2 AND status = ?3 AND lease_until <= ?4",
+                    params![override_attempts, self.queue, STATUS_LEASED, now],
+                )
+                .map_err(QueueError::from)?;
+            }
 
             // Reclaim expired leases into ready or failed in one pass.
             tx.execute(
@@ -418,13 +441,15 @@ impl NativeQueue {
                     receipt = ?2,
                     lease_until = ?3,
                     attempts = ?4,
-                    updated_at = ?5
-                 WHERE id = ?6 AND queue = ?7 AND status = ?8 AND available_at <= ?9",
+                    max_attempts = COALESCE(?5, max_attempts),
+                    updated_at = ?6
+                 WHERE id = ?7 AND queue = ?8 AND status = ?9 AND available_at <= ?10",
                     params![
                         STATUS_LEASED,
                         receipt,
                         lease_until,
                         new_attempts,
+                        max_attempts,
                         now,
                         id,
                         self.queue,

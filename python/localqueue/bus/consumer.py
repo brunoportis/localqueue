@@ -22,6 +22,7 @@ from localqueue.bus.envelope import (
 )
 from localqueue.bus.event import BaseEvent, InvalidEventIdentity, derive_from_returned
 from localqueue.bus.identity import prepare_event_persistence
+from localqueue.bus.retry import RetryPolicy
 from localqueue.bus.topology import WILDCARD
 from localqueue.core import SimpleQueue
 from localqueue.deadletter import FailureReason
@@ -273,13 +274,21 @@ async def run_consumer(
     try:
         queue = bus._open_subscription_queue(subscription)
         concurrency = bus._concurrency_for(subscription)
+        retry_policy = bus._retry_for(subscription)
         idle_since: Optional[float] = None
         while True:
             if len(active) >= concurrency:
                 await wait_for_delivery()
                 continue
             try:
-                job = await asyncio.to_thread(queue.get, False)
+                if retry_policy is None:
+                    job = await asyncio.to_thread(queue.get, False)
+                else:
+                    job = await asyncio.to_thread(
+                        queue._get_with_max_attempts,
+                        max_attempts=retry_policy.max_attempts,
+                        block=False,
+                    )
             except Empty:
                 if active:
                     await wait_for_delivery(timeout=_POLL_INTERVAL)
@@ -361,12 +370,39 @@ async def _transition(
         )
 
 
+async def _retry_delivery(
+    queue: SimpleQueue[object],
+    job: Job[object],
+    *,
+    policy: RetryPolicy | None,
+    last_error: str | None,
+    explicit_after: float | None = None,
+    reason: FailureReason | None = None,
+) -> None:
+    """Persist one retry decision without sleeping the consumer."""
+    if explicit_after is not None:
+        delay = explicit_after
+    elif policy is not None:
+        delay = policy._delay_for(job.attempts + 1)
+    else:
+        delay = 0.0
+    await _transition(
+        queue,
+        "nack",
+        job,
+        last_error=last_error,
+        delay=delay,
+        reason=None if policy is not None else reason,
+    )
+
+
 async def _handle_delivery_exception(
     queue: SimpleQueue[object],
     job: Job[object],
     error: BaseException,
     *,
     permanent_errors: tuple[type[BaseException], ...],
+    policy: RetryPolicy | None,
 ) -> None:
     if isinstance(error, asyncio.CancelledError):
         raise error
@@ -380,12 +416,12 @@ async def _handle_delivery_exception(
             failure_category=error.category,
         )
     elif isinstance(error, Retry):
-        await _transition(
+        await _retry_delivery(
             queue,
-            "nack",
             job,
+            policy=policy,
             last_error=error.reason,
-            delay=0.0 if error.after is None else error.after,
+            explicit_after=error.after,
         )
     elif isinstance(error, permanent_errors):
         await _transition(
@@ -396,7 +432,7 @@ async def _handle_delivery_exception(
             reason=FailureReason.PERMANENT_HANDLER_ERROR,
         )
     elif isinstance(error, Exception):
-        await _transition(queue, "nack", job, last_error=str(error))
+        await _retry_delivery(queue, job, policy=policy, last_error=str(error))
     else:
         raise error
 
@@ -408,6 +444,7 @@ async def _handle_commit_exception(
     *,
     handler_name: str,
     result: object,
+    policy: RetryPolicy | None,
 ) -> None:
     if isinstance(error, InvalidEventIdentity):
         await _transition(
@@ -434,7 +471,7 @@ async def _handle_commit_exception(
             failure_category="deduplication_conflict",
         )
     else:
-        await _transition(queue, "nack", job, last_error=str(error))
+        await _retry_delivery(queue, job, policy=policy, last_error=str(error))
 
 
 async def _process_delivery(
@@ -466,6 +503,7 @@ async def _process_delivery(
     registration = bus._handlers.get((subscription, event_type)) or bus._handlers.get(
         (subscription, WILDCARD)
     )
+    policy = bus._retry_for(subscription)
     if registration is None:
         await _transition(
             queue,
@@ -516,10 +554,10 @@ async def _process_delivery(
                     return
                 timeout_error = f"handler timeout after {registration.timeout} seconds"
                 log.warning("Job %s %s", job.id, timeout_error)
-                await _transition(
+                await _retry_delivery(
                     queue,
-                    "nack",
                     job,
+                    policy=policy,
                     last_error=timeout_error,
                     reason=FailureReason.HANDLER_TIMEOUT,
                 )
@@ -534,6 +572,7 @@ async def _process_delivery(
             job,
             exc,
             permanent_errors=registration.permanent_errors,
+            policy=policy,
         )
     else:
         if state["lease_lost"]:
@@ -558,6 +597,7 @@ async def _process_delivery(
                 exc,
                 handler_name=registration.handler_name,
                 result=result,
+                policy=policy,
             )
     finally:
         if heartbeat is not None:
