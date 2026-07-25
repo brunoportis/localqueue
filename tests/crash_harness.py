@@ -121,7 +121,10 @@ else:
         queue._ack_and_fanout(
             job,
             payload=b'{"derived":true}',
-            targets=[("target", "derived-id"), ("target-2", "derived-id")],
+            targets=[
+                ("target", "derived-id", None, None),
+                ("target-2", "derived-id", None, None),
+            ],
         )
     elif OPERATION == "nack":
         queue.nack(job, last_error="crash-harness")
