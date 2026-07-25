@@ -22,7 +22,7 @@ from uuid import UUID
 
 from localqueue import localqueue as _native
 from localqueue.bus.context import ContextFactory, ContextT
-from localqueue.bus.event import BaseEvent
+from localqueue.bus.event import BaseEvent, event_type_of
 from localqueue.bus.registry import EVENT_REGISTRY, EventRegistry
 from localqueue.bus.subscription import Subscription
 from localqueue.bus.topology import (
@@ -122,6 +122,15 @@ def _can_bind(signature: inspect.Signature, *args: object) -> bool:
     return True
 
 
+def _validate_concurrency(concurrency: object) -> int:
+    """Validate and narrow a process-local subscription concurrency bound."""
+    if not isinstance(concurrency, int) or isinstance(concurrency, bool):
+        raise TypeError("'concurrency' must be a positive integer")
+    if concurrency <= 0:
+        raise ValueError("'concurrency' must be a positive integer")
+    return concurrency
+
+
 class EventBus(Generic[ContextT]):
     """Atomically fan events out to durable subscriptions.
 
@@ -135,7 +144,8 @@ class EventBus(Generic[ContextT]):
         path: str,
         name: str = "default",
         *,
-        topology: BusTopology,
+        topology: BusTopology | None = None,
+        concurrency: int = 1,
         delivery: DeliveryPolicy = DeliveryPolicy(),
         durability: DurabilityMode = DurabilityMode.RELAXED,
         require_subscribers: bool = True,
@@ -143,11 +153,12 @@ class EventBus(Generic[ContextT]):
         registry: EventRegistry = EVENT_REGISTRY,
         context_factory: ContextFactory[ContextT] | None = None,
     ) -> None:
-        """Initialize an EventBus with explicit routing and shared policies.
+        """Initialize an EventBus with routing and shared policies.
 
         :param path: directory where the SQLite database is stored.
         :param name: logical bus name.
-        :param topology: static routing strategy for dispatched events.
+        :param topology: optional initial routing snapshot for dispatched events.
+        :param concurrency: default process-local concurrency per subscription.
         :param delivery: lease duration and retry policy for every delivery.
         :param durability: durability intent for fanout and subscription queues.
         :param require_subscribers: reject dispatches with no matching route.
@@ -156,15 +167,17 @@ class EventBus(Generic[ContextT]):
         :param context_factory: optional factory called for every delivery attempt.
         """
         self._validate_name(name, "name")
-        if not isinstance(topology, BusTopology):
-            raise TypeError("'topology' must be a BusTopology")
+        if topology is not None and not isinstance(topology, BusTopology):
+            raise TypeError("'topology' must be a BusTopology or None")
         if not isinstance(delivery, DeliveryPolicy):
             raise TypeError("'delivery' must be a DeliveryPolicy")
+        validated_concurrency = _validate_concurrency(concurrency)
         fsync = _durability_fsync(durability)
 
         self.path = Path(path)
         self.name = name
-        self.topology = topology
+        self.topology = topology if topology is not None else BusTopology({})
+        self._default_concurrency = validated_concurrency
         self.delivery = delivery
         self.durability = durability
         self.require_subscribers = require_subscribers
@@ -187,10 +200,16 @@ class EventBus(Generic[ContextT]):
         self._subscription_concurrency: dict[str, int] = {}
         self._frozen_subscriptions: set[str] = set()
         self._running_subscriptions: set[str] = set()
+        self._run_active = False
 
     @staticmethod
     def _validate_name(value: str, field: str) -> None:
         validate_name(value, field)
+
+    @property
+    def concurrency(self) -> int:
+        """Return the immutable process-local default per subscription."""
+        return self._default_concurrency
 
     def _queue_name(self, subscription: str) -> str:
         return f"__bus__:{self.name}:{subscription}"
@@ -202,6 +221,87 @@ class EventBus(Generic[ContextT]):
             raise type(error)(
                 "'pattern' must be a BaseEvent subclass, a non-empty event type, or '*'"
             ) from error
+
+    @overload
+    def handler(
+        self,
+        event: type[_EventT],
+        handler: None = None,
+        *,
+        subscription: str | None = None,
+        concurrency: int | None = None,
+        permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
+    ) -> _EventHandlerDecorator[_EventT, ContextT]: ...
+
+    @overload
+    def handler(
+        self,
+        event: type[_EventT],
+        handler: Callable[[_EventT], _HandlerResultT],
+        *,
+        subscription: str | None = None,
+        concurrency: int | None = None,
+        permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
+    ) -> Callable[[_EventT], _HandlerResultT]: ...
+
+    @overload
+    def handler(
+        self,
+        event: type[_EventT],
+        handler: Callable[[_EventT, ContextT], _HandlerResultT],
+        *,
+        subscription: str | None = None,
+        concurrency: int | None = None,
+        permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
+    ) -> Callable[[_EventT, ContextT], _HandlerResultT]: ...
+
+    def handler(
+        self,
+        event: object,
+        handler: object = None,
+        *,
+        subscription: str | None = None,
+        concurrency: int | None = None,
+        permanent_errors: tuple[type[BaseException], ...] = (),
+        timeout: float | None = None,
+    ) -> object:
+        """Declare a durable event route and register its local handler."""
+        if not (isinstance(event, type) and issubclass(event, BaseEvent)):
+            raise TypeError(
+                "EventBus.handler requires a subclass of BaseEvent; "
+                "use bus.on for string patterns"
+            )
+        event_class = cast(type[BaseEvent], event)
+        event_type = event_type_of(event_class)
+        if "*" in event_type:
+            raise ValueError(
+                "EventBus.handler does not support wildcard event types; "
+                "use bus.on for wildcard patterns"
+            )
+        resolved_subscription = event_type if subscription is None else subscription
+        try:
+            validate_name(resolved_subscription, "subscription")
+        except ValueError as error:
+            if subscription is None:
+                raise ValueError(
+                    f"default subscription {resolved_subscription!r} is invalid; "
+                    "provide subscription='contact-requested'"
+                ) from error
+            raise
+        if concurrency is not None:
+            _validate_concurrency(concurrency)
+        return self._register_handler_untyped(
+            resolved_subscription,
+            event_class,
+            handler,
+            permanent_errors=permanent_errors,
+            timeout=timeout,
+            declare_route=True,
+            concurrency=concurrency,
+        )
 
     @overload
     def on(
@@ -297,26 +397,25 @@ class EventBus(Generic[ContextT]):
                 f"subscription {name!r} is not declared in the bus topology"
             )
         if concurrency is not None:
+            validated_concurrency = _validate_concurrency(concurrency)
             if name in self._frozen_subscriptions:
                 raise RuntimeError(
                     f"subscription {name!r} concurrency must be configured before run"
                 )
-            if not isinstance(concurrency, int) or isinstance(concurrency, bool):
-                raise TypeError("'concurrency' must be a positive integer")
-            if concurrency <= 0:
-                raise ValueError("'concurrency' must be a positive integer")
             configured = self._subscription_concurrency.get(name)
-            if configured is not None and configured != concurrency:
+            if configured is not None and configured != validated_concurrency:
                 raise ValueError(
                     f"subscription {name!r} is already configured with "
                     f"concurrency={configured}"
                 )
-            self._subscription_concurrency[name] = concurrency
+            self._subscription_concurrency[name] = validated_concurrency
         return Subscription(self, name)
 
     def _concurrency_for(self, subscription: str) -> int:
         """Return this process's configured bound for ``subscription``."""
-        return self._subscription_concurrency.get(subscription, 1)
+        return self._subscription_concurrency.get(
+            subscription, self._default_concurrency
+        )
 
     def _begin_consuming(self, subscription: str) -> None:
         """Freeze configuration and claim the local runner for a subscription."""
@@ -328,6 +427,15 @@ class EventBus(Generic[ContextT]):
     def _end_consuming(self, subscription: str) -> None:
         """Release the local runner while retaining frozen configuration."""
         self._running_subscriptions.discard(subscription)
+
+    def _ensure_handler_registration_open(self, subscription: str) -> None:
+        """Reject handler changes after the relevant consumption lifecycle starts."""
+        if self._run_active:
+            raise RuntimeError("handlers must be registered before EventBus.run starts")
+        if subscription in self._frozen_subscriptions:
+            raise RuntimeError(
+                f"subscription {subscription!r} handlers must be registered before run"
+            )
 
     @overload
     def _register_handler(
@@ -416,15 +524,28 @@ class EventBus(Generic[ContextT]):
         timeout: float | None = None,
     ) -> object:
         """Register a process-local handler without changing bus topology."""
-        if not self.topology.has_subscription(subscription):
-            raise ValueError(
-                f"subscription {subscription!r} is not declared in the bus topology"
-            )
+        return self._register_handler_untyped(
+            subscription,
+            pattern,
+            handler,
+            permanent_errors=permanent_errors,
+            timeout=timeout,
+        )
+
+    def _register_handler_untyped(
+        self,
+        subscription: str,
+        pattern: EventPattern,
+        handler: object,
+        *,
+        permanent_errors: tuple[type[BaseException], ...],
+        timeout: float | None,
+        declare_route: bool = False,
+        concurrency: int | None = None,
+    ) -> object:
+        """Validate and atomically commit one local handler registration."""
+        validate_name(subscription, "subscription")
         key = self._pattern_key(pattern)
-        if key != WILDCARD and not self.topology.routes(subscription, key):
-            raise ValueError(
-                f"subscription {subscription!r} does not route event type {key!r}"
-            )
         if not isinstance(permanent_errors, (tuple, list)) or not all(
             isinstance(exc, type) and issubclass(exc, BaseException)
             for exc in permanent_errors
@@ -437,8 +558,12 @@ class EventBus(Generic[ContextT]):
                 raise TypeError("'timeout' must be a positive number or None")
             if not math.isfinite(timeout) or timeout <= 0:
                 raise ValueError("'timeout' must be a positive finite number")
+        validated_concurrency = (
+            _validate_concurrency(concurrency) if concurrency is not None else None
+        )
 
         def decorator(fn: object) -> object:
+            self._ensure_handler_registration_open(subscription)
             if not callable(fn):
                 raise TypeError("'handler' must be callable")
             # The registry is heterogeneous. The pattern key retains the
@@ -447,20 +572,49 @@ class EventBus(Generic[ContextT]):
             stored_handler = cast(_StoredEventHandler, fn)
             if timeout is not None and not _is_async_callable(stored_handler):
                 raise TypeError("'timeout' is only supported for async handlers")
+            accepts_context = _accepts_context(stored_handler)
             combo = (subscription, key)
             if combo in self._handlers:
                 raise ValueError(
                     f"handler already registered for ({subscription!r}, {key!r})"
                 )
-            if isinstance(pattern, type) and issubclass(pattern, BaseEvent):
-                self.registry.register(pattern)
-            self._handlers[combo] = _HandlerRegistration(
+            configured = self._subscription_concurrency.get(subscription)
+            if (
+                validated_concurrency is not None
+                and configured is not None
+                and configured != validated_concurrency
+            ):
+                raise ValueError(
+                    f"subscription {subscription!r} is already configured with "
+                    f"concurrency={configured}"
+                )
+            if declare_route:
+                new_topology = self.topology._with_route(subscription, pattern)
+            else:
+                if not self.topology.has_subscription(subscription):
+                    raise ValueError(
+                        f"subscription {subscription!r} is not declared in the "
+                        "bus topology"
+                    )
+                if key != WILDCARD and not self.topology.routes(subscription, key):
+                    raise ValueError(
+                        f"subscription {subscription!r} does not route event type "
+                        f"{key!r}"
+                    )
+                new_topology = self.topology
+            registration = _HandlerRegistration(
                 handler=stored_handler,
                 permanent_errors=tuple(permanent_errors),
                 timeout=float(timeout) if timeout is not None else None,
                 handler_name=getattr(fn, "__name__", type(fn).__name__),
-                accepts_context=_accepts_context(stored_handler),
+                accepts_context=accepts_context,
             )
+            if isinstance(pattern, type) and issubclass(pattern, BaseEvent):
+                self.registry.register(pattern)
+            self.topology = new_topology
+            if validated_concurrency is not None:
+                self._subscription_concurrency[subscription] = validated_concurrency
+            self._handlers[combo] = registration
             return fn
 
         if handler is None:
@@ -572,20 +726,26 @@ class EventBus(Generic[ContextT]):
         """
         from localqueue.bus.consumer import run_consumer
 
-        subscriptions = sorted({sub for (sub, _) in self._handlers})
-        consumers = [
-            asyncio.create_task(
-                run_consumer(self, subscription, idle_timeout=idle_timeout)
-            )
-            for subscription in subscriptions
-        ]
+        if self._run_active:
+            raise RuntimeError("EventBus.run is already running")
+        self._run_active = True
         try:
-            await asyncio.gather(*consumers)
-        except BaseException:
-            for consumer in consumers:
-                consumer.cancel()
-            await asyncio.gather(*consumers, return_exceptions=True)
-            raise
+            subscriptions = sorted({sub for (sub, _) in self._handlers})
+            consumers = [
+                asyncio.create_task(
+                    run_consumer(self, subscription, idle_timeout=idle_timeout)
+                )
+                for subscription in subscriptions
+            ]
+            try:
+                await asyncio.gather(*consumers)
+            except BaseException:
+                for consumer in consumers:
+                    consumer.cancel()
+                await asyncio.gather(*consumers, return_exceptions=True)
+                raise
+        finally:
+            self._run_active = False
 
     async def run_subscription(
         self, subscription: str, *, idle_timeout: Optional[float] = None

@@ -27,6 +27,11 @@ EXPECTED_DIAGNOSTICS = (
     "localqueue.bus.subscription.Subscription.handler",
     "localqueue.bus.subscription.Subscription.handler",
     "localqueue.bus.subscription.Subscription.handler",
+    "localqueue.bus.bus.EventBus.handler",
+    "localqueue.bus.bus.EventBus.handler",
+    "localqueue.bus.bus.EventBus.handler",
+    "localqueue.bus.bus.EventBus.handler",
+    "localqueue.bus.bus.EventBus.handler",
     "nonexistent_service",
 )
 
