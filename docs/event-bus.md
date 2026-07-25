@@ -491,8 +491,10 @@ the EventBus default, an ergonomic handler override, or the explicit binder:
 ```python
 bus = EventBus("./data", concurrency=4)
 
+
 @bus.handler(UserCreated, concurrency=8)
 async def index_user(event): ...
+
 
 email = bus.subscription("email", concurrency=8)
 billing = bus.subscription("billing", concurrency=1)
