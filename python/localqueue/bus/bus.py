@@ -100,24 +100,24 @@ def _is_async_callable(
 def _accepts_context(handler: _StoredEventHandler) -> bool:
     """Return whether a handler explicitly requires a context argument."""
     try:
-        parameters = inspect.signature(handler).parameters.values()
+        signature = inspect.signature(handler)
     except (TypeError, ValueError):
         return False
-    required = [
-        parameter
-        for parameter in parameters
-        if parameter.kind
-        in (
-            inspect.Parameter.POSITIONAL_ONLY,
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-        )
-        and parameter.default is inspect.Parameter.empty
-    ]
-    if len(required) == 1:
+    marker = object()
+    if _can_bind(signature, marker):
         return False
-    if len(required) == 2:
+    if _can_bind(signature, marker, marker):
         return True
     raise TypeError("handler must accept either (event) or (event, context)")
+
+
+def _can_bind(signature: inspect.Signature, *args: object) -> bool:
+    """Return whether a handler signature can be called with ``args``."""
+    try:
+        signature.bind(*args)
+    except TypeError:
+        return False
+    return True
 
 
 class EventBus(Generic[ContextT]):
@@ -168,7 +168,7 @@ class EventBus(Generic[ContextT]):
         self.require_subscribers = require_subscribers
         self.serializer = serializer
         self.registry = registry
-        self.context_factory = context_factory
+        self.context_factory: ContextFactory[ContextT] | None = context_factory
 
         self.path.mkdir(parents=True, exist_ok=True)
         db_path = self.path / "localqueue.db"

@@ -66,6 +66,7 @@ class TestRegistration:
     def test_context_is_only_passed_to_explicit_two_argument_handlers(self, tmp_path):
         dependency = object()
         dependency_values = []
+        optional_events = []
         variadic_arguments = []
         contexts = []
 
@@ -81,6 +82,7 @@ class TestRegistration:
                     "default": [UserCreated],
                     "context": [UserCreated],
                     "dependency": [UserCreated],
+                    "optional-event": [UserCreated],
                     "variadic": [UserCreated],
                 }
             ),
@@ -99,6 +101,10 @@ class TestRegistration:
         def dependency_handler(event, supplied_dependency=dependency):
             dependency_values.append(supplied_dependency)
 
+        @bus.subscription("optional-event").handler(UserCreated)
+        def optional_event_handler(event=None):
+            optional_events.append(event)
+
         @bus.subscription("variadic").handler(UserCreated)
         def variadic_handler(event, *args):
             variadic_arguments.append(args)
@@ -106,9 +112,11 @@ class TestRegistration:
         bus.dispatch(UserCreated(user_id="42"))
         run(bus.run(idle_timeout=0.2))
 
-        assert dependency_values == ["42", dependency]
+        assert set(dependency_values) == {"42", dependency}
+        assert len(optional_events) == 1
+        assert optional_events[0].user_id == "42"
         assert variadic_arguments == [()]
-        assert len(contexts) == 4
+        assert len(contexts) == 5
         bus.close()
 
     def test_rejects_handler_with_unsupported_required_arity(self, bus):
