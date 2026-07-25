@@ -55,6 +55,8 @@ pub struct FailedMessage {
     #[pyo3(get)]
     pub failure_reason: Option<String>,
     #[pyo3(get)]
+    pub failure_category: Option<String>,
+    #[pyo3(get)]
     pub created_at: i64,
     #[pyo3(get)]
     pub updated_at: i64,
@@ -426,7 +428,7 @@ impl NativeQueue {
                 STATUS_READY
             };
             let available_at = if new_status == STATUS_READY {
-                now + delay_ms
+                checked_available_at(now, delay_ms)?
             } else {
                 now
             };
@@ -445,6 +447,7 @@ impl NativeQueue {
                     lease_until = NULL,
                     last_error = ?3,
                     failure_reason = ?4,
+                    failure_category = NULL,
                     updated_at = ?5
                  WHERE id = ?6 AND queue = ?7 AND status = ?8
                     AND receipt = ?9 AND lease_until > ?10",
@@ -473,7 +476,7 @@ impl NativeQueue {
         })
     }
 
-    #[pyo3(signature = (id, receipt, last_error = None, failure_reason = None))]
+    #[pyo3(signature = (id, receipt, last_error = None, failure_reason = None, failure_category = None))]
     pub fn fail(
         &self,
         py: Python<'_>,
@@ -481,10 +484,12 @@ impl NativeQueue {
         receipt: &str,
         last_error: Option<&str>,
         failure_reason: Option<&str>,
+        failure_category: Option<&str>,
     ) -> PyResult<()> {
         let receipt = receipt.to_owned();
         let last_error = last_error.map(str::to_owned);
         let failure_reason = failure_reason.map(str::to_owned);
+        let failure_category = failure_category.map(str::to_owned);
         py.detach(move || {
             let now = now_ms();
             let mut guard = self.conn()?;
@@ -500,13 +505,15 @@ impl NativeQueue {
                     lease_until = NULL,
                     last_error = ?2,
                     failure_reason = ?3,
-                    updated_at = ?4
-                 WHERE id = ?5 AND queue = ?6 AND status = ?7
-                    AND receipt = ?8 AND lease_until > ?9",
+                    failure_category = ?4,
+                    updated_at = ?5
+                 WHERE id = ?6 AND queue = ?7 AND status = ?8
+                    AND receipt = ?9 AND lease_until > ?10",
                     params![
                         STATUS_FAILED,
                         last_error,
                         failure_reason,
+                        failure_category,
                         now,
                         id,
                         self.queue,
@@ -713,7 +720,7 @@ impl NativeQueue {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, payload, attempts, last_error, failure_reason,
-                            created_at, updated_at
+                            failure_category, created_at, updated_at
                      FROM messages
                      WHERE queue = ?1 AND status = ?2
                      ORDER BY id
@@ -729,8 +736,9 @@ impl NativeQueue {
                         attempts: row.get(2)?,
                         last_error: row.get(3)?,
                         failure_reason: row.get(4)?,
-                        created_at: row.get(5)?,
-                        updated_at: row.get(6)?,
+                        failure_category: row.get(5)?,
+                        created_at: row.get(6)?,
+                        updated_at: row.get(7)?,
                     })
                 })
                 .map_err(QueueError::from)?;
@@ -811,4 +819,30 @@ fn generate_receipt() -> String {
         .as_nanos();
     let pid = std::process::id();
     format!("{}-{}", pid, nanos)
+}
+
+fn checked_available_at(now: i64, delay_ms: i64) -> Result<i64, QueueError> {
+    if delay_ms < 0 {
+        return Err(QueueError::InvalidDelay);
+    }
+    now.checked_add(delay_ms).ok_or(QueueError::InvalidDelay)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checked_available_at;
+    use crate::error::QueueError;
+
+    #[test]
+    fn available_at_rejects_negative_and_overflowing_delays() {
+        assert!(matches!(
+            checked_available_at(1, -1),
+            Err(QueueError::InvalidDelay)
+        ));
+        assert!(matches!(
+            checked_available_at(i64::MAX, 1),
+            Err(QueueError::InvalidDelay)
+        ));
+        assert_eq!(checked_available_at(10, 20).unwrap(), 30);
+    }
 }

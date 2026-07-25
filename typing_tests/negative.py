@@ -8,6 +8,8 @@ from localqueue.bus import (
     BusTopology,
     EventBus,
     HandlerContext,
+    Reject,
+    Retry,
     RuntimeContext,
 )
 
@@ -73,6 +75,9 @@ wrong_subscription_result: list[FailedMessage[object]] = bus.subscription(
 ).list_failed()
 task_queue.retry_failed("1")
 bus.subscription("users").retry_failed("1")
+Retry(after="later")
+Reject("")
+Reject("invalid", category=1)
 
 
 class AppContext(HandlerContext):

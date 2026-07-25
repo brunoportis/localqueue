@@ -27,6 +27,7 @@ class FailedMessage:
     attempts: int
     last_error: Optional[str]
     failure_reason: Optional[str]
+    failure_category: Optional[str]
     created_at: int
     updated_at: int
 
@@ -117,6 +118,7 @@ class NativeQueue:
         receipt: str,
         last_error: Optional[str] = None,
         failure_reason: Optional[str] = None,
+        failure_category: Optional[str] = None,
     ) -> None: ...
     def extend_lease(self, id: int, receipt: str, extend_ms: int) -> int: ...
     def reclaim_expired(self, now: Optional[int] = None) -> int: ...

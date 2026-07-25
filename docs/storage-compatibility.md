@@ -43,6 +43,18 @@ Existing rows are not rewritten: their `failure_reason` remains `NULL`, and the
 compatible existing classification exposes legacy or unknown values as
 `FailureReason.LEGACY_UNKNOWN`.
 
+## v1.4 migration
+
+Version 1.4 adds nullable `failure_category TEXT NULL` to the `messages` table
+for structured handler rejections. Opening an older database follows the same
+additive, idempotent migration protocol used by `failure_reason`: inspect
+without a writer lock, acquire `BEGIN IMMEDIATE` only when the column is
+missing, and check again inside the transaction before `ALTER TABLE`.
+
+Existing rows remain unchanged with a `NULL` category. Rejected deliveries
+persist their reason in `last_error`, their stable classification as
+`FailureReason.REJECTED`, and their optional category in `failure_category`.
+
 ## Guaranteed
 
 - A database made by a published, tested baseline can be opened by v1.3.

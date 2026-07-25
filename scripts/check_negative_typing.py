@@ -20,6 +20,8 @@ EXPECTED_DIAGNOSTICS = (
     "`list[FailedDelivery]`",
     "localqueue.core.SimpleQueue.retry_failed",
     "localqueue.bus.subscription.Subscription.retry_failed",
+    "localqueue.bus.control.Retry.__init__",
+    "localqueue.bus.control.Reject.__init__",
     "nonexistent_service",
 )
 
@@ -62,7 +64,8 @@ def main() -> int:
         return 1
 
     print(
-        "negative typing fixture produced the 12 expected incompatibility diagnostics"
+        "negative typing fixture produced "
+        f"{len(EXPECTED_DIAGNOSTICS)} expected incompatibility diagnostics"
     )
     return 0
 

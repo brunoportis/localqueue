@@ -20,6 +20,7 @@ class FailureReason(str, Enum):
     HANDLER_TIMEOUT = "handler_timeout"
     EXPLICIT_PERMANENT_FAILURE = "explicit_permanent_failure"
     NO_HANDLER = "no_handler"
+    REJECTED = "rejected"
     LEGACY_UNKNOWN = "legacy_unknown"
 
     @classmethod
@@ -43,6 +44,7 @@ class FailedMessage(Generic[_PayloadT]):
     created_at: float
     updated_at: float
     decode_error: str | None
+    failure_category: str | None = None
 
     @property
     def decoded(self) -> bool:

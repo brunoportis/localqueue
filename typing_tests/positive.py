@@ -20,6 +20,8 @@ from localqueue.bus import (
     EventBus,
     FailedDelivery,
     HandlerContext,
+    Reject,
+    Retry,
     RuntimeContext,
 )
 
@@ -160,6 +162,11 @@ registered_event: type[UserCreated] = bus.register(UserCreated)
 failed_delivery: FailedDelivery = bus.subscription("users_sync").list_failed()[0]
 failed_event: BaseEvent | None = failed_delivery.event
 failed_event_type: str | None = failed_delivery.event_type
+failed_category: str | None = failed_delivery.failure_category
+retry = Retry("temporarily unavailable", after=30)
+retry_after: float | None = retry.after
+reject = Reject("invalid input", category="validation")
+reject_category: str | None = reject.category
 
 
 http = HttpClient()

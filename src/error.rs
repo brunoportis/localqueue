@@ -56,6 +56,9 @@ pub enum QueueError {
     #[error("queue is closed")]
     Closed,
 
+    #[error("delay exceeds supported storage range")]
+    InvalidDelay,
+
     #[error("backup destination already exists: {0}")]
     BackupDestinationExists(PathBuf),
 
@@ -86,6 +89,9 @@ impl From<QueueError> for PyErr {
             QueueError::LeaseExpired => PyErr::new::<LeaseExpired, _>("lease has expired"),
             QueueError::NotFound => PyErr::new::<LocalQueueError, _>("job not found"),
             QueueError::Closed => PyErr::new::<LocalQueueError, _>("queue is closed"),
+            QueueError::InvalidDelay => {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string())
+            }
             QueueError::BackupDestinationExists(path) => {
                 PyErr::new::<pyo3::exceptions::PyFileExistsError, _>(path)
             }

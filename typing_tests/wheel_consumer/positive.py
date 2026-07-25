@@ -13,7 +13,14 @@ from localqueue import (
     Worker,
 )
 from localqueue import localqueue as native
-from localqueue.bus import BaseEvent, BusTopology, EventBus, FailedDelivery
+from localqueue.bus import (
+    BaseEvent,
+    BusTopology,
+    EventBus,
+    FailedDelivery,
+    Reject,
+    Retry,
+)
 
 
 @dataclass(frozen=True)
@@ -99,3 +106,6 @@ registered_handler: Callable[[UserCreated], None] = bus.on(
 )
 delivery: FailedDelivery = bus.subscription("users_sync").list_failed()[0]
 failed_event: BaseEvent | None = delivery.event
+failure_category: str | None = delivery.failure_category
+retry_after: float | None = Retry(after=30).after
+reject_category: str | None = Reject("invalid", category="validation").category

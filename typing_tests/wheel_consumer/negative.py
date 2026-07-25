@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 
 from localqueue import FailedMessage, Job, Serializer, SimpleQueue, Worker
-from localqueue.bus import BaseEvent, BusTopology, EventBus
+from localqueue.bus import BaseEvent, BusTopology, EventBus, Reject, Retry
 
 
 @dataclass(frozen=True)
@@ -52,3 +52,5 @@ wrong_failed: list[FailedMessage[str]] = queue.list_failed()
 wrong_raw: str = queue.list_failed()[0].raw_payload
 queue.retry_failed("1")
 bus.subscription("users").retry_failed("1")
+Retry(after="later")
+Reject(1)

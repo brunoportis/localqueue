@@ -151,6 +151,7 @@ def main() -> None:
             row[1] for row in db.execute("PRAGMA table_info(messages)").fetchall()
         }
         assertion(result, "failure_reason_migrated", "failure_reason" in columns)
+        assertion(result, "failure_category_migrated", "failure_category" in columns)
         assertion(
             result,
             "sqlite_integrity",
