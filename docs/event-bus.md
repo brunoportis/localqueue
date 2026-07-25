@@ -32,8 +32,9 @@ install command.
 > The topology decides where events are persisted. Handler registration
 > decides what the current process can execute.
 
-These are separate configurations. A producer loads event definitions and the
-static topology, but does not import or register consumer handlers.
+The common API declares both together. The advanced API keeps them separate so
+a producer can load event definitions and topology without importing consumer
+handlers.
 
 ## Define events
 
@@ -62,6 +63,95 @@ Events are Pydantic models. Every event automatically carries an `event_id`
 setting `event_name` gives it a stable name independent of the Python class.
 `schema_version` defaults to `1` and is recorded in `event_schema` as
 `<event_type>@<version>`.
+
+## Happy path: declare routes with handlers
+
+Topology is optional when one process owns both routing and handlers:
+
+```python
+from localqueue.bus import EventBus
+
+
+bus = EventBus(
+    "./data",
+    name="contacts",
+    concurrency=20,
+)
+
+
+@bus.handler(
+    ContactCreationRequested,
+    concurrency=100,
+)
+async def create_contact(event, ctx):
+    contact = await ctx.contacts.create(event)
+    return ContactCreated(contact_id=contact.id)
+
+
+@bus.handler(ContactCreated)
+async def record_contact(event, ctx):
+    await ctx.read_model.record(event)
+
+
+await bus.run()
+```
+
+`EventBus.handler` registers the callable and adds its event route to a new
+immutable `BusTopology` snapshot. The default durable subscription name is the
+event type: normally the class name, or `event_name` when set. Renaming the
+Python function therefore does not create a new queue. If that event type is
+not a valid subscription name, registration fails instead of silently
+sanitizing it; provide an explicit name such as
+`subscription="contact-requested"`.
+
+The constructor's `concurrency` is the process-local default for each
+subscription. The handler argument overrides it for that handler's
+subscription. It is not a global sum: two subscriptions configured with
+`concurrency=100` can run up to 200 deliveries in one process. Each process has
+its own limit. The default is one subscription per handler, so the limit
+usually feels handler-local, but concurrency always belongs to the
+subscription.
+
+Registering the same event twice with default names is rejected. Independent
+handlers for one event need distinct durable subscriptions:
+
+```python
+@bus.handler(ContactCreated, subscription="update-read-model")
+async def update_read_model(event): ...
+
+
+@bus.handler(ContactCreated, subscription="send-notification")
+async def send_notification(event): ...
+```
+
+Dispatch fans out to both subscriptions, whose ACK, retry, DLQ and concurrency
+state remain independent. Different event types may deliberately share one
+explicit subscription; they then share one queue, consumer group and
+concurrency bound:
+
+```python
+@bus.handler(ContactCreated, subscription="contact-projector", concurrency=10)
+async def on_created(event): ...
+
+
+@bus.handler(ContactUpdated, subscription="contact-projector", concurrency=10)
+async def on_updated(event): ...
+```
+
+Failures remain subscription-scoped:
+
+```python
+failed = bus.subscription("ContactCreationRequested").list_failed()
+```
+
+An explicit subscription uses its explicit name for inspection. Returning a
+`BaseEvent` from an ergonomic handler uses the same atomic local ACK plus
+fanout path described below; routes added by other ergonomic handlers
+participate automatically.
+
+The `path` argument still names the directory containing `localqueue.db`.
+Names such as `"contacts"` or `"contacts.db"` are not given any new path
+resolution semantics by the ergonomic API.
 
 ## Correlate derived events
 
@@ -103,7 +193,7 @@ This metadata does not provide automatic distributed-tracing integration.
 `event_name` and `schema_version` remain independent of the Python class name
 and are preserved when derived events are persisted and reconstructed.
 
-## Declare the static topology
+## Advanced path: declare topology separately
 
 Declare every subscription and the event types routed to it in another shared
 module:
@@ -131,6 +221,11 @@ names must match `^[A-Za-z0-9][A-Za-z0-9_.-]*$`.
 `BusTopology` copies and normalizes its input when constructed. Later changes
 to the caller's dictionary or lists do not affect routing. Matching
 subscription names are always returned in sorted order.
+
+This path remains useful for remote subscriptions handled by another process,
+producer-only topology, wildcard and string patterns, subscriptions consuming
+multiple event types, and fully explicit operational configuration.
+`BusTopology` is not deprecated.
 
 ## Run an independent producer
 
@@ -249,8 +344,9 @@ recent commits. Neither mode promises survival across every filesystem,
 kernel, drive cache, controller, or hardware failure.
 
 `require_subscribers` remains a boolean because it controls one stable
-dispatch decision. Topology, serializer, and event registry remain explicit
-strategy objects instead of being hidden inside a generic EventBus config.
+dispatch decision. Serializer and event registry remain explicit strategy
+objects. Topology can be supplied explicitly or grown immutably by
+`EventBus.handler`.
 
 If no route matches, `require_subscribers=True` raises `NoSubscribers`. With
 `require_subscribers=False`, dispatch returns an empty receipt and writes
@@ -300,8 +396,9 @@ binder:
 bus.on(UserCreated, send_welcome_email, subscription="email")
 ```
 
-Neither form declares a subscription or changes dispatch routing. The
-canonical API is `bus.subscription(...).handler(...)`.
+Neither form declares a subscription or changes dispatch routing. Use
+`EventBus.handler` when registration should also declare the route, and these
+explicit binders when topology is managed separately.
 
 Handlers may also accept a second `HandlerContext` argument. Applications can
 use an `EventBus[AppContext]` with `context_factory=` to add explicitly managed
@@ -388,20 +485,27 @@ execution limits are required.
 
 ## Per-subscription concurrency
 
-Each process can bound simultaneous deliveries for a subscription when creating
-its local binder:
+Each process can bound simultaneous deliveries for a subscription either with
+the EventBus default, an ergonomic handler override, or the explicit binder:
 
 ```python
+bus = EventBus("./data", concurrency=4)
+
+@bus.handler(UserCreated, concurrency=8)
+async def index_user(event): ...
+
 email = bus.subscription("email", concurrency=8)
 billing = bus.subscription("billing", concurrency=1)
 ```
 
-`concurrency` is a positive integer and defaults to `1`. It is process-local,
-in-memory configuration: it is not stored in the topology or SQLite. Reusing a
-subscription binder keeps its configured value; assigning a conflicting value
-in the same process raises `ValueError`. Configure it before the first
-`run()` or `run_subscription()` for that subscription; later explicit changes
-raise `RuntimeError` rather than resizing active work.
+`concurrency` is a positive integer and defaults to `1`. The EventBus value is
+the fallback for every subscription; a handler or binder value is that
+subscription's override. It is process-local, in-memory configuration: it is
+not stored in the topology or SQLite. Reusing a subscription keeps its
+configured value; assigning a conflicting value in the same process raises
+`ValueError`. Configure handlers and overrides before the first `run()` or
+`run_subscription()` for that subscription; later registrations or explicit
+changes raise `RuntimeError` rather than resizing active work.
 
 At most that many deliveries are claimed and handled by this process at once.
 When all slots are occupied, the consumer does not claim another delivery
