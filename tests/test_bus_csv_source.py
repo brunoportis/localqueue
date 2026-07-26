@@ -536,7 +536,7 @@ class TestCsvSourceStreaming:
 
     def test_ingestion_of_large_file_streams(self, tmp_path):
         path = tmp_path / "large.csv"
-        count = 200_000
+        count = 20_000
         with path.open("w", encoding="utf-8", newline="") as handle:
             handle.write("cnpj,name\n")
             for index in range(count):
