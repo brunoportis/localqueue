@@ -429,6 +429,12 @@ fn migrate_ingestion_checkpoints(conn: &mut Connection) -> Result<()> {
         [],
         |row| row.get(0),
     )?;
+    // Opening an already-updated database must remain read-only: callers may
+    // share it with an active writer, and there is no migration work to do.
+    if exists && has_ingestion_checkpoint_column(conn, "generation")? {
+        return Ok(());
+    }
+
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     if !exists {
         tx.execute_batch(CHECKPOINTS_SCHEMA_SQL)?;
@@ -947,6 +953,24 @@ mod tests {
         tested.pragma_update(None, "busy_timeout", 1).unwrap();
 
         migrate_failure_category(&mut tested).unwrap();
+        blocker.execute_batch("ROLLBACK").unwrap();
+    }
+
+    #[test]
+    fn checkpoint_migration_fast_path_does_not_take_writer_lock() {
+        let dir = tempfile_guard::TempDir::new();
+        let path = dir.path().join("migrated.db");
+        let setup = Connection::open(&path).unwrap();
+        setup.execute_batch(SCHEMA_SQL).unwrap();
+        drop(setup);
+
+        let blocker = Connection::open(&path).unwrap();
+        blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+        let mut tested = Connection::open(&path).unwrap();
+        tested.pragma_update(None, "busy_timeout", 1).unwrap();
+
+        migrate_ingestion_checkpoints(&mut tested).unwrap();
         blocker.execute_batch("ROLLBACK").unwrap();
     }
 
