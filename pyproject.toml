@@ -48,6 +48,7 @@ benchmark-compare = [
 ]
 bus = [
     "pydantic>=2,<3",
+    "typing-extensions>=4.12,<5",
 ]
 
 [build-system]

@@ -676,6 +676,7 @@ benchmark-compare = [
 ]
 bus = [
     { name = "pydantic" },
+    { name = "typing-extensions" },
 ]
 dev = [
     { name = "hypothesis" },
@@ -714,6 +715,7 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7,<8" },
     { name = "python-semantic-release", marker = "extra == 'dev'", specifier = ">=10.6,<11" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15,<1" },
+    { name = "typing-extensions", marker = "extra == 'bus'", specifier = ">=4.12,<5" },
     { name = "zensical", marker = "extra == 'docs'", specifier = ">=0.0.51,<0.1" },
 ]
 provides-extras = ["dev", "docs", "benchmark", "benchmark-compare", "bus"]
