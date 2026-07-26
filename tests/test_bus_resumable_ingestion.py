@@ -306,7 +306,11 @@ class TestResumableCommit:
                 )
                 self.entries.extend(entries)
                 self.state = (cursor, fingerprint, "generation", 1, item_count, 1, 0, 0)
-                return ([(index + 1, True) for index in range(len(entries))], "generation", 1)
+                return (
+                    [(index + 1, True) for index in range(len(entries))],
+                    "generation",
+                    1,
+                )
 
             def close(self):
                 original_native.close()
@@ -399,7 +403,9 @@ class TestCheckpointGuards:
                         _n,
                     ) = checkpoint
                     native._enqueue_batch_with_identity_and_checkpoint(
-                        [], None, (bus_name, name, result[1], result[2], cursor, fingerprint, 0)
+                        [],
+                        None,
+                        (bus_name, name, result[1], result[2], cursor, fingerprint, 0),
                     )
                 return result
 
