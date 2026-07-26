@@ -46,7 +46,10 @@ def bus(tmp_path):
         str(tmp_path / "bus"),
         name="test",
         topology=BusTopology({"email": [WorkSubmitted]}),
-        delivery=DeliveryPolicy(lease_seconds=0.15, max_retries=0),
+        # These tests exercise handler timeout precedence, not lease expiry.
+        # Keep the lease comfortably above Windows thread-pool scheduling
+        # jitter so a completed handler can persist its classified failure.
+        delivery=DeliveryPolicy(lease_seconds=1.0, max_retries=0),
     )
     yield instance
     instance.close()

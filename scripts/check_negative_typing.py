@@ -39,6 +39,7 @@ EXPECTED_DIAGNOSTICS = (
     "transform=(row: Row) -> Coroutine[Unknown, Unknown, str]",
     "transform=(row: OtherRow) -> ContactCreated",
     "`Literal[42]` is not assignable to parameter `source`",
+    "checkpoint=Literal['import:v1']",
 )
 
 

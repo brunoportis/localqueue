@@ -42,6 +42,13 @@ pyo3::create_exception!(
     "Raised when a job lease has expired."
 );
 
+pyo3::create_exception!(
+    localqueue,
+    CheckpointConflict,
+    LocalQueueError,
+    "Raised when an ingestion checkpoint version does not match the expected value."
+);
+
 #[derive(thiserror::Error, Debug)]
 pub enum QueueError {
     #[error("queue is empty")]
@@ -64,6 +71,15 @@ pub enum QueueError {
 
     #[error("conflicting capacity policies for the same queue")]
     ConflictingCapacityPolicies,
+
+    #[error("checkpoint conflict on '{checkpoint_name}': expected generation {expected_generation:?} version {expected_version:?}, found generation {actual_generation:?} version {actual_version:?}")]
+    CheckpointConflict {
+        checkpoint_name: String,
+        expected_generation: Option<String>,
+        expected_version: Option<i64>,
+        actual_generation: Option<String>,
+        actual_version: Option<i64>,
+    },
 
     #[error("job not found")]
     NotFound,
@@ -110,6 +126,9 @@ impl From<QueueError> for PyErr {
             }
             QueueError::ConflictingCapacityPolicies => {
                 PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string())
+            }
+            QueueError::CheckpointConflict { .. } => {
+                PyErr::new::<CheckpointConflict, _>(err.to_string())
             }
             QueueError::NotFound => PyErr::new::<LocalQueueError, _>("job not found"),
             QueueError::Closed => PyErr::new::<LocalQueueError, _>("queue is closed"),

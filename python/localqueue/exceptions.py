@@ -1,6 +1,7 @@
 """Exceptions exposed by localqueue."""
 
 from localqueue.localqueue import (
+    CheckpointConflict,
     DeduplicationConflict,
     Empty,
     Full,
@@ -9,6 +10,7 @@ from localqueue.localqueue import (
 )
 
 __all__ = [
+    "CheckpointConflict",
     "DeduplicationConflict",
     "Empty",
     "Full",

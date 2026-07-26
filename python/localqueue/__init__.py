@@ -10,6 +10,7 @@ from localqueue.core import (
 from localqueue.deadletter import FailedMessage, FailureReason
 from localqueue.diagnostics import QueueDiagnostics
 from localqueue.exceptions import (
+    CheckpointConflict,
     DeduplicationConflict,
     Empty,
     Full,
@@ -23,6 +24,7 @@ from localqueue.worker import Worker
 
 __all__ = [
     "Empty",
+    "CheckpointConflict",
     "DeduplicationConflict",
     "Full",
     "BackupResult",

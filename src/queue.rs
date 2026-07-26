@@ -6,7 +6,7 @@ use crate::backup::{create as create_backup, BackupSnapshot};
 use crate::diagnostics::{collect as collect_diagnostics, DiagnosticsSnapshot};
 use crate::error::QueueError;
 use crate::integrity::{check as check_integrity, IntegrityCheckSnapshot};
-use crate::storage::{now_ms, CapacityPolicy, EnqueueEntry, Storage};
+use crate::storage::{now_ms, CapacityPolicy, CheckpointUpdate, EnqueueEntry, Storage};
 
 pub const STATUS_READY: i64 = 0;
 pub const STATUS_LEASED: i64 = 1;
@@ -20,6 +20,17 @@ type EnqueueIdentityEntry = (
     Option<String>,
     Option<String>,
 );
+type CheckpointUpdateTuple = (
+    String,
+    String,
+    Option<String>,
+    Option<i64>,
+    String,
+    Option<String>,
+    i64,
+);
+type EnqueueOutcomes = Vec<(i64, bool)>;
+type CheckpointInspectTuple = (String, Option<String>, String, i64, i64, i64, i64, i64);
 
 #[derive(Debug, Clone)]
 #[pyclass(skip_from_py_object)]
@@ -287,6 +298,29 @@ impl NativeQueue {
         entries: Vec<EnqueueIdentityEntry>,
         capacity: Option<Vec<(String, i64)>>,
     ) -> PyResult<Vec<(i64, bool)>> {
+        Ok(self
+            .enqueue_batch_with_identity_and_checkpoint(py, entries, capacity, None)?
+            .0)
+    }
+
+    /// Same as `_enqueue_batch_with_identity`, plus an optional durable
+    /// ingestion checkpoint committed in the same transaction.
+    ///
+    /// `checkpoint` is `(bus_name, checkpoint_name, expected_generation,
+    /// expected_version, new_cursor, source_fingerprint, items_committed)`.
+    /// Both expected tokens are `None` when creating the checkpoint; otherwise
+    /// they compare-and-swap the immutable generation and stored version. A mismatch raises
+    /// `CheckpointConflict` and rolls back the whole batch. Returns
+    /// `(outcomes, generation, new_version)`, where the latter two values are
+    /// `None` when no checkpoint was given.
+    #[pyo3(name = "_enqueue_batch_with_identity_and_checkpoint")]
+    pub fn enqueue_batch_with_identity_and_checkpoint(
+        &self,
+        py: Python<'_>,
+        entries: Vec<EnqueueIdentityEntry>,
+        capacity: Option<Vec<(String, i64)>>,
+        checkpoint: Option<CheckpointUpdateTuple>,
+    ) -> PyResult<(EnqueueOutcomes, Option<String>, Option<i64>)> {
         if let Some(policies) = &capacity {
             for (_, max_pending) in policies {
                 if *max_pending < 1 {
@@ -318,13 +352,83 @@ impl NativeQueue {
                     max_pending_jobs: *max_pending_jobs,
                 })
                 .collect();
+            let update = checkpoint.map(
+                |(
+                    bus_name,
+                    checkpoint_name,
+                    expected_generation,
+                    expected_version,
+                    new_cursor,
+                    source_fingerprint,
+                    items_committed,
+                )| CheckpointUpdate {
+                    bus_name,
+                    checkpoint_name,
+                    expected_generation,
+                    expected_version,
+                    new_cursor,
+                    source_fingerprint,
+                    items_committed,
+                },
+            );
+            let (outcomes, commit) = self.storage.enqueue_batch_outcomes_with_checkpoint(
+                &entries,
+                self.max_attempts,
+                &policies,
+                None,
+                update.as_ref(),
+            )?;
+            Ok((
+                outcomes
+                    .into_iter()
+                    .map(|outcome| (outcome.id, outcome.inserted))
+                    .collect(),
+                commit.as_ref().map(|commit| commit.generation.clone()),
+                commit.map(|commit| commit.version),
+            ))
+        })
+    }
+
+    /// Read one ingestion checkpoint row as `(cursor, source_fingerprint,
+    /// generation, version, items_committed, batches_committed, created_at,
+    /// updated_at)`,
+    /// or `None` if it does not exist.
+    #[pyo3(name = "_checkpoint_inspect")]
+    pub fn checkpoint_inspect(
+        &self,
+        py: Python<'_>,
+        bus_name: String,
+        checkpoint_name: String,
+    ) -> PyResult<Option<CheckpointInspectTuple>> {
+        py.detach(move || {
             Ok(self
                 .storage
-                .enqueue_batch_outcomes(&entries, self.max_attempts, &policies, None)?
-                .into_iter()
-                .map(|outcome| (outcome.id, outcome.inserted))
-                .collect())
+                .checkpoint_inspect(&bus_name, &checkpoint_name)?
+                .map(|snapshot| {
+                    (
+                        snapshot.cursor,
+                        snapshot.source_fingerprint,
+                        snapshot.generation,
+                        snapshot.version,
+                        snapshot.items_committed,
+                        snapshot.batches_committed,
+                        snapshot.created_at,
+                        snapshot.updated_at,
+                    )
+                }))
         })
+    }
+
+    /// Delete one ingestion checkpoint row. Returns whether it existed.
+    /// Never touches the `messages` table.
+    #[pyo3(name = "_checkpoint_reset")]
+    pub fn checkpoint_reset(
+        &self,
+        py: Python<'_>,
+        bus_name: String,
+        checkpoint_name: String,
+    ) -> PyResult<bool> {
+        py.detach(move || Ok(self.storage.checkpoint_reset(&bus_name, &checkpoint_name)?))
     }
 
     /// Atomically acknowledge this queue's leased message and fan one payload

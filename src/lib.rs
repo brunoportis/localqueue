@@ -13,7 +13,9 @@ use pyo3::prelude::*;
 use backup::BackupSnapshot;
 use diagnostics::DiagnosticsSnapshot;
 use error::_FullImpossible;
-use error::{DeduplicationConflict, Empty, Full, LeaseExpired, LocalQueueError};
+use error::{
+    CheckpointConflict, DeduplicationConflict, Empty, Full, LeaseExpired, LocalQueueError,
+};
 use integrity::IntegrityCheckSnapshot;
 use queue::{FailedMessage, Lease, NativeQueue, Stats};
 
@@ -37,5 +39,6 @@ fn localqueue(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         "DeduplicationConflict",
         _py.get_type::<DeduplicationConflict>(),
     )?;
+    m.add("CheckpointConflict", _py.get_type::<CheckpointConflict>())?;
     Ok(())
 }
