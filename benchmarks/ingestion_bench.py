@@ -13,7 +13,6 @@ import asyncio
 import json
 import math
 import multiprocessing
-import resource
 import statistics
 import sys
 import tempfile
@@ -23,6 +22,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from localqueue.bus import BaseEvent, BusTopology, EventBus, event
+
+try:
+    import resource
+except ImportError:  # pragma: no cover - exercised by the Windows CI matrix
+    resource = None
 
 
 class PlainContact(BaseEvent):
@@ -103,6 +107,43 @@ def _percentile(values: list[float], percentile: float) -> float:
     return ordered[index]
 
 
+def _process_peak_rss_bytes() -> int:
+    """Return peak process RSS using the platform's standard facilities."""
+    if resource is not None:
+        peak_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return peak_rss if sys.platform == "darwin" else peak_rss * 1024
+    if sys.platform != "win32":
+        raise RuntimeError("peak RSS is unavailable on this platform")
+
+    import ctypes
+    from ctypes import wintypes
+
+    class ProcessMemoryCounters(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD),
+            ("page_fault_count", wintypes.DWORD),
+            ("peak_working_set_size", ctypes.c_size_t),
+            ("working_set_size", ctypes.c_size_t),
+            ("quota_peak_paged_pool_usage", ctypes.c_size_t),
+            ("quota_paged_pool_usage", ctypes.c_size_t),
+            ("quota_peak_non_paged_pool_usage", ctypes.c_size_t),
+            ("quota_non_paged_pool_usage", ctypes.c_size_t),
+            ("pagefile_usage", ctypes.c_size_t),
+            ("peak_pagefile_usage", ctypes.c_size_t),
+        ]
+
+    counters = ProcessMemoryCounters()
+    counters.cb = ctypes.sizeof(counters)
+    success = ctypes.windll.psapi.GetProcessMemoryInfo(
+        ctypes.windll.kernel32.GetCurrentProcess(),
+        ctypes.byref(counters),
+        counters.cb,
+    )
+    if not success:
+        raise ctypes.WinError()
+    return int(counters.peak_working_set_size)
+
+
 def _run_scenario(scenario: Scenario) -> dict[str, object]:
     event_type = IdentifiedContact if scenario.identity else PlainContact
     topology = BusTopology(
@@ -134,8 +175,6 @@ def _run_scenario(scenario: Scenario) -> dict[str, object]:
             tracemalloc.stop()
             bus.close()
     durations = timed_native.transactions
-    peak_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    peak_rss_bytes = peak_rss if sys.platform == "darwin" else peak_rss * 1024
     return {
         **asdict(scenario),
         "elapsed_seconds": elapsed,
@@ -146,7 +185,7 @@ def _run_scenario(scenario: Scenario) -> dict[str, object]:
         "transaction_p95_seconds": _percentile(durations, 0.95),
         "transaction_max_seconds": max(durations),
         "python_peak_allocated_bytes": python_peak,
-        "process_peak_rss_bytes": peak_rss_bytes,
+        "process_peak_rss_bytes": _process_peak_rss_bytes(),
     }
 
 

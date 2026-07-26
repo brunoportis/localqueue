@@ -45,3 +45,8 @@ def test_ingestion_benchmark_matrix_covers_review_dimensions() -> None:
 def test_transaction_percentile_uses_nearest_rank() -> None:
     module = _benchmark_module()
     assert module._percentile([0.4, 0.1, 0.3, 0.2], 0.95) == 0.4
+
+
+def test_process_peak_rss_is_reported_as_bytes() -> None:
+    module = _benchmark_module()
+    assert module._process_peak_rss_bytes() > 0
