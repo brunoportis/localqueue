@@ -1,0 +1,7 @@
+import_id,external_id,name,email,phone
+demo-v1,EXT-001,  Alice Almeida  ,ALICE@EXAMPLE.COM,+1 555 010 0001
+demo-v1,EXT-002,Bob Brown,bob@example.com,+1 555 010 0002
+demo-v1,EXT-001,  Alice Almeida  ,ALICE@EXAMPLE.COM,+1 555 010 0001
+demo-v1,EXT-003,Carol Clark,invalid@example.com,+1 555 010 0003
+demo-v1,EXT-004,Dana Diaz,flaky@example.com,+1 555 010 0004
+demo-v1,EXT-005,Erik Evans,throttled@example.com,+1 555 010 0005
