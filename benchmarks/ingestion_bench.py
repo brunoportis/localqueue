@@ -132,15 +132,27 @@ def _process_peak_rss_bytes() -> int:
             ("peak_pagefile_usage", ctypes.c_size_t),
         ]
 
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_current_process = kernel32.GetCurrentProcess
+    get_current_process.argtypes = []
+    get_current_process.restype = wintypes.HANDLE
+
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    get_process_memory_info = psapi.GetProcessMemoryInfo
+    get_process_memory_info.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(ProcessMemoryCounters),
+        wintypes.DWORD,
+    ]
+    get_process_memory_info.restype = wintypes.BOOL
+
     counters = ProcessMemoryCounters()
     counters.cb = ctypes.sizeof(counters)
-    success = ctypes.windll.psapi.GetProcessMemoryInfo(
-        ctypes.windll.kernel32.GetCurrentProcess(),
-        ctypes.byref(counters),
-        counters.cb,
+    success = get_process_memory_info(
+        get_current_process(), ctypes.byref(counters), counters.cb
     )
     if not success:
-        raise ctypes.WinError()
+        raise ctypes.WinError(ctypes.get_last_error())
     return int(counters.peak_working_set_size)
 
 
