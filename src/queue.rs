@@ -20,9 +20,17 @@ type EnqueueIdentityEntry = (
     Option<String>,
     Option<String>,
 );
-type CheckpointUpdateTuple = (String, String, Option<i64>, String, Option<String>, i64);
+type CheckpointUpdateTuple = (
+    String,
+    String,
+    Option<String>,
+    Option<i64>,
+    String,
+    Option<String>,
+    i64,
+);
 type EnqueueOutcomes = Vec<(i64, bool)>;
-type CheckpointInspectTuple = (String, Option<String>, i64, i64, i64, i64, i64);
+type CheckpointInspectTuple = (String, Option<String>, String, i64, i64, i64, i64, i64);
 
 #[derive(Debug, Clone)]
 #[pyclass(skip_from_py_object)]
@@ -298,13 +306,13 @@ impl NativeQueue {
     /// Same as `_enqueue_batch_with_identity`, plus an optional durable
     /// ingestion checkpoint committed in the same transaction.
     ///
-    /// `checkpoint` is `(bus_name, checkpoint_name, expected_version,
-    /// new_cursor, source_fingerprint, items_committed)`; `expected_version`
-    /// `None` creates the checkpoint at version 1, `Some(v)` is a
-    /// compare-and-swap on the stored version. A mismatch raises
+    /// `checkpoint` is `(bus_name, checkpoint_name, expected_generation,
+    /// expected_version, new_cursor, source_fingerprint, items_committed)`.
+    /// Both expected tokens are `None` when creating the checkpoint; otherwise
+    /// they compare-and-swap the immutable generation and stored version. A mismatch raises
     /// `CheckpointConflict` and rolls back the whole batch. Returns
-    /// `(outcomes, new_version)` where `new_version` is `None` when no
-    /// checkpoint was given.
+    /// `(outcomes, generation, new_version)`, where the latter two values are
+    /// `None` when no checkpoint was given.
     #[pyo3(name = "_enqueue_batch_with_identity_and_checkpoint")]
     pub fn enqueue_batch_with_identity_and_checkpoint(
         &self,
@@ -312,7 +320,7 @@ impl NativeQueue {
         entries: Vec<EnqueueIdentityEntry>,
         capacity: Option<Vec<(String, i64)>>,
         checkpoint: Option<CheckpointUpdateTuple>,
-    ) -> PyResult<(EnqueueOutcomes, Option<i64>)> {
+    ) -> PyResult<(EnqueueOutcomes, Option<String>, Option<i64>)> {
         if let Some(policies) = &capacity {
             for (_, max_pending) in policies {
                 if *max_pending < 1 {
@@ -348,6 +356,7 @@ impl NativeQueue {
                 |(
                     bus_name,
                     checkpoint_name,
+                    expected_generation,
                     expected_version,
                     new_cursor,
                     source_fingerprint,
@@ -355,13 +364,14 @@ impl NativeQueue {
                 )| CheckpointUpdate {
                     bus_name,
                     checkpoint_name,
+                    expected_generation,
                     expected_version,
                     new_cursor,
                     source_fingerprint,
                     items_committed,
                 },
             );
-            let (outcomes, new_version) = self.storage.enqueue_batch_outcomes_with_checkpoint(
+            let (outcomes, commit) = self.storage.enqueue_batch_outcomes_with_checkpoint(
                 &entries,
                 self.max_attempts,
                 &policies,
@@ -373,13 +383,15 @@ impl NativeQueue {
                     .into_iter()
                     .map(|outcome| (outcome.id, outcome.inserted))
                     .collect(),
-                new_version,
+                commit.as_ref().map(|commit| commit.generation.clone()),
+                commit.map(|commit| commit.version),
             ))
         })
     }
 
     /// Read one ingestion checkpoint row as `(cursor, source_fingerprint,
-    /// version, items_committed, batches_committed, created_at, updated_at)`,
+    /// generation, version, items_committed, batches_committed, created_at,
+    /// updated_at)`,
     /// or `None` if it does not exist.
     #[pyo3(name = "_checkpoint_inspect")]
     pub fn checkpoint_inspect(
@@ -396,6 +408,7 @@ impl NativeQueue {
                     (
                         snapshot.cursor,
                         snapshot.source_fingerprint,
+                        snapshot.generation,
                         snapshot.version,
                         snapshot.items_committed,
                         snapshot.batches_committed,

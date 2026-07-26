@@ -72,10 +72,12 @@ pub enum QueueError {
     #[error("conflicting capacity policies for the same queue")]
     ConflictingCapacityPolicies,
 
-    #[error("checkpoint conflict on '{checkpoint_name}': expected version {expected_version:?}, found {actual_version:?}")]
+    #[error("checkpoint conflict on '{checkpoint_name}': expected generation {expected_generation:?} version {expected_version:?}, found generation {actual_generation:?} version {actual_version:?}")]
     CheckpointConflict {
         checkpoint_name: String,
+        expected_generation: Option<String>,
         expected_version: Option<i64>,
+        actual_generation: Option<String>,
         actual_version: Option<i64>,
     },
 

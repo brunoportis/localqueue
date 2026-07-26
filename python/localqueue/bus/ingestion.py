@@ -68,9 +68,9 @@ class CheckpointProgress:
     """Progress of one resumable ``EventBus.ingest(..., checkpoint=...)`` run.
 
     ``start_cursor`` is the persisted cursor the run resumed from (``None``
-    when no checkpoint existed); ``end_cursor`` is the cursor of the last
-    committed batch (``None`` when nothing committed). ``resumed`` reports
-    whether a checkpoint row already existed when the run started.
+    when no checkpoint existed); ``end_cursor`` is the effective cursor after
+    the run. When no batch commits, it equals ``start_cursor``. ``resumed``
+    reports whether a checkpoint row already existed when the run started.
     """
 
     name: str
@@ -129,11 +129,11 @@ class IngestionCheckpoint(Generic[_ContextT]):
         return CheckpointState(
             cursor=row[0],
             source_fingerprint=row[1],
-            version=row[2],
-            items_committed=row[3],
-            batches_committed=row[4],
-            created_at=row[5],
-            updated_at=row[6],
+            version=row[3],
+            items_committed=row[4],
+            batches_committed=row[5],
+            created_at=row[6],
+            updated_at=row[7],
         )
 
     def reset(self) -> bool:
@@ -188,6 +188,7 @@ class _CheckpointTracker:
 
     name: str
     fingerprint: str | None
+    expected_generation: str | None
     expected_version: int | None
     end_cursor: str | None
 
@@ -527,6 +528,7 @@ async def _commit_resumable_group(
                     (
                         bus.name,
                         tracker.name,
+                        tracker.expected_generation,
                         tracker.expected_version,
                         cursor,
                         tracker.fingerprint,
@@ -535,7 +537,7 @@ async def _commit_resumable_group(
                 )
             )
             try:
-                outcomes, new_version = await asyncio.shield(commit)
+                outcomes, new_generation, new_version = await asyncio.shield(commit)
             except asyncio.CancelledError:
                 # A Python task cannot stop SQLite work already running in a
                 # worker thread. Do not expose cancellation while that commit
@@ -572,6 +574,7 @@ async def _commit_resumable_group(
             # Temporary backpressure. CancelledError propagates immediately.
             await asyncio.sleep(delay)
             delay = min(delay * _BACKOFF_MULTIPLIER, _BACKOFF_CAP_SECONDS)
+    tracker.expected_generation = new_generation
     tracker.expected_version = new_version
     tracker.end_cursor = cursor
     offset = 0
@@ -628,10 +631,17 @@ async def run_resumable_ingestion(
 
     # Inspect the checkpoint before the source is opened, so a fingerprint
     # mismatch aborts before any item is consumed.
-    stored = bus._get_native()._checkpoint_inspect(bus.name, checkpoint)
     fingerprint = source.fingerprint
+    if fingerprint is not None and not isinstance(fingerprint, str):
+        raise TypeError("'source.fingerprint' must be a string or None")
+    stored = bus._get_native()._checkpoint_inspect(bus.name, checkpoint)
     if stored is not None:
-        start_cursor, stored_fingerprint, version = stored[0], stored[1], stored[2]
+        start_cursor, stored_fingerprint, generation, version = (
+            stored[0],
+            stored[1],
+            stored[2],
+            stored[3],
+        )
         if stored_fingerprint != fingerprint:
             raise SourceChanged(
                 f"checkpoint {checkpoint!r} was recorded for source fingerprint "
@@ -639,14 +649,17 @@ async def run_resumable_ingestion(
                 f"{fingerprint!r}; reset the checkpoint to re-ingest"
             )
         expected_version: int | None = version
+        expected_generation: str | None = generation
         resumed = True
     else:
         start_cursor = None
+        expected_generation = None
         expected_version = None
         resumed = False
     tracker = _CheckpointTracker(
         name=checkpoint,
         fingerprint=fingerprint,
+        expected_generation=expected_generation,
         expected_version=expected_version,
         end_cursor=start_cursor,
     )

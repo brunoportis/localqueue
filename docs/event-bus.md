@@ -859,9 +859,11 @@ can therefore create duplicate deliveries.
 
 When a checkpoint already has a source fingerprint, the next source must
 provide the same fingerprint or ingestion raises `SourceChanged` before it
-opens or consumes the source. Concurrent ingesters use a checkpoint version
-compare-and-swap: one may commit a prepared batch; the other receives
-`CheckpointConflict` and inserts none of that batch. A capacity split is by
+opens or consumes the source. Concurrent ingesters use a checkpoint generation
+and version compare-and-swap: one may commit a prepared batch; the other
+receives `CheckpointConflict` and inserts none of that batch. Resetting and
+recreating a checkpoint creates a new internal generation, so an older
+ingester can never advance the new import. A capacity split is by
 source items, so every successful half advances only through its own final
 cursor. Even a batch with no routes (when `require_subscribers=False`) or
 only deduplicated deliveries advances the checkpoint.
@@ -869,7 +871,8 @@ only deduplicated deliveries advances the checkpoint.
 The first source, transform, serialization, routing, or native error stops the
 run. There is no `continue_on_error`, invalid-item skip policy, or partial
 result on failure. With a checkpoint, `IngestionResult.checkpoint` reports the
-run's start cursor, final committed cursor, and whether it resumed.
+run's start cursor, effective final cursor, and whether it resumed. If no
+batch commits, the final cursor equals the start cursor.
 
 The returned `IngestionResult` aggregates counters for the run:
 

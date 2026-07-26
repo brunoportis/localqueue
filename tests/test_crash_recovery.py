@@ -18,6 +18,7 @@ HARNESS = Path(__file__).with_name("crash_harness.py")
 CRASH_SCENARIOS = (
     "enqueue-after-begin",
     "enqueue-before-commit",
+    "resumable-ingest-before-commit",
     "claim-before-commit",
     "ack-before-commit",
     "ack-fanout-before-commit",
@@ -67,7 +68,12 @@ def test_precommit_crash_recovery_is_atomic(scenario: str, tmp_path: Path) -> No
         pytest.skip("requires the explicit __crash_test extension build")
     report = _run_harness(scenario, tmp_path / f"{scenario}.json")
     assert report["schema_version"] == 1
-    assert report["failpoint"] == scenario
+    expected_failpoint = (
+        "enqueue-before-commit"
+        if scenario == "resumable-ingest-before-commit"
+        else scenario
+    )
+    assert report["failpoint"] == expected_failpoint
     assert report["child_exit_mode"] == "signal"
     assert report["synchronization_reached"] is True
     assert report["integrity_check"] == "ok"

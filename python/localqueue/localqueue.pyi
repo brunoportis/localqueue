@@ -114,13 +114,15 @@ class NativeQueue:
         self,
         entries: list[tuple[str, bytes, Optional[str], Optional[str], Optional[str]]],
         capacity: Optional[list[tuple[str, int]]],
-        checkpoint: Optional[tuple[str, str, Optional[int], str, Optional[str], int]],
-    ) -> tuple[list[tuple[int, bool]], Optional[int]]: ...
+        checkpoint: Optional[
+            tuple[str, str, Optional[str], Optional[int], str, Optional[str], int]
+        ],
+    ) -> tuple[list[tuple[int, bool]], Optional[str], Optional[int]]: ...
     def _checkpoint_inspect(
         self,
         bus_name: str,
         checkpoint_name: str,
-    ) -> Optional[tuple[str, Optional[str], int, int, int, int, int]]: ...
+    ) -> Optional[tuple[str, Optional[str], str, int, int, int, int, int]]: ...
     def _checkpoint_reset(self, bus_name: str, checkpoint_name: str) -> bool: ...
     def ack_and_fanout(
         self,

@@ -36,6 +36,12 @@ SCENARIOS: dict[str, dict[str, Any]] = {
         "initial": COUNTS_ZERO,
         "expected": COUNTS_ZERO,
     },
+    "resumable-ingest-before-commit": {
+        "failpoint": "enqueue-before-commit",
+        "operation": "resumable-ingest",
+        "initial": COUNTS_ZERO,
+        "expected": COUNTS_ZERO,
+    },
     "claim-before-commit": {
         "failpoint": "claim-before-commit",
         "operation": "claim",
@@ -100,39 +106,63 @@ SCENARIOS: dict[str, dict[str, Any]] = {
 
 CHILD_CODE = r"""
 from localqueue import DeliveryPolicy, SimpleQueue
-queue = SimpleQueue(
-    DB_PATH,
-    delivery=DeliveryPolicy(lease_seconds=60.0, max_retries=3),
-    max_pending_jobs=1 if OPERATION == "enqueue" else None,
-)
-if FAILPOINT:
-    hook = getattr(queue._native, "_test_configure_failpoint")
-    hook(FAILPOINT, CONTROL_ADDRESS)
+if OPERATION == "resumable-ingest":
+    import asyncio
+    from localqueue.bus import BaseEvent, BusTopology, EventBus, SequenceSource
 
-if OPERATION == "enqueue":
-    queue.put({"scenario": SCENARIO})
-elif OPERATION == "claim":
-    queue.get(block=False)
-else:
-    job = queue.get(block=False)
-    if OPERATION == "ack":
-        queue.ack(job)
-    elif OPERATION == "ack-fanout":
-        queue._ack_and_fanout(
-            job,
-            payload=b'{"derived":true}',
-            targets=[
-                ("target", "derived-id", None, None),
-                ("target-2", "derived-id", None, None),
-            ],
+    class CrashEvent(BaseEvent):
+        event_name = "crash.resumable-ingest"
+        seq: int
+
+    bus = EventBus(
+        DB_PATH,
+        name="crash",
+        topology=BusTopology({"sink": ["*"]}),
+        delivery=DeliveryPolicy(lease_seconds=60.0, max_retries=3),
+    )
+    if FAILPOINT:
+        bus._native_queue._test_configure_failpoint(FAILPOINT, CONTROL_ADDRESS)
+    asyncio.run(
+        bus.ingest(
+            SequenceSource([CrashEvent(seq=1)], fingerprint="crash-source"),
+            checkpoint="import",
         )
-    elif OPERATION == "nack":
-        queue.nack(job, last_error="crash-harness")
-    elif OPERATION == "fail":
-        queue.fail(job, "crash-harness")
+    )
+    bus.close()
+else:
+    queue = SimpleQueue(
+        DB_PATH,
+        delivery=DeliveryPolicy(lease_seconds=60.0, max_retries=3),
+        max_pending_jobs=1 if OPERATION == "enqueue" else None,
+    )
+    if FAILPOINT:
+        hook = getattr(queue._native, "_test_configure_failpoint")
+        hook(FAILPOINT, CONTROL_ADDRESS)
+
+    if OPERATION == "enqueue":
+        queue.put({"scenario": SCENARIO})
+    elif OPERATION == "claim":
+        queue.get(block=False)
     else:
-        raise ValueError(OPERATION)
-queue.close()
+        job = queue.get(block=False)
+        if OPERATION == "ack":
+            queue.ack(job)
+        elif OPERATION == "ack-fanout":
+            queue._ack_and_fanout(
+                job,
+                payload=b'{"derived":true}',
+                targets=[
+                    ("target", "derived-id", None, None),
+                    ("target-2", "derived-id", None, None),
+                ],
+            )
+        elif OPERATION == "nack":
+            queue.nack(job, last_error="crash-harness")
+        elif OPERATION == "fail":
+            queue.fail(job, "crash-harness")
+        else:
+            raise ValueError(OPERATION)
+    queue.close()
 """
 
 VALIDATOR_CODE = r"""
@@ -147,6 +177,13 @@ with sqlite3.connect(DB_PATH + "/localqueue.db") as connection:
     ).fetchall()
     target_count = connection.execute(
         "SELECT COUNT(*) FROM messages WHERE queue IN ('target', 'target-2')"
+    ).fetchone()[0]
+    resumable_delivery_count = connection.execute(
+        "SELECT COUNT(*) FROM messages WHERE queue = '__bus__:crash:sink'"
+    ).fetchone()[0]
+    resumable_checkpoint_count = connection.execute(
+        "SELECT COUNT(*) FROM ingestion_checkpoints "
+        "WHERE bus_name = 'crash' AND checkpoint_name = 'import'"
     ).fetchone()[0]
 counts = {"ready": 0, "processing": 0, "acked": 0, "failed": 0}
 for status, count in rows:
@@ -176,7 +213,7 @@ elif CHECK_RECEIPT and counts["processing"]:
 else:
     recovery["processable_after_reopen"] = True
 queue.close()
-print(json.dumps({"integrity_check": integrity, "observed_counts": counts, "target_count": target_count, "recovery": recovery}))
+print(json.dumps({"integrity_check": integrity, "observed_counts": counts, "target_count": target_count, "resumable_delivery_count": resumable_delivery_count, "resumable_checkpoint_count": resumable_checkpoint_count, "recovery": recovery}))
 """
 
 
@@ -202,7 +239,7 @@ def _prepare(path: Path, operation: str) -> None:
     queue = SimpleQueue(
         str(path), delivery=DeliveryPolicy(lease_seconds=60.0, max_retries=3)
     )
-    if operation != "enqueue":
+    if operation not in {"enqueue", "resumable-ingest"}:
         queue.put({"scenario": "crash-harness"})
     queue.close()
 
@@ -334,6 +371,16 @@ def run(scenario: str, output: Path) -> int:
                     report["observed_counts"] == report["expected_counts"]
                     and validation["target_count"] == 0,
                     "uncommitted work is not visible after reopen",
+                ),
+                _invariant(
+                    "resumable_ingestion_is_atomic",
+                    (
+                        validation["resumable_delivery_count"] == 0
+                        and validation["resumable_checkpoint_count"] == 0
+                    )
+                    if definition["operation"] == "resumable-ingest"
+                    else True,
+                    "crashed resumable ingestion leaves neither delivery nor checkpoint",
                 ),
                 _invariant(
                     "recovery_remains_processable",

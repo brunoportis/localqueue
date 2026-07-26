@@ -85,6 +85,19 @@ class SpySource:
         return self._inner.open(cursor)
 
 
+class InvalidFingerprintSource:
+    """Source that proves validation happens before ``open``."""
+
+    fingerprint = 123
+
+    def __init__(self) -> None:
+        self.open_calls: list[str | None] = []
+
+    def open(self, cursor):
+        self.open_calls.append(cursor)
+        return []
+
+
 class FailingSource:
     """ResumableSource that raises mid-iteration, after committed batches."""
 
@@ -276,11 +289,24 @@ class TestResumableCommit:
                 self.singles += 1
                 if self.singles == 2:
                     raise RuntimeError("second half died")
-                bus_name, name, expected, cursor, fingerprint, item_count = checkpoint
-                assert (bus_name, name, expected) == ("test", "import", None)
+                (
+                    bus_name,
+                    name,
+                    expected_generation,
+                    expected_version,
+                    cursor,
+                    fingerprint,
+                    item_count,
+                ) = checkpoint
+                assert (bus_name, name, expected_generation, expected_version) == (
+                    "test",
+                    "import",
+                    None,
+                    None,
+                )
                 self.entries.extend(entries)
-                self.state = (cursor, fingerprint, 1, item_count, 1, 0, 0)
-                return ([(index + 1, True) for index in range(len(entries))], 1)
+                self.state = (cursor, fingerprint, "generation", 1, item_count, 1, 0, 0)
+                return ([(index + 1, True) for index in range(len(entries))], "generation", 1)
 
             def close(self):
                 original_native.close()
@@ -332,6 +358,16 @@ class TestCheckpointGuards:
         finally:
             bus.close()
 
+    def test_invalid_fingerprint_raises_before_opening_source(self, tmp_path):
+        bus = make_bus(tmp_path / "bus")
+        source = InvalidFingerprintSource()
+        try:
+            with pytest.raises(TypeError, match=r"source\.fingerprint.*string or None"):
+                run(bus.ingest(source, checkpoint="import"))
+            assert source.open_calls == []
+        finally:
+            bus.close()
+
     def test_checkpoint_conflict_propagates(self, tmp_path, monkeypatch):
         bus = make_bus(tmp_path / "bus")
         native = bus._native_queue
@@ -353,9 +389,17 @@ class TestCheckpointGuards:
                 )
                 if not self.bumped:
                     self.bumped = True
-                    bus_name, name, _expected, cursor, fingerprint, _n = checkpoint
+                    (
+                        bus_name,
+                        name,
+                        _expected_generation,
+                        _expected_version,
+                        cursor,
+                        fingerprint,
+                        _n,
+                    ) = checkpoint
                     native._enqueue_batch_with_identity_and_checkpoint(
-                        [], None, (bus_name, name, result[1], cursor, fingerprint, 0)
+                        [], None, (bus_name, name, result[1], result[2], cursor, fingerprint, 0)
                     )
                 return result
 
