@@ -249,16 +249,24 @@ class TestResumableCommit:
         self, tmp_path, monkeypatch
     ):
         bus = make_bus(tmp_path / "bus")
-        native = bus._native_queue
+        original_native = bus._native_queue
 
         class SplitThenFail:
-            """Split any multi-entry batch; fail the second half outright."""
+            """Native boundary fake that splits once and fails its second half.
+
+            ``_commit_resumable_group`` invokes the native boundary in a
+            worker thread. Keeping this fake fully in Python avoids making a
+            thread-affinity test of the PyO3 object while still asserting the
+            source-item split and checkpoint arguments passed to that boundary.
+            """
 
             def __init__(self) -> None:
                 self.singles = 0
+                self.entries = []
+                self.state = None
 
             def _checkpoint_inspect(self, bus_name, checkpoint_name):
-                return native._checkpoint_inspect(bus_name, checkpoint_name)
+                return self.state
 
             def _enqueue_batch_with_identity_and_checkpoint(
                 self, entries, capacity, checkpoint
@@ -268,14 +276,17 @@ class TestResumableCommit:
                 self.singles += 1
                 if self.singles == 2:
                     raise RuntimeError("second half died")
-                return native._enqueue_batch_with_identity_and_checkpoint(
-                    entries, capacity, checkpoint
-                )
+                bus_name, name, expected, cursor, fingerprint, item_count = checkpoint
+                assert (bus_name, name, expected) == ("test", "import", None)
+                self.entries.extend(entries)
+                self.state = (cursor, fingerprint, 1, item_count, 1, 0, 0)
+                return ([(index + 1, True) for index in range(len(entries))], 1)
 
             def close(self):
-                return native.close()
+                original_native.close()
 
-        monkeypatch.setattr(bus, "_native_queue", SplitThenFail())
+        native = SplitThenFail()
+        monkeypatch.setattr(bus, "_native_queue", native)
         try:
             with pytest.raises(RuntimeError, match="second half died"):
                 run(
@@ -292,7 +303,9 @@ class TestResumableCommit:
             assert state is not None
             assert state.cursor == "1"
             assert state.items_committed == 1
-            assert queue_seqs(tmp_path / "bus", S1) == [1]
+            assert [
+                json.loads(entry[1])["payload"]["seq"] for entry in native.entries
+            ] == [1]
         finally:
             bus.close()
 
