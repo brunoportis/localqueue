@@ -345,6 +345,13 @@ async def _commit_group(
             # Temporary backpressure. CancelledError propagates immediately.
             await asyncio.sleep(delay)
             delay = min(delay * _BACKOFF_MULTIPLIER, _BACKOFF_CAP_SECONDS)
+        except _native.LocalQueueError as error:
+            # `close()` can run after the native handle was captured above but
+            # before its worker-thread call begins. Preserve EventBus's public
+            # closed-bus error instead of leaking that native timing detail.
+            if bus._native_queue is None:
+                raise RuntimeError("event bus is closed") from error
+            raise
     offset = 0
     for dispatch in group:
         for _message_id, inserted in outcomes[
@@ -574,6 +581,11 @@ async def _commit_resumable_group(
             # Temporary backpressure. CancelledError propagates immediately.
             await asyncio.sleep(delay)
             delay = min(delay * _BACKOFF_MULTIPLIER, _BACKOFF_CAP_SECONDS)
+        except _native.LocalQueueError as error:
+            # See `_commit_group`: close may race with a queued native call.
+            if bus._native_queue is None:
+                raise RuntimeError("event bus is closed") from error
+            raise
     tracker.expected_generation = new_generation
     tracker.expected_version = new_version
     tracker.end_cursor = cursor
