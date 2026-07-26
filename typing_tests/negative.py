@@ -165,3 +165,4 @@ async def run_bad_ingestion() -> None:
     await bus.ingest(rows, transform=bad_transform)
     await bus.ingest(rows, transform=other_row_transform)
     await bus.ingest(42)
+    await bus.ingest([1, 2, 3], checkpoint="import:v1")

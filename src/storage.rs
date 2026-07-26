@@ -9,7 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::error::{QueueError, Result};
-use crate::schema::{BASE_SCHEMA_SQL, SCHEMA_SQL};
+use crate::schema::{BASE_SCHEMA_SQL, CHECKPOINTS_SCHEMA_SQL, SCHEMA_SQL};
 
 pub(crate) const BUSY_TIMEOUT_MS: u64 = 5_000;
 
@@ -32,6 +32,29 @@ pub struct EnqueueOutcome {
 pub struct CapacityPolicy<'a> {
     pub queue_name: &'a str,
     pub max_pending_jobs: i64,
+}
+
+/// Durable ingestion checkpoint update applied in the same transaction as the
+/// batch inserts. `expected_version = None` means the checkpoint must be
+/// created; `Some(v)` is a compare-and-swap on the stored version.
+pub struct CheckpointUpdate {
+    pub bus_name: String,
+    pub checkpoint_name: String,
+    pub expected_version: Option<i64>,
+    pub new_cursor: String,
+    pub source_fingerprint: Option<String>,
+    pub items_committed: i64,
+}
+
+/// Read-only view of a stored ingestion checkpoint row.
+pub struct CheckpointSnapshot {
+    pub cursor: String,
+    pub source_fingerprint: Option<String>,
+    pub version: i64,
+    pub items_committed: i64,
+    pub batches_committed: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 pub struct Storage {
@@ -64,6 +87,7 @@ impl Storage {
         migrate_failure_reason(&mut conn)?;
         migrate_failure_category(&mut conn)?;
         migrate_event_identity(&mut conn)?;
+        migrate_ingestion_checkpoints(&mut conn)?;
 
         Ok(Self {
             conn: Mutex::new(Some(conn)),
@@ -114,8 +138,34 @@ impl Storage {
         capacity: &[CapacityPolicy<'_>],
         busy_timeout_ms: Option<u64>,
     ) -> Result<Vec<EnqueueOutcome>> {
-        if entries.is_empty() {
-            return Ok(Vec::new());
+        Ok(self
+            .enqueue_batch_outcomes_with_checkpoint(
+                entries,
+                max_attempts,
+                capacity,
+                busy_timeout_ms,
+                None,
+            )?
+            .0)
+    }
+
+    /// Same as `enqueue_batch_outcomes`, plus an optional durable ingestion
+    /// checkpoint applied in the same transaction, after the delivery inserts
+    /// and before the commit. A checkpoint conflict rolls back the inserts.
+    ///
+    /// Unlike the checkpoint-less path, an empty `entries` with a checkpoint
+    /// still opens the transaction and advances the checkpoint (checkpoint-only
+    /// commit). Returns the outcomes and the confirmed checkpoint version.
+    pub fn enqueue_batch_outcomes_with_checkpoint(
+        &self,
+        entries: &[EnqueueEntry<'_>],
+        max_attempts: i64,
+        capacity: &[CapacityPolicy<'_>],
+        busy_timeout_ms: Option<u64>,
+        checkpoint: Option<&CheckpointUpdate>,
+    ) -> Result<(Vec<EnqueueOutcome>, Option<i64>)> {
+        if entries.is_empty() && checkpoint.is_none() {
+            return Ok((Vec::new(), None));
         }
 
         let mut guard = self.connection();
@@ -124,10 +174,61 @@ impl Storage {
         match busy_timeout_ms {
             Some(timeout) => {
                 let mut attempt = self.open_attempt_connection(timeout)?;
-                enqueue_batch_on_connection(&mut attempt, entries, max_attempts, capacity)
+                enqueue_batch_on_connection(
+                    &mut attempt,
+                    entries,
+                    max_attempts,
+                    capacity,
+                    checkpoint,
+                )
             }
-            None => enqueue_batch_on_connection(primary, entries, max_attempts, capacity),
+            None => {
+                enqueue_batch_on_connection(primary, entries, max_attempts, capacity, checkpoint)
+            }
         }
+    }
+
+    /// Read one ingestion checkpoint row, or `None` if it does not exist.
+    pub fn checkpoint_inspect(
+        &self,
+        bus_name: &str,
+        checkpoint_name: &str,
+    ) -> Result<Option<CheckpointSnapshot>> {
+        let guard = self.connection();
+        let conn = guard.as_ref().ok_or(QueueError::Closed)?;
+        conn.query_row(
+            "SELECT cursor, source_fingerprint, version,
+                    items_committed, batches_committed, created_at, updated_at
+             FROM ingestion_checkpoints
+             WHERE bus_name = ?1 AND checkpoint_name = ?2",
+            params![bus_name, checkpoint_name],
+            |row| {
+                Ok(CheckpointSnapshot {
+                    cursor: row.get(0)?,
+                    source_fingerprint: row.get(1)?,
+                    version: row.get(2)?,
+                    items_committed: row.get(3)?,
+                    batches_committed: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(QueueError::from)
+    }
+
+    /// Delete one ingestion checkpoint row. Returns whether it existed.
+    /// Never touches the `messages` table.
+    pub fn checkpoint_reset(&self, bus_name: &str, checkpoint_name: &str) -> Result<bool> {
+        let guard = self.connection();
+        let conn = guard.as_ref().ok_or(QueueError::Closed)?;
+        let changed = conn.execute(
+            "DELETE FROM ingestion_checkpoints
+             WHERE bus_name = ?1 AND checkpoint_name = ?2",
+            params![bus_name, checkpoint_name],
+        )?;
+        Ok(changed == 1)
     }
 
     pub fn ack_and_fanout(
@@ -314,6 +415,24 @@ fn migrate_event_identity(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_ingestion_checkpoints(conn: &mut Connection) -> Result<()> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ingestion_checkpoints'
+        )",
+        [],
+        |row| row.get(0),
+    )?;
+    if exists {
+        return Ok(());
+    }
+
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    tx.execute_batch(CHECKPOINTS_SCHEMA_SQL)?;
+    tx.commit()?;
+    Ok(())
+}
+
 fn has_column(conn: &Connection, expected: &str) -> Result<bool> {
     let mut statement = conn.prepare("PRAGMA table_info(messages)")?;
     let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
@@ -341,7 +460,8 @@ fn enqueue_batch_on_connection(
     entries: &[EnqueueEntry<'_>],
     max_attempts: i64,
     capacity: &[CapacityPolicy<'_>],
-) -> Result<Vec<EnqueueOutcome>> {
+    checkpoint: Option<&CheckpointUpdate>,
+) -> Result<(Vec<EnqueueOutcome>, Option<i64>)> {
     let now = now_ms();
 
     let tx = conn
@@ -355,10 +475,108 @@ fn enqueue_batch_on_connection(
 
     let ids = insert_entries_in_transaction(&tx, entries, max_attempts, now)?;
 
+    let new_version = match checkpoint {
+        Some(update) => Some(apply_checkpoint_update(&tx, update, now)?),
+        None => None,
+    };
+
     #[cfg(feature = "__crash_test")]
     crate::failpoints::hit(crate::failpoints::Failpoint::EnqueueBeforeCommit);
     tx.commit().map_err(QueueError::from)?;
-    Ok(ids)
+    Ok((ids, new_version))
+}
+
+/// Apply one ingestion checkpoint update inside the open transaction.
+///
+/// `expected_version = None` creates the row at version 1; `Some(v)` bumps the
+/// stored version only if it still equals `v`. Any mismatch raises
+/// `CheckpointConflict`, which propagates before the commit and rolls back the
+/// whole transaction, including the delivery inserts.
+fn apply_checkpoint_update(
+    tx: &Transaction<'_>,
+    update: &CheckpointUpdate,
+    now: i64,
+) -> Result<i64> {
+    let conflict = |actual_version: Option<i64>| QueueError::CheckpointConflict {
+        checkpoint_name: update.checkpoint_name.clone(),
+        expected_version: update.expected_version,
+        actual_version,
+    };
+
+    match update.expected_version {
+        None => {
+            let result = tx.execute(
+                "INSERT INTO ingestion_checkpoints (
+                    bus_name, checkpoint_name, cursor, source_fingerprint,
+                    version, items_committed, batches_committed,
+                    created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, 1, ?5, 1, ?6, ?6)",
+                params![
+                    update.bus_name,
+                    update.checkpoint_name,
+                    update.new_cursor,
+                    update.source_fingerprint,
+                    update.items_committed,
+                    now,
+                ],
+            );
+            match result {
+                Ok(_) => Ok(1),
+                Err(rusqlite::Error::SqliteFailure(ref failure, _))
+                    if failure.code == ErrorCode::ConstraintViolation =>
+                {
+                    Err(conflict(stored_checkpoint_version(
+                        tx,
+                        &update.bus_name,
+                        &update.checkpoint_name,
+                    )?))
+                }
+                Err(error) => Err(error.into()),
+            }
+        }
+        Some(expected) => {
+            let changed = tx.execute(
+                "UPDATE ingestion_checkpoints SET
+                    cursor = ?3,
+                    version = version + 1,
+                    items_committed = items_committed + ?4,
+                    batches_committed = batches_committed + 1,
+                    updated_at = ?5
+                 WHERE bus_name = ?1 AND checkpoint_name = ?2 AND version = ?6",
+                params![
+                    update.bus_name,
+                    update.checkpoint_name,
+                    update.new_cursor,
+                    update.items_committed,
+                    now,
+                    expected,
+                ],
+            )?;
+            if changed == 0 {
+                return Err(conflict(stored_checkpoint_version(
+                    tx,
+                    &update.bus_name,
+                    &update.checkpoint_name,
+                )?));
+            }
+            Ok(expected + 1)
+        }
+    }
+}
+
+fn stored_checkpoint_version(
+    tx: &Transaction<'_>,
+    bus_name: &str,
+    checkpoint_name: &str,
+) -> Result<Option<i64>> {
+    tx.query_row(
+        "SELECT version FROM ingestion_checkpoints
+         WHERE bus_name = ?1 AND checkpoint_name = ?2",
+        params![bus_name, checkpoint_name],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(QueueError::from)
 }
 
 /// Identity used for capacity planning: within a queue, entries sharing an
@@ -1996,6 +2214,230 @@ mod tests {
         check_bounded_attempt_connection_preserves_confirmation_boundary();
         check_retry_failed_checks_identity_before_capacity_and_updates_atomically();
         check_closed_storage_rejects_capacity_operations();
+    }
+
+    fn checkpoint_update(expected_version: Option<i64>, items: i64) -> CheckpointUpdate {
+        CheckpointUpdate {
+            bus_name: "bus".to_owned(),
+            checkpoint_name: "ingest".to_owned(),
+            expected_version,
+            new_cursor: format!("cursor-{items}"),
+            source_fingerprint: Some("fp".to_owned()),
+            items_committed: items,
+        }
+    }
+
+    fn entry(payload: &'static [u8]) -> EnqueueEntry<'static> {
+        EnqueueEntry {
+            queue_name: "q",
+            payload,
+            job_id: None,
+            dedup_key: None,
+            dedup_fingerprint: None,
+        }
+    }
+
+    fn count_messages(storage: &Storage) -> i64 {
+        let guard = storage.connection();
+        guard
+            .as_ref()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn checkpoint_criado_com_expected_version_none() {
+        let (_dir, storage) = open_storage();
+        let entries = [entry(b"a")];
+
+        let (outcomes, version) = storage
+            .enqueue_batch_outcomes_with_checkpoint(
+                &entries,
+                3,
+                &[],
+                None,
+                Some(&checkpoint_update(None, 1)),
+            )
+            .unwrap();
+
+        assert_eq!(outcomes.len(), 1);
+        assert!(outcomes[0].inserted);
+        assert_eq!(version, Some(1));
+        let snapshot = storage
+            .checkpoint_inspect("bus", "ingest")
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.cursor, "cursor-1");
+        assert_eq!(snapshot.source_fingerprint.as_deref(), Some("fp"));
+        assert_eq!(snapshot.version, 1);
+        assert_eq!(snapshot.items_committed, 1);
+        assert_eq!(snapshot.batches_committed, 1);
+        assert_eq!(snapshot.created_at, snapshot.updated_at);
+    }
+
+    #[test]
+    fn checkpoint_avanca_via_cas_e_acumula_contadores() {
+        let (_dir, storage) = open_storage();
+        storage
+            .enqueue_batch_outcomes_with_checkpoint(
+                &[],
+                3,
+                &[],
+                None,
+                Some(&checkpoint_update(None, 5)),
+            )
+            .unwrap();
+
+        let (_, version) = storage
+            .enqueue_batch_outcomes_with_checkpoint(
+                &[entry(b"a"), entry(b"b")],
+                3,
+                &[],
+                None,
+                Some(&checkpoint_update(Some(1), 2)),
+            )
+            .unwrap();
+
+        assert_eq!(version, Some(2));
+        let snapshot = storage
+            .checkpoint_inspect("bus", "ingest")
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.version, 2);
+        assert_eq!(snapshot.items_committed, 7);
+        assert_eq!(snapshot.batches_committed, 2);
+    }
+
+    #[test]
+    fn checkpoint_conflito_de_versao_faz_rollback_das_deliveries() {
+        let (_dir, storage) = open_storage();
+        storage
+            .enqueue_batch_outcomes_with_checkpoint(
+                &[],
+                3,
+                &[],
+                None,
+                Some(&checkpoint_update(None, 1)),
+            )
+            .unwrap();
+
+        let result = storage.enqueue_batch_outcomes_with_checkpoint(
+            &[entry(b"a"), entry(b"b")],
+            3,
+            &[],
+            None,
+            Some(&checkpoint_update(Some(99), 2)),
+        );
+
+        assert!(matches!(
+            result,
+            Err(QueueError::CheckpointConflict {
+                expected_version: Some(99),
+                actual_version: Some(1),
+                ..
+            })
+        ));
+        assert_eq!(count_messages(&storage), 0);
+        let snapshot = storage
+            .checkpoint_inspect("bus", "ingest")
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.version, 1);
+    }
+
+    #[test]
+    fn checkpoint_insert_duplicado_conflita_e_nao_insere_deliveries() {
+        let (_dir, storage) = open_storage();
+        storage
+            .enqueue_batch_outcomes_with_checkpoint(
+                &[],
+                3,
+                &[],
+                None,
+                Some(&checkpoint_update(None, 1)),
+            )
+            .unwrap();
+
+        let result = storage.enqueue_batch_outcomes_with_checkpoint(
+            &[entry(b"a")],
+            3,
+            &[],
+            None,
+            Some(&checkpoint_update(None, 1)),
+        );
+
+        assert!(matches!(
+            result,
+            Err(QueueError::CheckpointConflict {
+                expected_version: None,
+                actual_version: Some(1),
+                ..
+            })
+        ));
+        assert_eq!(count_messages(&storage), 0);
+    }
+
+    #[test]
+    fn checkpoint_only_commit_com_entries_vazio() {
+        let (_dir, storage) = open_storage();
+
+        let (outcomes, version) = storage
+            .enqueue_batch_outcomes_with_checkpoint(
+                &[],
+                3,
+                &[],
+                None,
+                Some(&checkpoint_update(None, 0)),
+            )
+            .unwrap();
+
+        assert!(outcomes.is_empty());
+        assert_eq!(version, Some(1));
+        assert_eq!(count_messages(&storage), 0);
+        assert!(storage
+            .checkpoint_inspect("bus", "ingest")
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn enqueue_sem_checkpoint_mantem_early_return() {
+        let (_dir, storage) = open_storage();
+
+        let (outcomes, version) = storage
+            .enqueue_batch_outcomes_with_checkpoint(&[], 3, &[], None, None)
+            .unwrap();
+
+        assert!(outcomes.is_empty());
+        assert_eq!(version, None);
+    }
+
+    #[test]
+    fn checkpoint_inspect_ausente_e_reset() {
+        let (_dir, storage) = open_storage();
+        assert!(storage
+            .checkpoint_inspect("bus", "ingest")
+            .unwrap()
+            .is_none());
+        assert!(!storage.checkpoint_reset("bus", "ingest").unwrap());
+
+        storage
+            .enqueue_batch_outcomes_with_checkpoint(
+                &[entry(b"a")],
+                3,
+                &[],
+                None,
+                Some(&checkpoint_update(None, 1)),
+            )
+            .unwrap();
+        assert!(storage.checkpoint_reset("bus", "ingest").unwrap());
+        assert!(storage
+            .checkpoint_inspect("bus", "ingest")
+            .unwrap()
+            .is_none());
+        // Reset não toca em messages.
+        assert_eq!(count_messages(&storage), 1);
     }
 
     // Guard mínimo de diretório temporário para os testes, sem dependência nova.

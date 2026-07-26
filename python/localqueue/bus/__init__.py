@@ -12,12 +12,19 @@ from localqueue.bus.context import ContextFactory, HandlerContext, RuntimeContex
 from localqueue.bus.control import Reject, Retry
 from localqueue.bus.deadletter import FailedDelivery
 from localqueue.bus.event import BaseEvent, InvalidEventIdentity, event
-from localqueue.bus.ingestion import IngestionResult
+from localqueue.bus.ingestion import (
+    CheckpointProgress,
+    CheckpointState,
+    IngestionCheckpoint,
+    IngestionResult,
+    SourceChanged,
+)
 from localqueue.bus.registry import EVENT_REGISTRY, EventRegistry
 from localqueue.bus.retry import RetryPolicy
+from localqueue.bus.sources import ResumableSource, SequenceSource, SourceRecord
 from localqueue.bus.subscription import Subscription
 from localqueue.bus.topology import BusTopology
-from localqueue.exceptions import DeduplicationConflict
+from localqueue.exceptions import CheckpointConflict, DeduplicationConflict
 
 __all__ = [
     "EVENT_REGISTRY",
@@ -25,18 +32,26 @@ __all__ = [
     "event",
     "InvalidEventIdentity",
     "BusTopology",
+    "CheckpointConflict",
+    "CheckpointProgress",
+    "CheckpointState",
     "ContextFactory",
     "DispatchReceipt",
     "DeduplicationConflict",
     "EventBus",
     "FailedDelivery",
     "HandlerContext",
+    "IngestionCheckpoint",
     "IngestionResult",
     "EventRegistry",
     "NoSubscribers",
     "Reject",
+    "ResumableSource",
     "Retry",
     "RetryPolicy",
     "RuntimeContext",
+    "SequenceSource",
+    "SourceChanged",
+    "SourceRecord",
     "Subscription",
 ]

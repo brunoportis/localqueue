@@ -811,18 +811,65 @@ CSV reader or CPU-heavy transform can delay unrelated async tasks. Use an
 `AsyncIterable`, an async transform, or explicitly offload blocking work.
 
 Ingestion is incremental and batch-atomic, not all-or-nothing: batches
-committed before a later failure stay committed. There is no checkpoint or
-resume in this version; restarting a generic source re-consumes it from the
-start. Events with a durable identity (`@event(identity=...)`) are
-deduplicated on re-ingestion, so re-running an identified source is safe;
-events without identity are new occurrences. Future resumable sources will
-handle checkpoints explicitly.
+committed before a later failure stay committed. A generic iterable has no
+resume position and is therefore always re-consumed from the start. Events
+with a durable identity (`@event(identity=...)`) are deduplicated on
+re-ingestion; events without identity are new occurrences.
+
+### Durable resumable ingestion
+
+Use `SequenceSource` (or another `ResumableSource`) with a named checkpoint
+for imports that must continue after a process stop. Each source record owns
+an opaque cursor meaning “start after this item”. Deliveries, cursor advance,
+and checkpoint counters commit in one SQLite transaction.
+
+```python
+from localqueue.bus import SequenceSource
+
+source = SequenceSource(rows, fingerprint="contacts-export-2026-07-25")
+result = await bus.ingest(
+    source,
+    transform=to_contact_event,
+    checkpoint="contacts-import:v1",
+    batch_size=1_000,
+    max_pending=50_000,
+)
+print(result.checkpoint)
+```
+
+`SequenceSource` does not copy or materialize the sequence. Its cursor is the
+decimal index of the next item, so cursor `"3200000"` resumes directly at
+index 3,200,000. Custom sources implement `open(cursor)` and yield
+`SourceRecord(value, cursor)`; both synchronous and asynchronous iteration
+are supported.
+
+Inspect or reset a checkpoint through the bus:
+
+```python
+checkpoint = bus.checkpoint("contacts-import:v1")
+state = checkpoint.inspect()
+if state is not None:
+    print(state.cursor, state.items_committed, state.batches_committed)
+checkpoint.reset()
+```
+
+`reset()` removes only the stored source position. It never removes already
+inserted deliveries. Resetting and rerunning events without a durable identity
+can therefore create duplicate deliveries.
+
+When a checkpoint already has a source fingerprint, the next source must
+provide the same fingerprint or ingestion raises `SourceChanged` before it
+opens or consumes the source. Concurrent ingesters use a checkpoint version
+compare-and-swap: one may commit a prepared batch; the other receives
+`CheckpointConflict` and inserts none of that batch. A capacity split is by
+source items, so every successful half advances only through its own final
+cursor. Even a batch with no routes (when `require_subscribers=False`) or
+only deduplicated deliveries advances the checkpoint.
 
 The first source, transform, serialization, routing, or native error stops the
-run. There is no `continue_on_error`, invalid-item skip policy, partial result,
-or source position in `IngestionResult`. For multi-million-item imports,
-`ingest()` is therefore a batch-dispatch primitive; applications that need
-restartable ingestion must own checkpoints and error policy around it.
+run. There is no `continue_on_error`, invalid-item skip policy, or partial
+result on failure. With a checkpoint, `IngestionResult.checkpoint` reports the
+run's start cursor, final committed cursor, and whether it resumed.
 
 The returned `IngestionResult` aggregates counters for the run:
 

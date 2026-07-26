@@ -25,9 +25,15 @@ from localqueue import localqueue as _native
 from localqueue.bus.context import ContextFactory, ContextT
 from localqueue.bus.event import BaseEvent, event_type_of
 from localqueue.bus.identity import business_payload, prepare_event_persistence
-from localqueue.bus.ingestion import IngestionResult, run_ingestion
+from localqueue.bus.ingestion import (
+    IngestionCheckpoint,
+    IngestionResult,
+    run_ingestion,
+    run_resumable_ingestion,
+)
 from localqueue.bus.registry import EVENT_REGISTRY, EventRegistry
 from localqueue.bus.retry import RetryPolicy
+from localqueue.bus.sources import ResumableSource
 from localqueue.bus.subscription import Subscription
 from localqueue.bus.topology import (
     WILDCARD,
@@ -795,6 +801,28 @@ class EventBus(Generic[ContextT]):
     @overload
     async def ingest(
         self,
+        source: ResumableSource[EventT],
+        *,
+        checkpoint: str,
+        transform: None = None,
+        batch_size: int = 1_000,
+        max_pending: int | None = None,
+    ) -> IngestionResult: ...
+
+    @overload
+    async def ingest(
+        self,
+        source: ResumableSource[ItemT],
+        *,
+        checkpoint: str,
+        transform: Callable[[ItemT], EventT | Awaitable[EventT]],
+        batch_size: int = 1_000,
+        max_pending: int | None = None,
+    ) -> IngestionResult: ...
+
+    @overload
+    async def ingest(
+        self,
         source: Iterable[EventT] | AsyncIterable[EventT],
         *,
         transform: None = None,
@@ -814,8 +842,9 @@ class EventBus(Generic[ContextT]):
 
     async def ingest(
         self,
-        source: Iterable[object] | AsyncIterable[object],
+        source: object,
         *,
+        checkpoint: str | None = None,
         transform: Callable[[object], object] | None = None,
         batch_size: int = 1_000,
         max_pending: int | None = None,
@@ -846,7 +875,17 @@ class EventBus(Generic[ContextT]):
         not). Temporary backpressure retries with bounded async backoff; a
         batch that can never fit is split into order-preserving halves.
 
-        There is no checkpoint/resume in this version: restarting a generic
+        With ``checkpoint`` (a durable checkpoint name scoped to this bus),
+        ``source`` must satisfy the ``ResumableSource`` protocol: each item
+        is a ``SourceRecord`` carrying the cursor positioned after it, and
+        every committed batch atomically persists the cursor of its last
+        item in the same native transaction. A rerun inspects the checkpoint
+        before opening the source, resumes from the stored cursor, and
+        raises ``SourceChanged`` — before consuming any item — when the
+        stored source fingerprint differs from ``source.fingerprint``. Use
+        ``bus.checkpoint(name)`` to inspect or reset the stored position.
+
+        Without ``checkpoint`` there is no resume: restarting a generic
         source re-consumes it from the beginning. Events that opt into
         durable identity are deduplicated on re-ingestion; events without
         identity are persisted as new occurrences.
@@ -856,13 +895,34 @@ class EventBus(Generic[ContextT]):
         commit; once cancellation is observed by the caller, no commit
         remains running in the background.
         """
+        if checkpoint is not None:
+            return await run_resumable_ingestion(
+                self,
+                cast(ResumableSource[object], source),
+                checkpoint=checkpoint,
+                transform=transform,
+                batch_size=batch_size,
+                max_pending=max_pending,
+            )
         return await run_ingestion(
             self,
-            source,
+            cast(Iterable[object] | AsyncIterable[object], source),
             transform=transform,
             batch_size=batch_size,
             max_pending=max_pending,
         )
+
+    def checkpoint(self, name: str) -> IngestionCheckpoint[ContextT]:
+        """Return a handle to inspect or reset one ingestion checkpoint.
+
+        The checkpoint is identified by ``name`` within this bus. Resetting
+        only removes the stored position; committed deliveries are kept.
+        """
+        if isinstance(name, bool) or not isinstance(name, str):
+            raise TypeError("'name' must be a non-empty string")
+        if not name:
+            raise ValueError("'name' must be a non-empty string")
+        return IngestionCheckpoint(self, name)
 
     def _open_subscription_queue(self, subscription: str) -> SimpleQueue[object]:
         # EventBus is the only producer for subscription queues and always
