@@ -495,12 +495,13 @@ impl NativeQueue {
         })
     }
 
-    #[pyo3(signature = (lease_ms, max_attempts = None))]
+    #[pyo3(signature = (lease_ms, max_attempts = None, busy_timeout_ms = None))]
     pub fn get(
         &self,
         py: Python<'_>,
         lease_ms: i64,
         max_attempts: Option<i64>,
+        busy_timeout_ms: Option<u64>,
     ) -> PyResult<Option<Lease>> {
         if matches!(max_attempts, Some(attempts) if attempts < 1) {
             return Err(pyo3::exceptions::PyValueError::new_err(
@@ -512,7 +513,14 @@ impl NativeQueue {
             let lease_until = now + lease_ms;
             let receipt = generate_receipt();
             let mut guard = self.conn()?;
-            let conn = guard.as_mut().unwrap();
+            // A non-blocking Python get must not inherit the queue's normal
+            // SQLite busy timeout. Use a short-lived connection for that
+            // attempt so the reusable connection keeps its configured policy.
+            let mut attempt = match busy_timeout_ms {
+                Some(timeout) => Some(self.storage.open_attempt_connection(timeout)?),
+                None => None,
+            };
+            let conn = attempt.as_mut().unwrap_or_else(|| guard.as_mut().unwrap());
 
             // Keep a genuinely idle queue on the read-only path. Besides
             // avoiding two unnecessary UPDATEs, this prevents every poll from

@@ -139,7 +139,10 @@ class NativeQueue:
         targets: list[tuple[str, Optional[str], Optional[str], Optional[str]]],
     ) -> list[tuple[int, bool]]: ...
     def get(
-        self, lease_ms: int, max_attempts: Optional[int] = None
+        self,
+        lease_ms: int,
+        max_attempts: Optional[int] = None,
+        busy_timeout_ms: Optional[int] = None,
     ) -> Optional[Lease]: ...
     def ack(self, id: int, receipt: str) -> None: ...
     def nack(

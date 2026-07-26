@@ -310,7 +310,14 @@ class SimpleQueue(Generic[_PayloadT]):
         lease_ms = int(self.delivery.lease_seconds * 1000)
 
         if not block:
-            lease = self._get_native().get(lease_ms, max_attempts)
+            try:
+                # Preserve the public non-blocking contract even when another
+                # SQLite connection temporarily owns the writer lock.
+                lease = self._get_native().get(lease_ms, max_attempts, 0)
+            except LocalQueueError as error:
+                if str(error) in {"database is busy", "database is locked"}:
+                    raise Empty("queue is temporarily unavailable") from error
+                raise
             if lease is None:
                 raise Empty("queue is empty")
             return self._to_job(lease)
