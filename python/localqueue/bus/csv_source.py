@@ -21,7 +21,8 @@ import json
 import os
 import sys
 from collections.abc import Iterator, Mapping
-from typing import Any, override
+from dataclasses import asdict, dataclass
+from typing import Any, cast, override
 
 from localqueue.bus.sources import SourceRecord
 
@@ -32,6 +33,15 @@ _CURSOR_VERSION = 1
 # The csv module exposes no __version__; its behavior is tied to the
 # interpreter, so the parser identity is the Python major.minor version.
 _PARSER_VERSION = f"python-csv/{sys.version_info.major}.{sys.version_info.minor}"
+
+_DIALECT_ATTRIBUTES = (
+    "delimiter",
+    "quotechar",
+    "doublequote",
+    "escapechar",
+    "quoting",
+    "skipinitialspace",
+)
 
 
 class CsvSourceError(Exception):
@@ -77,7 +87,7 @@ class CsvRow(Mapping[str, str]):
     def __init__(
         self, data: dict[str, str], *, record_number: int, line_number: int
     ) -> None:
-        self._data = data
+        self._data = dict(data)
         self._record_number = record_number
         self._line_number = line_number
 
@@ -117,25 +127,41 @@ def _snapshot_from_stat(stat_result: os.stat_result) -> dict[str, Any]:
     }
 
 
-def _dialect_config(dialect: str | csv.Dialect) -> Any:
-    if isinstance(dialect, str):
-        return {"name": dialect}
-    return {
-        "parameters": {
-            "delimiter": dialect.delimiter,
-            "quotechar": dialect.quotechar,
-            "doublequote": dialect.doublequote,
-            "escapechar": dialect.escapechar,
-            "lineterminator": dialect.lineterminator,
-            "quoting": dialect.quoting,
-            "skipinitialspace": dialect.skipinitialspace,
-        }
-    }
+@dataclass(frozen=True, slots=True)
+class _CsvFormat:
+    """Effective parser configuration, frozen at construction time.
+
+    Resolved once from the dialect (a name looked up via
+    ``csv.get_dialect`` or a ``csv.Dialect`` instance) plus the
+    ``delimiter``/``strict`` overrides. Used both in the fingerprint and
+    to build the ``csv.reader`` — the dialect name is never re-resolved
+    at ``open`` time, so re-registering the name later cannot change an
+    existing source.
+    """
+
+    delimiter: str
+    quotechar: str | None
+    doublequote: bool
+    escapechar: str | None
+    quoting: int
+    skipinitialspace: bool
+    strict: bool
 
 
 def _canonical_hash(payload: dict[str, Any]) -> str:
     serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _is_dialect_like(value: object) -> bool:
+    """Return whether ``value`` is a dialect returned by the csv module.
+
+    ``csv.get_dialect()`` returns the C implementation's private Dialect
+    type, which is not an ``isinstance(..., csv.Dialect)`` on every Python
+    version.  The public reader API accepts it, so accept the same effective
+    dialect shape here.
+    """
+    return all(hasattr(value, attribute) for attribute in _DIALECT_ATTRIBUTES)
 
 
 class CsvSource:
@@ -147,12 +173,15 @@ class CsvSource:
 
     ``fingerprint=None`` computes an automatic fingerprint from the file
     snapshot (size, mtime, device/inode — never the full content) plus the
-    parser version and parsing configuration; the file must exist at
-    construction time in this mode. A user-provided ``fingerprint`` string
-    is an external identity: it is combined with the parsing configuration
-    only (changing ``delimiter`` still changes the fingerprint), the file
-    snapshot is excluded, and modification between runs is not detected by
-    the fingerprint — but the during-run immutability check still applies.
+    parser version and the frozen parsing configuration. A user-provided
+    ``fingerprint`` string is an external identity: it is combined with
+    the parsing configuration only (changing ``delimiter`` still changes
+    the fingerprint) and the snapshot is excluded from the hash, so
+    modification between runs is not detected by the fingerprint. In both
+    modes the file must exist at construction time and the snapshot still
+    protects the construction → open → EOF window: ``open`` re-stats the
+    open descriptor and compares it with the construction snapshot, and
+    re-checks it again at EOF, raising :class:`CsvSourceError` on change.
     """
 
     def __init__(
@@ -170,7 +199,7 @@ class CsvSource:
             raise TypeError("'path' must be a string or os.PathLike")
         if not isinstance(encoding, str):
             raise TypeError("'encoding' must be a string")
-        if not isinstance(dialect, (str, csv.Dialect)):
+        if not isinstance(dialect, str) and not _is_dialect_like(dialect):
             raise TypeError("'dialect' must be a string or csv.Dialect")
         if delimiter is not None and not isinstance(delimiter, str):
             raise TypeError("'delimiter' must be a string or None")
@@ -185,33 +214,28 @@ class CsvSource:
 
         self._path = os.fspath(path)
         self._encoding = encoding
-        self._dialect = dialect
-        self._delimiter = delimiter
+        self._format = self._resolve_format(path, dialect, delimiter, strict)
         self._fieldnames = list(fieldnames) if fieldnames is not None else None
-        self._strict = strict
 
         config = {
             "parser": _PARSER_VERSION,
             "encoding": encoding,
-            "dialect": _dialect_config(dialect),
-            "delimiter": self._effective_delimiter(),
+            "format": asdict(self._format),
             "header": self._fieldnames if self._fieldnames is not None else "header",
         }
+        try:
+            stat_result = os.stat(self._path)
+        except OSError as error:
+            raise CsvSourceError(self._path, "cannot stat file", cause=error) from error
+        self._snapshot = _snapshot_from_stat(stat_result)
         if fingerprint is not None:
-            # External identity: replaces the file snapshot, still combined
-            # with the parsing configuration.
+            # External identity: replaces the file snapshot in the hash,
+            # still combined with the parsing configuration. The snapshot
+            # is still captured above and guards construction → open → EOF.
             self.fingerprint = _canonical_hash(
                 {"external": fingerprint, "config": config}
             )
-            self._snapshot: dict[str, Any] | None = None
         else:
-            try:
-                stat_result = os.stat(self._path)
-            except OSError as error:
-                raise CsvSourceError(
-                    self._path, "cannot stat file", cause=error
-                ) from error
-            self._snapshot = _snapshot_from_stat(stat_result)
             self.fingerprint = _canonical_hash(
                 {"snapshot": self._snapshot, "config": config}
             )
@@ -226,17 +250,55 @@ class CsvSource:
 
     # -- internals ---------------------------------------------------------
 
-    def _effective_delimiter(self) -> str:
-        if self._delimiter is not None:
-            return self._delimiter
-        if isinstance(self._dialect, csv.Dialect):
-            return self._dialect.delimiter
-        try:
-            return csv.get_dialect(self._dialect).delimiter
-        except csv.Error as error:
+    def _resolve_format(
+        self,
+        path: str | os.PathLike[str],
+        dialect: str | csv.Dialect,
+        delimiter: str | None,
+        strict: bool,
+    ) -> _CsvFormat:
+        resolved: Any
+        if isinstance(dialect, str):
+            try:
+                resolved = csv.get_dialect(dialect)
+            except csv.Error as error:
+                raise CsvSourceError(
+                    path, f"unknown csv dialect {dialect!r}", cause=error
+                ) from error
+        else:
+            resolved = dialect
+        effective_delimiter = delimiter if delimiter is not None else resolved.delimiter
+        if not isinstance(effective_delimiter, str) or len(effective_delimiter) != 1:
             raise CsvSourceError(
-                self._path, f"unknown csv dialect {self._dialect!r}", cause=error
-            ) from error
+                path,
+                f"'delimiter' must be a single character, "
+                f"found {effective_delimiter!r}",
+            )
+        quotechar = resolved.quotechar
+        if (
+            quotechar is not None
+            and (not isinstance(quotechar, str) or len(quotechar) != 1)
+        ):
+            raise CsvSourceError(
+                path, "dialect quotechar must be a single character or None"
+            )
+        escapechar = resolved.escapechar
+        if (
+            escapechar is not None
+            and (not isinstance(escapechar, str) or len(escapechar) != 1)
+        ):
+            raise CsvSourceError(
+                path, "dialect escapechar must be a single character or None"
+            )
+        return _CsvFormat(
+            delimiter=effective_delimiter,
+            quotechar=quotechar,
+            doublequote=bool(resolved.doublequote),
+            escapechar=escapechar,
+            quoting=int(resolved.quoting),
+            skipinitialspace=bool(resolved.skipinitialspace),
+            strict=strict,
+        )
 
     def _validate_fieldnames(
         self, path: str | os.PathLike[str], fieldnames: list[str] | tuple[str, ...]
@@ -274,21 +336,29 @@ class CsvSource:
             or cookie < 0
             or not isinstance(record, int)
             or isinstance(record, bool)
+            or record < 0
             or not isinstance(line, int)
             or isinstance(line, bool)
+            or line < 0
         ):
             raise CsvSourceError(self._path, f"invalid cursor {cursor!r}")
         return cookie, record, line
 
     def _make_reader(self, stream: Any) -> Any:
-        kwargs: dict[str, Any] = {"dialect": self._dialect, "strict": self._strict}
-        if self._delimiter is not None:
-            kwargs["delimiter"] = self._delimiter
         try:
             # Feed the reader through readline() only: iterating the
             # TextIOWrapper directly would invalidate tell()/seek().
-            return csv.reader(iter(stream.readline, ""), **kwargs)
-        except (csv.Error, LookupError) as error:
+            return csv.reader(
+                iter(stream.readline, ""),
+                delimiter=self._format.delimiter,
+                quotechar=self._format.quotechar,
+                doublequote=self._format.doublequote,
+                escapechar=self._format.escapechar,
+                quoting=cast(Any, self._format.quoting),
+                skipinitialspace=self._format.skipinitialspace,
+                strict=self._format.strict,
+            )
+        except (csv.Error, TypeError) as error:
             raise CsvSourceError(
                 self._path, "cannot create csv reader", cause=error
             ) from error
@@ -316,7 +386,7 @@ class CsvSource:
                 raise CsvSourceError(
                     self._path, "cannot stat open file", cause=error
                 ) from error
-            if self._snapshot is not None and open_snapshot != self._snapshot:
+            if open_snapshot != self._snapshot:
                 raise CsvSourceError(
                     self._path,
                     "file changed between CsvSource construction and open()",
@@ -335,14 +405,12 @@ class CsvSource:
                 reader = self._make_reader(stream)
             else:
                 cookie, record_number, base_line = position
-                if cookie > open_snapshot["size"]:
-                    raise CsvSourceError(
-                        self._path,
-                        f"cursor cookie {cookie} is past the end of the file",
-                    )
+                # The cookie is an opaque TextIOWrapper position, not a byte
+                # offset: with stateful encodings a valid cookie may exceed
+                # the file size, so it is never compared against st_size.
                 try:
                     stream.seek(cookie)
-                except OSError as error:
+                except (OSError, ValueError, OverflowError) as error:
                     raise CsvSourceError(
                         self._path,
                         f"cannot seek to cursor cookie {cookie}",

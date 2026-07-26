@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import json
 import sqlite3
 from pathlib import Path
@@ -89,6 +90,20 @@ class CountingCsvSource(CsvSource):
                 return row
 
         return CountingReader()
+
+
+class CloseTrackingCsvSource(CsvSource):
+    """CsvSource that exposes whether its current stream was closed."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.closed = False
+
+    def _iterate(self, stream, position):
+        try:
+            yield from super()._iterate(stream, position)
+        finally:
+            self.closed = stream.closed
 
 
 class TestCsvSourceBasics:
@@ -236,6 +251,29 @@ class TestCsvSourceResume:
         assert payload["record"] == 1
         assert payload["line"] == 2
 
+    def test_resume_with_utf16(self, tmp_path):
+        path = tmp_path / "data.csv"
+        path.write_bytes("a,b\n1,á\n2,é\n".encode("utf-16"))
+        source = CsvSource(path, encoding="utf-16")
+        iterator = source.open(None)
+        first = next(iterator)
+        iterator.close()
+
+        resumed = list(CsvSource(path, encoding="utf-16").open(first.cursor))
+        assert [record.value["a"] for record in resumed] == ["2"]
+
+    def test_resume_with_stateful_encoding_uses_opaque_cookie(self, tmp_path):
+        path = tmp_path / "data.csv"
+        path.write_bytes("a,b\n1,日本\n2,語\n".encode("iso2022_jp"))
+        source = CsvSource(path, encoding="iso2022_jp")
+        iterator = source.open(None)
+        first = next(iterator)
+        iterator.close()
+
+        assert json.loads(first.cursor)["cookie"] > path.stat().st_size
+        resumed = list(CsvSource(path, encoding="iso2022_jp").open(first.cursor))
+        assert [record.value["a"] for record in resumed] == ["2"]
+
 
 class TestCsvSourceErrors:
     def test_invalid_cursor_json(self, tmp_path):
@@ -257,12 +295,27 @@ class TestCsvSourceErrors:
         with pytest.raises(CsvSourceError, match="version"):
             list(source.open(cursor))
 
-    def test_cursor_past_end_of_file(self, tmp_path):
+    def test_invalid_cursor_cookie_is_normalized(self, tmp_path):
         path = write_csv(tmp_path / "data.csv", "a\n1\n")
         source = CsvSource(path)
-        cursor = json.dumps({"version": 1, "cookie": 10_000, "record": 1, "line": 2})
-        with pytest.raises(CsvSourceError, match="past the end"):
+        cursor = json.dumps({"version": 1, "cookie": 2**63, "record": 1, "line": 2})
+        with pytest.raises(CsvSourceError, match="cannot seek") as info:
             list(source.open(cursor))
+        assert isinstance(info.value.cause, OSError)
+
+    @pytest.mark.parametrize("field", ["record", "line"])
+    def test_cursor_rejects_negative_record_and_line(self, tmp_path, field):
+        path = write_csv(tmp_path / "data.csv", "a\n1\n")
+        cursor = {"version": 1, "cookie": 0, "record": 0, "line": 0}
+        cursor[field] = -1
+        with pytest.raises(CsvSourceError, match="invalid cursor"):
+            list(CsvSource(path).open(json.dumps(cursor)))
+
+    @pytest.mark.parametrize("delimiter", ["", "||"])
+    def test_invalid_delimiter_is_rejected_by_constructor(self, tmp_path, delimiter):
+        path = write_csv(tmp_path / "data.csv", "a,b\n1,2\n")
+        with pytest.raises(CsvSourceError, match="single character"):
+            CsvSource(path, delimiter=delimiter)
 
     def test_duplicate_header(self, tmp_path):
         path = write_csv(tmp_path / "dup.csv", "a,a\n1,2\n")
@@ -327,6 +380,13 @@ class TestCsvSourceErrors:
         with pytest.raises(CsvSourceError, match="changed"):
             list(source.open(None))
 
+    def test_external_fingerprint_still_detects_replacement_before_open(self, tmp_path):
+        path = write_csv(tmp_path / "data.csv", "a\n1\n")
+        source = CsvSource(path, fingerprint="job")
+        path.write_bytes(b"a\n1\n2\n")
+        with pytest.raises(CsvSourceError, match="changed"):
+            list(source.open(None))
+
     def test_invalid_constructor_arguments(self, tmp_path):
         path = write_csv(tmp_path / "data.csv", "a\n1\n")
         with pytest.raises(TypeError, match="'path'"):
@@ -383,6 +443,48 @@ class TestCsvSourceFingerprint:
         after = CsvSource(path, fingerprint="job").fingerprint
         assert before == after
 
+    def test_fingerprint_includes_strict_and_effective_dialect_options(self, tmp_path):
+        path = write_csv(tmp_path / "data.csv", "a,b\n1,2\n")
+        base = CsvSource(path)
+        assert base.fingerprint != CsvSource(path, strict=False).fingerprint
+        assert base.fingerprint != CsvSource(path, dialect="unix").fingerprint
+
+        class DifferentQuote(csv.Dialect):
+            delimiter = ","
+            quotechar = "'"
+            doublequote = True
+            escapechar = None
+            quoting = csv.QUOTE_MINIMAL
+            skipinitialspace = False
+            lineterminator = "\n"
+
+        class DifferentEscape(DifferentQuote):
+            quotechar = '"'
+            doublequote = False
+            escapechar = "\\"
+
+        assert base.fingerprint != CsvSource(path, dialect=DifferentQuote).fingerprint
+        assert base.fingerprint != CsvSource(path, dialect=DifferentEscape).fingerprint
+
+    def test_named_dialect_is_frozen_at_construction(self, tmp_path):
+        path = write_csv(tmp_path / "data.csv", "a;b\n1;2\n")
+        name = "csv-source-frozen-dialect"
+        csv.register_dialect(name, delimiter=";", quotechar='"')
+        try:
+            source = CsvSource(path, dialect=name)
+            fingerprint = source.fingerprint
+            csv.register_dialect(name, delimiter=",", quotechar="'")
+            assert source.fingerprint == fingerprint
+            assert [record.value["b"] for record in source.open(None)] == ["2"]
+        finally:
+            csv.unregister_dialect(name)
+
+    def test_accepts_standard_dialect_object(self, tmp_path):
+        path = write_csv(tmp_path / "data.csv", "a,b\n1,2\n")
+        assert [record.value["b"] for record in CsvSource(
+            path, dialect=csv.get_dialect("excel")
+        ).open(None)] == ["2"]
+
 
 class TestCsvRow:
     def test_mapping_behavior(self, tmp_path):
@@ -404,6 +506,12 @@ class TestCsvRow:
         assert row.line_number == 2
         with pytest.raises(AttributeError):
             row.record_number = 9
+
+    def test_copies_constructor_mapping(self):
+        data = {"cnpj": "1"}
+        row = CsvRow(data, record_number=1, line_number=2)
+        data["cnpj"] = "changed"
+        assert row["cnpj"] == "1"
 
 
 class TestCsvSourceStreaming:
@@ -475,6 +583,83 @@ class TestCsvSourceIngestion:
         finally:
             bus.close()
 
+
+class TestCsvSourceResourceClosure:
+    def test_normal_ingestion_closes_file(self, tmp_path):
+        path = write_csv(tmp_path / "contacts.csv", "cnpj,name\n1,Ana\n")
+        source = CloseTrackingCsvSource(path)
+        bus = make_bus(tmp_path / "bus")
+        try:
+            run(bus.ingest(source, checkpoint="import", transform=to_contact))
+            assert source.closed
+        finally:
+            bus.close()
+
+    def test_transform_failure_closes_file(self, tmp_path):
+        path = write_csv(tmp_path / "contacts.csv", "cnpj,name\n1,Ana\n")
+        source = CloseTrackingCsvSource(path)
+        bus = make_bus(tmp_path / "bus")
+        try:
+            with pytest.raises(RuntimeError, match="transform failed"):
+                run(
+                    bus.ingest(
+                        source,
+                        checkpoint="import",
+                        transform=lambda row: (_ for _ in ()).throw(
+                            RuntimeError("transform failed")
+                        ),
+                    )
+                )
+            assert source.closed
+        finally:
+            bus.close()
+
+    def test_source_failure_closes_file(self, tmp_path):
+        path = write_csv(tmp_path / "contacts.csv", "cnpj,name\n1,Ana\n2\n")
+        source = CloseTrackingCsvSource(path)
+        bus = make_bus(tmp_path / "bus")
+        try:
+            with pytest.raises(CsvSourceError, match="expected 2 columns"):
+                run(bus.ingest(source, checkpoint="import", transform=to_contact))
+            assert source.closed
+        finally:
+            bus.close()
+
+    def test_cancellation_and_bus_close_during_backpressure_close_file(self, tmp_path):
+        path = write_csv(tmp_path / "contacts.csv", "cnpj,name\n1,Ana\n2,Bob\n")
+
+        async def stop_ingestion(stop_bus: bool):
+            source = CloseTrackingCsvSource(path)
+            bus = make_bus(tmp_path / ("close-bus" if stop_bus else "cancel"))
+            try:
+                task = asyncio.create_task(
+                    bus.ingest(
+                        source,
+                        checkpoint="import",
+                        transform=to_contact,
+                        batch_size=1,
+                        max_pending=1,
+                    )
+                )
+                await asyncio.sleep(0.05)
+                if stop_bus:
+                    bus.close()
+                    with pytest.raises(RuntimeError, match="closed"):
+                        await task
+                else:
+                    task.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await task
+                assert source.closed
+            finally:
+                if bus._native_queue is not None:
+                    bus.close()
+
+        run(stop_ingestion(False))
+        run(stop_ingestion(True))
+
+
+class TestCsvSourceIngestion:
     def test_crash_and_resume_without_reprocessing(self, tmp_path):
         path = write_csv(
             tmp_path / "contacts.csv",
