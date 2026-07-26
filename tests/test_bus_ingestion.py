@@ -359,6 +359,31 @@ class TestSources:
         finally:
             bus.close()
 
+    def test_sync_source_is_closed_when_transform_fails(self, tmp_path):
+        bus = make_bus(tmp_path / "bus", {"s1": ["*"]})
+        closed = False
+
+        def source():
+            nonlocal closed
+            try:
+                yield 1
+            finally:
+                closed = True
+
+        try:
+            with pytest.raises(RuntimeError, match="transform failed"):
+                run(
+                    bus.ingest(
+                        source(),
+                        transform=lambda _: (_ for _ in ()).throw(
+                            RuntimeError("transform failed")
+                        ),
+                    )
+                )
+            assert closed
+        finally:
+            bus.close()
+
     def test_async_source_cancellation_propagates(self, tmp_path):
         bus = make_bus(tmp_path / "bus", {"s1": ["*"]})
         never = asyncio.Event()
@@ -379,6 +404,32 @@ class TestSources:
             run(main())
             # The first item was consumed but never committed.
             assert queue_seqs(tmp_path / "bus", S1) == []
+        finally:
+            bus.close()
+
+    def test_async_source_is_closed_when_ingestion_is_cancelled(self, tmp_path):
+        bus = make_bus(tmp_path / "bus", {"s1": ["*"]})
+        closed = False
+        never = asyncio.Event()
+
+        async def source():
+            nonlocal closed
+            try:
+                yield Ping(seq=1)
+                await never.wait()
+            finally:
+                closed = True
+
+        async def main():
+            task = asyncio.create_task(bus.ingest(source(), batch_size=10))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        try:
+            run(main())
+            assert closed
         finally:
             bus.close()
 

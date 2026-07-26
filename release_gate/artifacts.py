@@ -16,7 +16,7 @@ SMOKE_PASSED = "passed"
 SMOKE_BUILT = "built-not-smoke-tested"
 SMOKE_ARM64 = "artifact-validated-not-physical-smoke"
 SMOKE_NOT_APPLICABLE = "not-applicable"
-EXPECTED_CPYTHON_TAGS = frozenset({"cp310", "cp311", "cp312", "cp313", "cp314"})
+EXPECTED_CPYTHON_TAGS = frozenset({"cp311", "cp312", "cp313", "cp314"})
 
 
 class ArtifactError(ValueError):
@@ -265,8 +265,8 @@ def validate_distribution_matrix(inventory: list[Mapping[str, object]]) -> None:
             SMOKE_BUILT: expected_python - {"cp313"},
         },
     }
-    if len(wheels) != 25:
-        raise ArtifactError(f"expected 25 wheels, found {len(wheels)}")
+    if len(wheels) != 20:
+        raise ArtifactError(f"expected 20 wheels, found {len(wheels)}")
     unexpected_jobs = {
         str(item.get("build_job", ""))
         for item in wheels

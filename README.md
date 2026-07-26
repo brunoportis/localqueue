@@ -54,7 +54,7 @@ Using pip:
 python -m pip install localqueue
 ```
 
-`localqueue` requires Python 3.10 or newer.
+`localqueue` requires Python 3.11 or newer.
 
 Upgrading from 0.5.0 requires code and storage changes because 1.x is a
 backward-incompatible reimplementation. See

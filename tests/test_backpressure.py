@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 from localqueue import (
     DeliveryPolicy,
+    Empty,
     EnqueueItem,
     Full,
     LocalQueueError,
@@ -143,6 +144,33 @@ def _hold_writer_lock(path: str, ready: Any, release: Any) -> None:
     finally:
         connection.rollback()
         connection.close()
+
+
+def test_nonblocking_get_does_not_wait_for_sqlite_writer_lock(tmp_path: Path) -> None:
+    context = multiprocessing.get_context("spawn")
+    queue = SimpleQueue(str(tmp_path))
+    queue.put({"ready": True})
+    ready = context.Event()
+    release = context.Event()
+    blocker = context.Process(
+        target=_hold_writer_lock, args=(str(tmp_path), ready, release)
+    )
+    try:
+        blocker.start()
+        assert ready.wait(timeout=5)
+        started = time.monotonic()
+        with pytest.raises(Empty, match="temporarily unavailable"):
+            queue.get_nowait()
+        assert time.monotonic() - started < 1.0
+    finally:
+        release.set()
+        blocker.join(timeout=2)
+        if blocker.is_alive():
+            blocker.terminate()
+            blocker.join(timeout=2)
+        queue.close()
+
+    assert blocker.exitcode == 0
 
 
 def test_default_is_unlimited_and_existing_put_signature_is_preserved(

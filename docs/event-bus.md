@@ -874,6 +874,47 @@ result on failure. With a checkpoint, `IngestionResult.checkpoint` reports the
 run's start cursor, effective final cursor, and whether it resumed. If no
 batch commits, the final cursor equals the start cursor.
 
+#### CSV files with `CsvSource`
+
+`CsvSource` streams a CSV file as `CsvRow` records (immutable
+`Mapping[str, str]` with `record_number`/`line_number` metadata), ready for
+checkpointed ingestion:
+
+```python
+from localqueue.bus import CsvSource, CsvSourceError
+
+source = CsvSource("contacts.csv", delimiter=";")  # encoding="utf-8-sig" by default
+result = await bus.ingest(
+    source,
+    transform=to_contact_event,  # ContactCreationRequested(**row)
+    checkpoint="contacts-import:v1",
+    batch_size=1_000,
+)
+```
+
+The file must remain immutable for the whole ingestion run. `CsvSource`
+snapshots the open descriptor (size, mtime, device/inode) at `open()` and
+verifies it again at EOF; any change raises `CsvSourceError`. With the
+default automatic fingerprint, modifying or replacing the file between runs
+also changes the fingerprint, so the next `ingest` with the same checkpoint
+raises `SourceChanged`. An explicit `fingerprint="export-job:98f0c42"` is an
+external identity: it is combined with the parsing configuration (changing
+`delimiter` still changes the fingerprint) but ignores the file snapshot, so
+cross-run modification is not detected — the during-run check still applies.
+
+The cursor is an opaque, versioned JSON token wrapping the seekable cookie
+of `TextIOWrapper.tell()`. Resuming from a persisted cursor is a single O(1)
+`seek` — earlier records are never replayed, even across process restarts.
+The stream is only advanced via `readline()`, which keeps the cookie valid
+(including after quoted multi-line records).
+
+Parsing is strict by default: a header is expected (unless explicit
+`fieldnames` are given), duplicate header names, rows with a missing or
+extra column, blank lines, and malformed CSV all raise `CsvSourceError`
+with the path, record, and line in the message. Like any synchronous
+source, iteration runs on the event-loop thread — see the warning above
+about blocking work delaying unrelated async tasks.
+
 The returned `IngestionResult` aggregates counters for the run:
 
 ```python

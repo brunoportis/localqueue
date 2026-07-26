@@ -10,6 +10,7 @@ except ImportError as error:  # pragma: no cover
 from localqueue.bus.bus import DispatchReceipt, EventBus, NoSubscribers
 from localqueue.bus.context import ContextFactory, HandlerContext, RuntimeContext
 from localqueue.bus.control import Reject, Retry
+from localqueue.bus.csv_source import CsvRow, CsvSource, CsvSourceError
 from localqueue.bus.deadletter import FailedDelivery
 from localqueue.bus.event import BaseEvent, InvalidEventIdentity, event
 from localqueue.bus.ingestion import (
@@ -36,6 +37,9 @@ __all__ = [
     "CheckpointProgress",
     "CheckpointState",
     "ContextFactory",
+    "CsvRow",
+    "CsvSource",
+    "CsvSourceError",
     "DispatchReceipt",
     "DeduplicationConflict",
     "EventBus",

@@ -395,7 +395,7 @@ def _manifest(args: argparse.Namespace) -> dict[str, object]:
             "macOS x86_64",
             "macOS arm64",
             "Windows x86_64",
-            "CPython 3.10-3.14",
+            "CPython 3.11-3.14",
         ],
         "known_limitations": [
             "NFS and SMB are unsupported",

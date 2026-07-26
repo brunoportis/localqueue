@@ -289,7 +289,7 @@ impl Storage {
     /// The reusable connection is never reconfigured. Dropping this dedicated
     /// connection after `enqueue_batch_on_connection` succeeds cannot turn its
     /// already-confirmed commit into a cleanup error.
-    fn open_attempt_connection(&self, busy_timeout_ms: u64) -> Result<Connection> {
+    pub fn open_attempt_connection(&self, busy_timeout_ms: u64) -> Result<Connection> {
         let conn = Connection::open_with_flags(
             &self.path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_URI,

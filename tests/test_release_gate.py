@@ -216,16 +216,16 @@ def test_explicit_cpython_path_validator_checks_all_paths_and_summary(
     ("probe", "message"),
     [
         (
-            {"implementation": "pypy", "version": "3.10.1", "gil_disabled": False},
+            {"implementation": "pypy", "version": "3.11.1", "gil_disabled": False},
             "not CPython",
         ),
         (
-            {"implementation": "cpython", "version": "3.10.1", "gil_disabled": True},
+            {"implementation": "cpython", "version": "3.11.1", "gil_disabled": True},
             "free-threaded",
         ),
         (
-            {"implementation": "cpython", "version": "3.11.1", "gil_disabled": False},
-            "expected Python 3.10.x",
+            {"implementation": "cpython", "version": "3.12.1", "gil_disabled": False},
+            "expected 3.11.x",
         ),
     ],
 )
@@ -246,13 +246,13 @@ def test_explicit_cpython_path_validator_rejects_nonportable_interpreters(
         if command[1] == "--version":
             version = (
                 "3.11.1"
-                if tag == "cp310" and probe["version"] == "3.11.1"
+                if tag == "cp311" and probe["version"] == "3.12.1"
                 else f"{validate_cpython_paths.EXPECTED[tag]}.1"
             )
             return subprocess.CompletedProcess(command, 0, stdout=f"Python {version}\n")
         payload = (
             probe
-            if tag == "cp310"
+            if tag == "cp311"
             else {
                 "implementation": "cpython",
                 "version": f"{validate_cpython_paths.EXPECTED[tag]}.1",
@@ -267,7 +267,6 @@ def test_explicit_cpython_path_validator_rejects_nonportable_interpreters(
 
 
 REAL_ARM64_WHEEL_FILENAMES = (
-    "localqueue-1.3.0-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
     "localqueue-1.3.0-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
     "localqueue-1.3.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
     "localqueue-1.3.0-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
@@ -296,7 +295,7 @@ def test_arm64_build_job_accepts_real_compressed_manylinux_wheels(
     )
     assert "manylinux_2_17_aarch64" in diagnostics
     assert "manylinux2014_aarch64" in diagnostics
-    assert "cp310=1" in diagnostics and "cp314=1" in diagnostics
+    assert "cp311=1" in diagnostics and "cp314=1" in diagnostics
     assert SHA in diagnostics and VERSION in diagnostics
 
 
@@ -320,7 +319,7 @@ def test_wheel_job_diagnostics_append_to_summary_and_log(
 
     diagnostics = summary.read_text(encoding="utf-8")
     assert diagnostics.startswith("existing summary\n")
-    assert "cp310=1" in diagnostics and "cp314=1" in diagnostics
+    assert "cp311=1" in diagnostics and "cp314=1" in diagnostics
     assert "manylinux2014_aarch64" in capsys.readouterr().out
 
 
@@ -432,7 +431,7 @@ def test_inventory_rejects_duplicate_missing_and_wrong_version(tmp_path: Path) -
 def test_inventory_rejects_hash_change_and_is_deterministic(tmp_path: Path) -> None:
     names = [
         "localqueue-1.3.0-cp314-cp314-manylinux_2_17_x86_64.whl",
-        "localqueue-1.3.0-cp310-cp310-manylinux_2_17_x86_64.whl",
+        "localqueue-1.3.0-cp311-cp311-manylinux_2_17_x86_64.whl",
     ]
     for name in names:
         (tmp_path / name).write_bytes(name.encode())
@@ -492,7 +491,7 @@ def test_distribution_matrix_requires_truthful_per_wheel_smoke_status(
         "windows-x86_64": "win_amd64",
     }
     for job, platform in jobs.items():
-        for tag in ("cp310", "cp311", "cp312", "cp313", "cp314"):
+        for tag in ("cp311", "cp312", "cp313", "cp314"):
             path = tmp_path / f"localqueue-{VERSION}-{tag}-{tag}-{platform}.whl"
             path.write_bytes(path.name.encode())
             default = (
@@ -524,9 +523,9 @@ def test_distribution_matrix_requires_truthful_per_wheel_smoke_status(
 @pytest.mark.parametrize(
     ("replacement", "message"),
     [
-        ("localqueue-1.3.0-cp310-cp310-macosx_12_0_x86_64.whl", "platform"),
-        ("localqueue-1.3.0-cp310-cp310-manylinux_2_28_aarch64.whl", "platform"),
-        ("localqueue-1.3.0-cp310-abi3-manylinux_2_17_x86_64.whl", "ABI"),
+        ("localqueue-1.3.0-cp311-cp311-macosx_12_0_x86_64.whl", "platform"),
+        ("localqueue-1.3.0-cp311-cp311-manylinux_2_28_aarch64.whl", "platform"),
+        ("localqueue-1.3.0-cp311-abi3-manylinux_2_17_x86_64.whl", "ABI"),
     ],
 )
 def test_distribution_matrix_rejects_wrong_wheel_family(
@@ -541,9 +540,9 @@ def test_distribution_matrix_rejects_wrong_wheel_family(
         "windows-x86_64": "win_amd64",
     }
     for job, platform in jobs.items():
-        for tag in ("cp310", "cp311", "cp312", "cp313", "cp314"):
+        for tag in ("cp311", "cp312", "cp313", "cp314"):
             filename = f"localqueue-{VERSION}-{tag}-{tag}-{platform}.whl"
-            if job == "linux-x86_64" and tag == "cp310":
+            if job == "linux-x86_64" and tag == "cp311":
                 filename = replacement
             path = tmp_path / filename
             path.write_bytes(path.name.encode())
@@ -837,7 +836,7 @@ def minimal_manifest(tmp_path: Path) -> tuple[dict[str, object], Path]:
         "macos-arm64": "macosx_11_0_arm64",
         "windows-x86_64": "win_amd64",
     }
-    for python_tag in ("cp310", "cp311", "cp312", "cp313", "cp314"):
+    for python_tag in ("cp311", "cp312", "cp313", "cp314"):
         for job, platform in platforms.items():
             wheel_path = bundle / (
                 f"localqueue-{VERSION}-{python_tag}-{python_tag}-{platform}.whl"

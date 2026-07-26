@@ -194,8 +194,16 @@ class _CheckpointTracker:
 
 
 async def _iterate_async(iterator: AsyncIterator[object]) -> AsyncIterator[object]:
-    async for item in iterator:
-        yield item
+    try:
+        async for item in iterator:
+            yield item
+    finally:
+        # Deterministic cleanup: propagate aclose() to the wrapped async
+        # iterator so sources holding resources (e.g. open files) release
+        # them even when the run stops early.
+        aclose = getattr(iterator, "aclose", None)
+        if aclose is not None:
+            await aclose()
 
 
 async def _iterate_sync(iterator: Iterator[object]) -> AsyncIterator[object]:
@@ -203,11 +211,18 @@ async def _iterate_sync(iterator: Iterator[object]) -> AsyncIterator[object]:
     # per item. Blocking I/O sources should provide an AsyncIterable instead;
     # per-item next() is deliberately not wrapped in asyncio.to_thread so the
     # source is never read ahead of the current group.
-    while True:
-        try:
-            yield next(iterator)
-        except StopIteration:
-            return
+    try:
+        while True:
+            try:
+                yield next(iterator)
+            except StopIteration:
+                return
+    finally:
+        # Deterministic cleanup: propagate close() to the wrapped sync
+        # iterator (e.g. a generator holding an open file).
+        close = getattr(iterator, "close", None)
+        if close is not None:
+            close()
 
 
 def _validate_transform_item(value: object, index: int) -> BaseEvent:
@@ -466,26 +481,34 @@ async def run_ingestion(
     group_size = 0
     group: list[_PreparedDispatch] = []
 
-    while True:
-        try:
-            item = await items.__anext__()
-        except StopAsyncIteration:
-            break
-        index += 1
-        items_read += 1
-        event = await _resolve_event(transform, item, index)
-        prepared = _prepare_dispatch(bus, event)
-        if prepared is None:
-            events_unrouted += 1
-        else:
-            group.append(prepared)
-            events_dispatched += 1
-        group_size += 1
-        if group_size >= batch_size:
-            await _commit_group(bus, group, max_pending, counters)
-            group = []
-            group_size = 0
-    await _commit_group(bus, group, max_pending, counters)
+    try:
+        while True:
+            try:
+                item = await items.__anext__()
+            except StopAsyncIteration:
+                break
+            index += 1
+            items_read += 1
+            event = await _resolve_event(transform, item, index)
+            prepared = _prepare_dispatch(bus, event)
+            if prepared is None:
+                events_unrouted += 1
+            else:
+                group.append(prepared)
+                events_dispatched += 1
+            group_size += 1
+            if group_size >= batch_size:
+                await _commit_group(bus, group, max_pending, counters)
+                group = []
+                group_size = 0
+        await _commit_group(bus, group, max_pending, counters)
+    finally:
+        # Close the source iterator deterministically (transform/source
+        # failure, bus close, or task cancellation included), releasing any
+        # resource held by the source instead of relying on the GC.
+        aclose = getattr(items, "aclose", None)
+        if aclose is not None:
+            await aclose()
 
     elapsed = time.monotonic() - started
     return IngestionResult(
@@ -602,6 +625,62 @@ async def _commit_resumable_group(
     counters.batches += 1
 
 
+async def _consume_resumable_source(
+    bus: EventBus[_ContextT],
+    items: AsyncIterator[object],
+    transform: Callable[[object], object] | None,
+    batch_size: int,
+    max_pending: int | None,
+    counters: _IngestionCounters,
+    tracker: _CheckpointTracker,
+) -> tuple[int, int, int]:
+    """Consume and commit source records, closing the adapter on every exit."""
+    items_read = 0
+    events_dispatched = 0
+    events_unrouted = 0
+    index = 0
+    group: list[_PreparedSourceItem] = []
+
+    try:
+        while True:
+            try:
+                record = await items.__anext__()
+            except StopAsyncIteration:
+                break
+            index += 1
+            items_read += 1
+            if not isinstance(record, SourceRecord):
+                raise TypeError(
+                    f"resumable source item {index} is a "
+                    f"{type(record).__name__}; expected SourceRecord"
+                )
+            if not isinstance(record.cursor, str):
+                raise TypeError(
+                    f"cursor of resumable source item {index} is a "
+                    f"{type(record.cursor).__name__}; expected str"
+                )
+            event = await _resolve_event(transform, record.value, index)
+            prepared = _prepare_dispatch(bus, event)
+            if prepared is None:
+                events_unrouted += 1
+            else:
+                events_dispatched += 1
+            group.append(_PreparedSourceItem(cursor=record.cursor, dispatch=prepared))
+            if len(group) >= batch_size:
+                await _commit_resumable_group(
+                    bus, group, max_pending, counters, tracker
+                )
+                group = []
+        await _commit_resumable_group(bus, group, max_pending, counters, tracker)
+    finally:
+        # Its finally propagates close/aclose to the original source iterator.
+        aclose = getattr(items, "aclose", None)
+        if aclose is not None:
+            await aclose()
+
+    return items_read, events_dispatched, events_unrouted
+
+
 async def run_resumable_ingestion(
     bus: EventBus[_ContextT],
     source: ResumableSource[object],
@@ -679,40 +758,9 @@ async def run_resumable_ingestion(
 
     started = time.monotonic()
     counters = _IngestionCounters()
-    items_read = 0
-    events_dispatched = 0
-    events_unrouted = 0
-    index = 0
-    group: list[_PreparedSourceItem] = []
-
-    while True:
-        try:
-            record = await items.__anext__()
-        except StopAsyncIteration:
-            break
-        index += 1
-        items_read += 1
-        if not isinstance(record, SourceRecord):
-            raise TypeError(
-                f"resumable source item {index} is a "
-                f"{type(record).__name__}; expected SourceRecord"
-            )
-        if not isinstance(record.cursor, str):
-            raise TypeError(
-                f"cursor of resumable source item {index} is a "
-                f"{type(record.cursor).__name__}; expected str"
-            )
-        event = await _resolve_event(transform, record.value, index)
-        prepared = _prepare_dispatch(bus, event)
-        if prepared is None:
-            events_unrouted += 1
-        else:
-            events_dispatched += 1
-        group.append(_PreparedSourceItem(cursor=record.cursor, dispatch=prepared))
-        if len(group) >= batch_size:
-            await _commit_resumable_group(bus, group, max_pending, counters, tracker)
-            group = []
-    await _commit_resumable_group(bus, group, max_pending, counters, tracker)
+    items_read, events_dispatched, events_unrouted = await _consume_resumable_source(
+        bus, items, transform, batch_size, max_pending, counters, tracker
+    )
 
     elapsed = time.monotonic() - started
     return IngestionResult(
