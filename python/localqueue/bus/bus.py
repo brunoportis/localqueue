@@ -994,6 +994,10 @@ class EventBus(Generic[ContextT]):
 
     def close(self) -> None:
         """Close the NativeQueue used for dispatch."""
-        if self._native_queue is not None:
-            self._native_queue.close()
+        native = self._native_queue
+        if native is not None:
+            # Publish the closed state before tearing down the native handle.
+            # In-flight ingestion retries must observe closure instead of
+            # starting another SQLite attempt while close waits for the handle.
             self._native_queue = None
+            native.close()
