@@ -275,17 +275,15 @@ class CsvSource:
                 f"found {effective_delimiter!r}",
             )
         quotechar = resolved.quotechar
-        if (
-            quotechar is not None
-            and (not isinstance(quotechar, str) or len(quotechar) != 1)
+        if quotechar is not None and (
+            not isinstance(quotechar, str) or len(quotechar) != 1
         ):
             raise CsvSourceError(
                 path, "dialect quotechar must be a single character or None"
             )
         escapechar = resolved.escapechar
-        if (
-            escapechar is not None
-            and (not isinstance(escapechar, str) or len(escapechar) != 1)
+        if escapechar is not None and (
+            not isinstance(escapechar, str) or len(escapechar) != 1
         ):
             raise CsvSourceError(
                 path, "dialect escapechar must be a single character or None"

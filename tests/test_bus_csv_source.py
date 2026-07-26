@@ -481,9 +481,10 @@ class TestCsvSourceFingerprint:
 
     def test_accepts_standard_dialect_object(self, tmp_path):
         path = write_csv(tmp_path / "data.csv", "a,b\n1,2\n")
-        assert [record.value["b"] for record in CsvSource(
-            path, dialect=csv.get_dialect("excel")
-        ).open(None)] == ["2"]
+        assert [
+            record.value["b"]
+            for record in CsvSource(path, dialect=csv.get_dialect("excel")).open(None)
+        ] == ["2"]
 
 
 class TestCsvRow:
@@ -556,7 +557,7 @@ class TestCsvSourceStreaming:
             bus.close()
 
 
-class TestCsvSourceIngestion:
+class TestCsvSourceCheckpoint:
     def test_checkpoint_end_to_end(self, tmp_path):
         path = write_csv(tmp_path / "contacts.csv", "cnpj,name\n1,Ana\n2,Bob\n3,Cid\n")
         bus = make_bus(tmp_path / "bus")
