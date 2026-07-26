@@ -103,6 +103,13 @@ async def audit_customer_created(
     )
 
 
+#: Process-local concurrency bound for the creator subscription. Customer
+#: creation calls are independent, so up to this many deliveries are handled
+#: concurrently within one worker process. The audit subscription keeps the
+#: default concurrency and is unaffected.
+CREATOR_CONCURRENCY = 20
+
+
 def build_bus(data_dir: Path, api: CustomerApi) -> EventBus[CustomerWorkerContext]:
     """Build the worker bus with its context factory and local handlers."""
     bus: EventBus[CustomerWorkerContext] = EventBus(
@@ -111,13 +118,12 @@ def build_bus(data_dir: Path, api: CustomerApi) -> EventBus[CustomerWorkerContex
         topology=TOPOLOGY,
         context_factory=lambda runtime: CustomerWorkerContext(runtime, api),
     )
-    bus.on(
+    bus.subscription(CUSTOMER_CREATOR, concurrency=CREATOR_CONCURRENCY).handler(
         CustomerCreationRequested,
         create_customer,
-        subscription=CUSTOMER_CREATOR,
         retry=RETRY_POLICY,
     )
-    bus.on(CustomerCreated, audit_customer_created, subscription=CUSTOMER_AUDIT)
+    bus.subscription(CUSTOMER_AUDIT).handler(CustomerCreated, audit_customer_created)
     return bus
 
 

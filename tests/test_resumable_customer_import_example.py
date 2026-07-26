@@ -6,6 +6,7 @@ All state goes to pytest's ``tmp_path``; nothing is written into the repo.
 from __future__ import annotations
 
 import asyncio
+import functools
 import importlib
 from pathlib import Path
 
@@ -16,14 +17,13 @@ from examples.resumable_customer_import import (
     demo_api,
     events,
     producer,
-    topology,
     worker,
 )
 from examples.resumable_customer_import.demo_api import (
-    DemoCustomerApi,
     RATE_LIMITED_EMAIL,
     TEMPORARY_FAILURE_EMAIL,
     VALIDATION_FAILURE_EMAIL,
+    DemoCustomerApi,
 )
 from examples.resumable_customer_import.events import (
     CustomerCreated,
@@ -36,7 +36,7 @@ from examples.resumable_customer_import.topology import (
     TOPOLOGY,
 )
 
-CSV_HEADER = "import_id,external_id,name,email,phone\n"
+CSV_HEADER = "external_id,name,email,phone\n"
 
 
 def run(coro):
@@ -50,6 +50,12 @@ def write_csv(path: Path, rows: list[str]) -> Path:
 
 def make_bus(path: Path) -> EventBus:
     return EventBus(str(path), name=BUS_NAME, topology=TOPOLOGY)
+
+
+def make_transform(import_id: str = "imp-1"):
+    return functools.partial(
+        producer.to_customer_creation_requested, import_id=import_id
+    )
 
 
 def make_context(api, *, event_id: str = "key-1") -> worker.CustomerWorkerContext:
@@ -70,7 +76,6 @@ def make_event(email: str, *, external_id: str = "EXT-1") -> CustomerCreationReq
 def test_transform_normalizes_fields_and_carries_import_id():
     row = CsvRow(
         {
-            "import_id": "  imp-42 ",
             "external_id": " EXT-9 ",
             "name": "  Alice Almeida  ",
             "email": " ALICE@EXAMPLE.COM ",
@@ -79,7 +84,7 @@ def test_transform_normalizes_fields_and_carries_import_id():
         record_number=1,
         line_number=2,
     )
-    event = producer.to_customer_creation_requested(row)
+    event = producer.to_customer_creation_requested(row, import_id="imp-42")
     assert event.import_id == "imp-42"
     assert event.external_id == "EXT-9"
     assert event.name == "Alice Almeida"
@@ -97,7 +102,7 @@ def test_topology_routes_both_event_types():
 
 
 def test_identical_rows_deduplicate_under_identity(tmp_path):
-    row = "imp-1,EXT-1,Alice,alice@example.com,+1 555 010 0001"
+    row = "EXT-1,Alice,alice@example.com,+1 555 010 0001"
     csv_path = write_csv(tmp_path / "dupes.csv", [row, row])
     bus = make_bus(tmp_path)
     try:
@@ -105,7 +110,7 @@ def test_identical_rows_deduplicate_under_identity(tmp_path):
             bus.ingest(
                 CsvSource(csv_path),
                 checkpoint="c1",
-                transform=producer.to_customer_creation_requested,
+                transform=make_transform(),
             )
         )
     finally:
@@ -117,31 +122,38 @@ def test_identical_rows_deduplicate_under_identity(tmp_path):
 
 def test_different_import_id_permits_same_external_id(tmp_path):
     csv_path = write_csv(
-        tmp_path / "two-imports.csv",
-        [
-            "imp-1,EXT-1,Alice,alice@example.com,+1 555 010 0001",
-            "imp-2,EXT-1,Alice,alice@example.com,+1 555 010 0001",
-        ],
+        tmp_path / "customers.csv",
+        ["EXT-1,Alice,alice@example.com,+1 555 010 0001"],
     )
     bus = make_bus(tmp_path)
     try:
-        result = run(
+        first = run(
             bus.ingest(
                 CsvSource(csv_path),
-                checkpoint="c1",
-                transform=producer.to_customer_creation_requested,
+                checkpoint="import-imp-1",
+                transform=make_transform("imp-1"),
+            )
+        )
+        second = run(
+            bus.ingest(
+                CsvSource(csv_path),
+                checkpoint="import-imp-2",
+                transform=make_transform("imp-2"),
             )
         )
     finally:
         bus.close()
-    assert result.deliveries_inserted == 2
-    assert result.deliveries_deduplicated == 0
+    # Same external_id under a different import_id is a new operation-scoped
+    # identity, so the second run inserts instead of deduplicating.
+    assert first.deliveries_inserted == 1
+    assert second.deliveries_inserted == 1
+    assert second.deliveries_deduplicated == 0
 
 
 def test_ingestion_creates_and_advances_checkpoint(tmp_path):
     csv_path = write_csv(
         tmp_path / "customers.csv",
-        ["imp-1,EXT-1,Alice,alice@example.com,+1 555 010 0001"],
+        ["EXT-1,Alice,alice@example.com,+1 555 010 0001"],
     )
     bus = make_bus(tmp_path)
     try:
@@ -150,7 +162,7 @@ def test_ingestion_creates_and_advances_checkpoint(tmp_path):
             bus.ingest(
                 CsvSource(csv_path),
                 checkpoint="c1",
-                transform=producer.to_customer_creation_requested,
+                transform=make_transform(),
             )
         )
         assert result.checkpoint is not None
@@ -169,8 +181,8 @@ def test_rerun_resumes_without_duplicate_deliveries(tmp_path):
     csv_path = write_csv(
         tmp_path / "customers.csv",
         [
-            "imp-1,EXT-1,Alice,alice@example.com,+1 555 010 0001",
-            "imp-1,EXT-2,Bob,bob@example.com,+1 555 010 0002",
+            "EXT-1,Alice,alice@example.com,+1 555 010 0001",
+            "EXT-2,Bob,bob@example.com,+1 555 010 0002",
         ],
     )
     bus = make_bus(tmp_path)
@@ -179,14 +191,14 @@ def test_rerun_resumes_without_duplicate_deliveries(tmp_path):
             bus.ingest(
                 CsvSource(csv_path),
                 checkpoint="c1",
-                transform=producer.to_customer_creation_requested,
+                transform=make_transform(),
             )
         )
         second = run(
             bus.ingest(
                 CsvSource(csv_path),
                 checkpoint="c1",
-                transform=producer.to_customer_creation_requested,
+                transform=make_transform(),
             )
         )
     finally:
@@ -267,7 +279,8 @@ def test_handler_maps_temporary_failure_and_rate_limit_to_retry():
     with pytest.raises(Retry) as temporary:
         run(
             worker.create_customer(
-                make_event(TEMPORARY_FAILURE_EMAIL), make_context(api, event_id="k-flaky")
+                make_event(TEMPORARY_FAILURE_EMAIL),
+                make_context(api, event_id="k-flaky"),
             )
         )
     assert temporary.value.after is None
@@ -290,6 +303,116 @@ def test_successful_handler_returns_customer_created():
     assert created.import_id == "imp-1"
     assert created.external_id == "EXT-1"
     assert created.customer_id == "cus-0001"
+
+
+def test_worker_configures_creator_concurrency(tmp_path):
+    bus = worker.build_bus(tmp_path, DemoCustomerApi())
+    try:
+        assert bus.subscription(CUSTOMER_CREATOR).concurrency == (
+            worker.CREATOR_CONCURRENCY
+        )
+        assert worker.CREATOR_CONCURRENCY == 20
+        # The audit subscription keeps the default process-local concurrency.
+        assert bus.subscription(CUSTOMER_AUDIT).concurrency == 1
+    finally:
+        bus.close()
+
+
+def queue_stats(bus: EventBus, subscription: str) -> dict[str, int]:
+    queue = bus._open_subscription_queue(subscription)
+    try:
+        return queue.stats()
+    finally:
+        queue.close()
+
+
+def test_end_to_end_smoke(tmp_path, capsys):
+    """Exercise the real example wiring: ingest, create, retry/reject, audit."""
+    csv_path = write_csv(
+        tmp_path / "customers.csv",
+        [
+            "EXT-1,Alice,alice@example.com,+1 555 010 0001",
+            "EXT-2,Bob,bob@example.com,+1 555 010 0002",
+            "EXT-3,Carol,invalid@example.com,+1 555 010 0003",
+            "EXT-4,Dana,flaky@example.com,+1 555 010 0004",
+            "EXT-5,Erik,throttled@example.com,+1 555 010 0005",
+        ],
+    )
+    data_dir = tmp_path / "data"
+    api = DemoCustomerApi(temporary_failure_attempts=2, rate_limit_retry_after=0.05)
+
+    async def wait_for(bus, subscription, predicate, description):
+        deadline = asyncio.get_running_loop().time() + 30.0
+        while True:
+            stats = await asyncio.to_thread(queue_stats, bus, subscription)
+            if predicate(stats):
+                return stats
+            if asyncio.get_running_loop().time() > deadline:
+                raise AssertionError(f"{description} did not settle: {stats}")
+            await asyncio.sleep(0.05)
+
+    async def scenario():
+        ingestion = await producer.run_import(
+            csv_path,
+            data_dir,
+            import_id="smoke-v1",
+            batch_size=100,
+            max_pending=1_000,
+            checkpoint_name="customer-import:smoke-v1",
+        )
+        bus = worker.build_bus(data_dir, api)
+        runner = asyncio.create_task(bus.run())
+        try:
+            # Wait until every creator delivery reaches a terminal state:
+            # 4 acked (flaky/throttled included, after retries) + 1 failed.
+            await wait_for(
+                bus,
+                CUSTOMER_CREATOR,
+                lambda s: s.get("acked", 0) == 4 and s.get("failed", 0) == 1,
+                "creator",
+            )
+            await wait_for(
+                bus,
+                CUSTOMER_AUDIT,
+                lambda s: s.get("acked", 0) == 4,
+                "audit",
+            )
+        finally:
+            runner.cancel()
+            try:
+                await runner
+            except asyncio.CancelledError:
+                pass
+            bus.close()
+        return ingestion
+
+    ingestion = run(scenario())
+    assert ingestion.items_read == 5
+    assert ingestion.deliveries_inserted == 5
+
+    # Validation row landed rejected with the modeled category.
+    bus = make_bus(data_dir)
+    try:
+        failed = bus.subscription(CUSTOMER_CREATOR).list_failed()
+        assert len(failed) == 1
+        assert failed[0].failure_category == "validation"
+        assert failed[0].event_type == "customer.creation-requested"
+    finally:
+        bus.close()
+
+    # Transactional CustomerCreated emission reached the audit handler once
+    # per created customer, and the API saw no duplicate side effects.
+    audit_lines = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("audit ")
+    ]
+    assert len(audit_lines) == 4
+    assert len(set(audit_lines)) == 4
+    assert all("import=smoke-v1" in line for line in audit_lines)
+    assert len(api._by_external_id) == 4
+    assert api._sequence == 4
+    assert set(api._by_external_id) == {"EXT-1", "EXT-2", "EXT-4", "EXT-5"}
 
 
 def test_example_modules_importable_without_side_effects(tmp_path, monkeypatch):

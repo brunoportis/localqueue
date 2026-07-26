@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import functools
 from pathlib import Path
 from typing import Sequence
 
@@ -30,15 +31,19 @@ def default_checkpoint_name(import_id: str) -> str:
     return f"customer-import:{import_id}"
 
 
-def to_customer_creation_requested(row: CsvRow) -> CustomerCreationRequested:
+def to_customer_creation_requested(
+    row: CsvRow, *, import_id: str
+) -> CustomerCreationRequested:
     """Transform one CSV row into the creation event, normalizing fields.
 
-    Whitespace is stripped everywhere and the email is lowercased, so rows
-    that differ only in padding or case collapse to the same durable
-    identity and payload (and are deduplicated on re-ingestion).
+    The CSV carries no ``import_id`` column: the logical import identity is
+    the ``--import-id`` CLI value, injected here into every event. Whitespace
+    is stripped everywhere and the email is lowercased, so rows that differ
+    only in padding or case collapse to the same durable identity and
+    payload (and are deduplicated on re-ingestion).
     """
     return CustomerCreationRequested(
-        import_id=row["import_id"].strip(),
+        import_id=import_id,
         external_id=row["external_id"].strip(),
         name=row["name"].strip(),
         email=row["email"].strip().lower(),
@@ -50,6 +55,7 @@ async def run_import(
     csv_path: Path,
     data_dir: Path,
     *,
+    import_id: str,
     batch_size: int,
     max_pending: int,
     checkpoint_name: str,
@@ -60,7 +66,9 @@ async def run_import(
         return await bus.ingest(
             CsvSource(csv_path),
             checkpoint=checkpoint_name,
-            transform=to_customer_creation_requested,
+            transform=functools.partial(
+                to_customer_creation_requested, import_id=import_id
+            ),
             batch_size=batch_size,
             max_pending=max_pending,
         )
@@ -106,8 +114,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--import-id",
         default=DEFAULT_IMPORT_ID,
         help=(
-            "import operation ID; only used for the default checkpoint name "
-            f"(default: {DEFAULT_IMPORT_ID})"
+            "logical import operation ID; injected into every event as part "
+            "of its durable identity and used for the default checkpoint "
+            f"name (default: {DEFAULT_IMPORT_ID})"
         ),
     )
     parser.add_argument(
@@ -141,6 +150,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_import(
             args.csv,
             args.data_dir,
+            import_id=args.import_id,
             batch_size=args.batch_size,
             max_pending=args.max_pending,
             checkpoint_name=checkpoint_name,

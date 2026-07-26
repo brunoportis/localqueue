@@ -20,11 +20,18 @@ customers.csv ──CsvSource──▶ EventBus.ingest(checkpoint=...) ──▶
 - `topology.py` — shared `BusTopology` imported by both sides; the producer
   never imports worker handlers.
 - `producer.py` — argparse CLI: `CsvSource` + `bus.ingest(..., checkpoint=...,
-  transform=..., batch_size=..., max_pending=...)`.
+  transform=..., batch_size=..., max_pending=...)`. The CSV schema is
+  `external_id,name,email,phone` — there is no `import_id` column; the
+  `--import-id` CLI value is the logical import identity and is injected
+  into every `CustomerCreationRequested` by the transform.
 - `worker.py` — typed `HandlerContext` with a `context_factory` injecting the
   API adapter per attempt; validation → `Reject`, temporary failure →
   `Retry`, rate limit → `Retry(after=...)`; returns `CustomerCreated` and
-  lets the bus do the atomic local ACK + fan-out.
+  lets the bus do the atomic local ACK + fan-out. The creator subscription
+  runs with process-local concurrency 20
+  (`bus.subscription(CUSTOMER_CREATOR, concurrency=20)`), so up to 20
+  customer creations are in flight per worker process; the audit
+  subscription keeps the default concurrency and is independent.
 - `demo_api.py` — deterministic in-memory async `DemoCustomerApi` behind a
   small `CustomerApi` protocol. No server, no dependencies.
 
@@ -43,6 +50,10 @@ uv run python -m examples.resumable_customer_import.worker
 The worker consumes until interrupted (Ctrl+C). State lives in
 `examples/resumable_customer_import/data/` by default; `--data-dir` overrides
 it. Defaults are stable relative to the example directory, not your cwd.
+The creator subscription handles up to 20 deliveries concurrently per
+process (`bus.subscription(CUSTOMER_CREATOR, concurrency=20)`), so the
+flaky and throttled rows retry in parallel with normal creations instead of
+blocking them.
 
 ## 3. Terminal 2 — run the producer
 
@@ -98,10 +109,8 @@ never replayed), finds nothing new, and inserts nothing.
 
 ```bash
 uv run python - <<'PY'
-from examples.resumable_customer_import.topology import BUS_NAME
-from localqueue.bus import BusTopology, EventBus
-from examples.resumable_customer_import.topology import TOPOLOGY, CUSTOMER_CREATOR
-from examples.resumable_customer_import.events import CustomerCreationRequested
+from localqueue.bus import EventBus
+from examples.resumable_customer_import.topology import BUS_NAME, TOPOLOGY
 
 bus = EventBus("examples/resumable_customer_import/data", name=BUS_NAME, topology=TOPOLOGY)
 try:
@@ -190,10 +199,10 @@ uv run python - <<'PY'
 import csv
 with open("/tmp/big_customers.csv", "w", newline="") as fh:
     writer = csv.writer(fh)
-    writer.writerow(["import_id", "external_id", "name", "email", "phone"])
+    writer.writerow(["external_id", "name", "email", "phone"])
     for n in range(50_000):
         writer.writerow(
-            ["bulk-v1", f"EXT-{n:06d}", f"Customer {n}",
+            [f"EXT-{n:06d}", f"Customer {n}",
              f"customer{n}@example.com", f"+1 555 {n % 10_000:04d}"]
         )
 PY
