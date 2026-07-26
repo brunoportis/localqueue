@@ -123,9 +123,7 @@ class IngestionCheckpoint(Generic[_ContextT]):
 
     def inspect(self) -> CheckpointState | None:
         """Return the persisted state, or ``None`` if never started."""
-        row = self._bus._get_native()._checkpoint_inspect(
-            self._bus.name, self._name
-        )
+        row = self._bus._get_native()._checkpoint_inspect(self._bus.name, self._name)
         if row is None:
             return None
         return CheckpointState(
@@ -687,9 +685,7 @@ async def run_resumable_ingestion(
             events_dispatched += 1
         group.append(_PreparedSourceItem(cursor=record.cursor, dispatch=prepared))
         if len(group) >= batch_size:
-            await _commit_resumable_group(
-                bus, group, max_pending, counters, tracker
-            )
+            await _commit_resumable_group(bus, group, max_pending, counters, tracker)
             group = []
     await _commit_resumable_group(bus, group, max_pending, counters, tracker)
 

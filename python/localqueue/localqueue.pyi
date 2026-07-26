@@ -114,9 +114,7 @@ class NativeQueue:
         self,
         entries: list[tuple[str, bytes, Optional[str], Optional[str], Optional[str]]],
         capacity: Optional[list[tuple[str, int]]],
-        checkpoint: Optional[
-            tuple[str, str, Optional[int], str, Optional[str], int]
-        ],
+        checkpoint: Optional[tuple[str, str, Optional[int], str, Optional[str], int]],
     ) -> tuple[list[tuple[int, bool]], Optional[int]]: ...
     def _checkpoint_inspect(
         self,

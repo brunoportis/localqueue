@@ -21,11 +21,15 @@ from localqueue.bus import (
 
 
 class Tick(BaseEvent):
+    event_name = "resumable-ingestion.tick"
+
     seq: int
 
 
 @event(identity="key")
 class Keyed(BaseEvent):
+    event_name = "resumable-ingestion.keyed"
+
     key: str
     value: str
 
@@ -194,15 +198,11 @@ class TestResumableCommit:
     def test_rerun_deduplicated_advances_cursor_with_zero_inserts(self, tmp_path):
         bus = make_bus(tmp_path / "bus")
         try:
-            first = run(
-                bus.ingest(keyed_source(3), checkpoint="import", batch_size=2)
-            )
+            first = run(bus.ingest(keyed_source(3), checkpoint="import", batch_size=2))
             assert first.deliveries_inserted == 3
             assert bus.checkpoint("import").reset() is True
 
-            rerun = run(
-                bus.ingest(keyed_source(3), checkpoint="import", batch_size=2)
-            )
+            rerun = run(bus.ingest(keyed_source(3), checkpoint="import", batch_size=2))
             assert rerun.items_read == 3
             assert rerun.deliveries_inserted == 0
             assert rerun.deliveries_deduplicated == 3
@@ -216,9 +216,7 @@ class TestResumableCommit:
             bus.close()
 
     def test_unrouted_batch_is_checkpoint_only_commit(self, tmp_path):
-        bus = make_bus(
-            tmp_path / "bus", topology={}, require_subscribers=False
-        )
+        bus = make_bus(tmp_path / "bus", topology={}, require_subscribers=False)
         try:
             result = run(
                 bus.ingest(
@@ -317,11 +315,7 @@ class TestCheckpointGuards:
         try:
             run(bus.ingest(keyed_source(1, fingerprint="v1"), checkpoint="import"))
             with pytest.raises(SourceChanged, match="reset the checkpoint"):
-                run(
-                    bus.ingest(
-                        keyed_source(1, fingerprint="v2"), checkpoint="import"
-                    )
-                )
+                run(bus.ingest(keyed_source(1, fingerprint="v2"), checkpoint="import"))
         finally:
             bus.close()
 
