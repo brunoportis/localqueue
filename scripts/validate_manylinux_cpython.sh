@@ -2,7 +2,7 @@
 # Validate the exact interpreters selected by maturin inside its manylinux container.
 set -euo pipefail
 
-for expected_version in 3.10 3.11 3.12 3.13 3.14; do
+for expected_version in 3.11 3.12 3.13 3.14; do
   interpreter="python${expected_version}"
   echo "Validating ${interpreter} inside the manylinux container"
   "${interpreter}" --version

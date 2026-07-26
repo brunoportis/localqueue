@@ -46,7 +46,7 @@ Do not use NFS, SMB/CIFS, distributed volumes, cloud-sync folders, multiple host
 
 ## Platforms, Python, and wheels
 
-`requires-python` is `>=3.10` with no upper bound. Current classifiers and wheels cover CPython 3.10–3.14; CI exercises only the combinations explicitly listed in [CI](../.github/workflows/ci.yml). Future Python versions are not supported merely because they satisfy `>=3.10`. The wheel workflow builds Linux x86_64 and aarch64, macOS x86_64 and arm64, and Windows x86_64 wheels; it smoke-tests all but Linux ARM64 on CPython 3.13. Linux ARM64 is artifact-validated under QEMU, not smoke-tested. A platform without a matching wheel can require a local Rust build. Linux is the deepest evidence; Windows/macOS have CI tests; physical ARM64 evidence is absent.
+`requires-python` is `>=3.11` with no upper bound. Current classifiers and wheels cover CPython 3.11–3.14; CI exercises only the combinations explicitly listed in [CI](../.github/workflows/ci.yml). Future Python versions are not supported merely because they satisfy `>=3.11`. The wheel workflow builds Linux x86_64 and aarch64, macOS x86_64 and arm64, and Windows x86_64 wheels; it smoke-tests all but Linux ARM64 on CPython 3.13. Linux ARM64 is artifact-validated under QEMU, not smoke-tested. A platform without a matching wheel can require a local Rust build. Linux is the deepest evidence; Windows/macOS have CI tests; physical ARM64 evidence is absent.
 
 ## Delivery, leases, and deduplication
 

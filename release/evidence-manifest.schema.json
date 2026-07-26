@@ -53,7 +53,7 @@
       },
       "additionalProperties": false
     },
-    "distributions": {"type": "array", "minItems": 26, "items": {"$ref": "#/$defs/distribution"}},
+    "distributions": {"type": "array", "minItems": 21, "items": {"$ref": "#/$defs/distribution"}},
     "reports": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/hashedPath"}},
     "required_jobs": {"type": "object", "additionalProperties": {"const": "passed"}},
     "skipped_scenarios": {

@@ -33,7 +33,7 @@ the old evidence cannot be reused.
 ## B. Collect and review evidence
 
 Follow the linked **Release candidate evidence** run. It checks out the exact
-candidate SHA and builds 25 wheels (five platforms by CPython 3.10–3.14) plus one
+candidate SHA and builds 20 wheels (five platforms by CPython 3.11–3.14) plus one
 sdist. Every inventory entry records its own status: CPython 3.13 is smoke-tested
 on Linux x86_64, macOS x86_64, macOS arm64, and Windows x86_64; the other built
 wheels are `built-not-smoke-tested`; Linux ARM64 is
@@ -119,7 +119,7 @@ release, replace a tag, or use `--clobber`.
 
 ## Completion checklist
 
-After the workflow succeeds, independently confirm v1.3.0 and all 26 files on PyPI,
+After the workflow succeeds, independently confirm v1.3.0 and all 21 files on PyPI,
 confirm the public/latest GitHub Release and attached evidence, and confirm `main`
 and `v1.3.0` resolve to the approved SHA. Record the campaign start, candidate
 commit, and epic-close timestamps here; compare them with the 22h30 and 23h34

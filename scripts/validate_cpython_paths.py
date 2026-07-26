@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Sequence
 
 EXPECTED = {
-    "cp310": "3.10",
     "cp311": "3.11",
     "cp312": "3.12",
     "cp313": "3.13",
