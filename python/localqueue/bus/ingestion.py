@@ -625,6 +625,62 @@ async def _commit_resumable_group(
     counters.batches += 1
 
 
+async def _consume_resumable_source(
+    bus: EventBus[_ContextT],
+    items: AsyncIterator[object],
+    transform: Callable[[object], object] | None,
+    batch_size: int,
+    max_pending: int | None,
+    counters: _IngestionCounters,
+    tracker: _CheckpointTracker,
+) -> tuple[int, int, int]:
+    """Consume and commit source records, closing the adapter on every exit."""
+    items_read = 0
+    events_dispatched = 0
+    events_unrouted = 0
+    index = 0
+    group: list[_PreparedSourceItem] = []
+
+    try:
+        while True:
+            try:
+                record = await items.__anext__()
+            except StopAsyncIteration:
+                break
+            index += 1
+            items_read += 1
+            if not isinstance(record, SourceRecord):
+                raise TypeError(
+                    f"resumable source item {index} is a "
+                    f"{type(record).__name__}; expected SourceRecord"
+                )
+            if not isinstance(record.cursor, str):
+                raise TypeError(
+                    f"cursor of resumable source item {index} is a "
+                    f"{type(record.cursor).__name__}; expected str"
+                )
+            event = await _resolve_event(transform, record.value, index)
+            prepared = _prepare_dispatch(bus, event)
+            if prepared is None:
+                events_unrouted += 1
+            else:
+                events_dispatched += 1
+            group.append(_PreparedSourceItem(cursor=record.cursor, dispatch=prepared))
+            if len(group) >= batch_size:
+                await _commit_resumable_group(
+                    bus, group, max_pending, counters, tracker
+                )
+                group = []
+        await _commit_resumable_group(bus, group, max_pending, counters, tracker)
+    finally:
+        # Its finally propagates close/aclose to the original source iterator.
+        aclose = getattr(items, "aclose", None)
+        if aclose is not None:
+            await aclose()
+
+    return items_read, events_dispatched, events_unrouted
+
+
 async def run_resumable_ingestion(
     bus: EventBus[_ContextT],
     source: ResumableSource[object],
@@ -702,50 +758,9 @@ async def run_resumable_ingestion(
 
     started = time.monotonic()
     counters = _IngestionCounters()
-    items_read = 0
-    events_dispatched = 0
-    events_unrouted = 0
-    index = 0
-    group: list[_PreparedSourceItem] = []
-
-    try:
-        while True:
-            try:
-                record = await items.__anext__()
-            except StopAsyncIteration:
-                break
-            index += 1
-            items_read += 1
-            if not isinstance(record, SourceRecord):
-                raise TypeError(
-                    f"resumable source item {index} is a "
-                    f"{type(record).__name__}; expected SourceRecord"
-                )
-            if not isinstance(record.cursor, str):
-                raise TypeError(
-                    f"cursor of resumable source item {index} is a "
-                    f"{type(record.cursor).__name__}; expected str"
-                )
-            event = await _resolve_event(transform, record.value, index)
-            prepared = _prepare_dispatch(bus, event)
-            if prepared is None:
-                events_unrouted += 1
-            else:
-                events_dispatched += 1
-            group.append(_PreparedSourceItem(cursor=record.cursor, dispatch=prepared))
-            if len(group) >= batch_size:
-                await _commit_resumable_group(
-                    bus, group, max_pending, counters, tracker
-                )
-                group = []
-        await _commit_resumable_group(bus, group, max_pending, counters, tracker)
-    finally:
-        # Close the adapter even when a transform/source/commit fails or the
-        # task is cancelled.  Its finally propagates close/aclose to the
-        # original source iterator.
-        aclose = getattr(items, "aclose", None)
-        if aclose is not None:
-            await aclose()
+    items_read, events_dispatched, events_unrouted = await _consume_resumable_source(
+        bus, items, transform, batch_size, max_pending, counters, tracker
+    )
 
     elapsed = time.monotonic() - started
     return IngestionResult(
