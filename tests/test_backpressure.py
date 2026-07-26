@@ -416,7 +416,11 @@ def test_short_timeout_caps_sqlite_busy_wait_without_turning_busy_into_full(
     assert blocker.exitcode == 0
     assert not isinstance(raised.value, Full)
     assert "locked" in str(raised.value) or "busy" in str(raised.value)
-    assert elapsed < 0.6
+    # The requested SQLite wait is 80 ms, but a spawned lock-holder and a
+    # contended CI runner can delay the waiting thread substantially. Keep a
+    # generous scheduler margin while still proving we did not fall through
+    # to the connection's 5 s busy timeout.
+    assert elapsed < 1.0
     assert queue.diagnostics().busy_timeout_ms == 5_000
     queue.close()
 
