@@ -629,7 +629,11 @@ jobs:
           else
             source .venv/bin/activate
           fi
-          pytest -ra
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            pytest -vv -s -ra
+          else
+            pytest -ra
+          fi
 
       - name: Run tests with branch coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.14'
