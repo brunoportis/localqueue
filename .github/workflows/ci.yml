@@ -576,6 +576,9 @@ jobs:
           - os: windows-latest
             python: '3.14'
     runs-on: ${{ matrix.os }}
+    # The normal matrix completes in minutes. Bound a deadlock so the job
+    # fails with a visible timeout instead of consuming a runner indefinitely.
+    timeout-minutes: 20
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -626,7 +629,11 @@ jobs:
           else
             source .venv/bin/activate
           fi
-          pytest -ra
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            pytest -vv -s -ra
+          else
+            pytest -ra
+          fi
 
       - name: Run tests with branch coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.14'

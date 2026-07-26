@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import math
+from collections.abc import AsyncIterable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import (
@@ -24,6 +25,7 @@ from localqueue import localqueue as _native
 from localqueue.bus.context import ContextFactory, ContextT
 from localqueue.bus.event import BaseEvent, event_type_of
 from localqueue.bus.identity import business_payload, prepare_event_persistence
+from localqueue.bus.ingestion import IngestionResult, run_ingestion
 from localqueue.bus.registry import EVENT_REGISTRY, EventRegistry
 from localqueue.bus.retry import RetryPolicy
 from localqueue.bus.subscription import Subscription
@@ -38,6 +40,8 @@ from localqueue.core import JsonSerializer, Serializer, SimpleQueue
 from localqueue.policies import DeliveryPolicy, DurabilityMode, _durability_fsync
 
 _EventT = TypeVar("_EventT", bound=BaseEvent)
+EventT = TypeVar("EventT", bound=BaseEvent)
+ItemT = TypeVar("ItemT")
 HandlerResult = BaseEvent | None
 HandlerReturn = HandlerResult | Awaitable[HandlerResult]
 _HandlerResultT = TypeVar("_HandlerResultT", bound=HandlerReturn)
@@ -787,6 +791,78 @@ class EventBus(Generic[ContextT]):
     async def dispatch_async(self, event: BaseEvent) -> DispatchReceipt:
         """Asynchronous variant of :meth:`dispatch`."""
         return await asyncio.to_thread(self.dispatch, event)
+
+    @overload
+    async def ingest(
+        self,
+        source: Iterable[EventT] | AsyncIterable[EventT],
+        *,
+        transform: None = None,
+        batch_size: int = 1_000,
+        max_pending: int | None = None,
+    ) -> IngestionResult: ...
+
+    @overload
+    async def ingest(
+        self,
+        source: Iterable[ItemT] | AsyncIterable[ItemT],
+        *,
+        transform: Callable[[ItemT], EventT | Awaitable[EventT]],
+        batch_size: int = 1_000,
+        max_pending: int | None = None,
+    ) -> IngestionResult: ...
+
+    async def ingest(
+        self,
+        source: Iterable[object] | AsyncIterable[object],
+        *,
+        transform: Callable[[object], object] | None = None,
+        batch_size: int = 1_000,
+        max_pending: int | None = None,
+    ) -> IngestionResult:
+        """Ingest events from a generic source in atomic batches.
+
+        The source is consumed incrementally — never materialized, never
+        measured, and never read ahead of the current group. Up to
+        ``batch_size`` consumed items are fanned out in one native
+        transaction across all subscription queues. Ingestion is incremental
+        and batch-atomic: batches 1..k stay committed when a later batch
+        fails; the whole run is not all-or-nothing.
+
+        ``transform`` (when given) runs exactly once per consumed item and
+        may return a BaseEvent or an awaitable resolving to one. Synchronous
+        source iteration and synchronous transforms run on the event-loop
+        thread; use an async source/transform or explicitly offload blocking
+        work.
+
+        ``batch_size`` limits source items, not deliveries. Memory use and
+        native transaction size also grow with payload size and subscription
+        fan-out.
+
+        ``max_pending`` is an ephemeral per-subscription-queue pending bound
+        for this run only: it is not durable queue configuration, plain
+        ``dispatch`` may exceed it later, backlog produced by other producers
+        counts against it, and only READY/LEASED rows count (ACKED/FAILED do
+        not). Temporary backpressure retries with bounded async backoff; a
+        batch that can never fit is split into order-preserving halves.
+
+        There is no checkpoint/resume in this version: restarting a generic
+        source re-consumes it from the beginning. Events that opt into
+        durable identity are deduplicated on re-ingestion; events without
+        identity are persisted as new occurrences.
+
+        Cancellation while a native batch is in flight waits for that batch
+        to settle before ``CancelledError`` is propagated. The batch may
+        commit; once cancellation is observed by the caller, no commit
+        remains running in the background.
+        """
+        return await run_ingestion(
+            self,
+            source,
+            transform=transform,
+            batch_size=batch_size,
+            max_pending=max_pending,
+        )
 
     def _open_subscription_queue(self, subscription: str) -> SimpleQueue[object]:
         # EventBus is the only producer for subscription queues and always

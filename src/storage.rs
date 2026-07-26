@@ -1,7 +1,7 @@
 use rusqlite::{
     params, Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -97,7 +97,7 @@ impl Storage {
         &self,
         entries: &[EnqueueEntry<'_>],
         max_attempts: i64,
-        capacity: Option<CapacityPolicy<'_>>,
+        capacity: &[CapacityPolicy<'_>],
         busy_timeout_ms: Option<u64>,
     ) -> Result<Vec<i64>> {
         Ok(self
@@ -111,7 +111,7 @@ impl Storage {
         &self,
         entries: &[EnqueueEntry<'_>],
         max_attempts: i64,
-        capacity: Option<CapacityPolicy<'_>>,
+        capacity: &[CapacityPolicy<'_>],
         busy_timeout_ms: Option<u64>,
     ) -> Result<Vec<EnqueueOutcome>> {
         if entries.is_empty() {
@@ -340,7 +340,7 @@ fn enqueue_batch_on_connection(
     conn: &mut Connection,
     entries: &[EnqueueEntry<'_>],
     max_attempts: i64,
-    capacity: Option<CapacityPolicy<'_>>,
+    capacity: &[CapacityPolicy<'_>],
 ) -> Result<Vec<EnqueueOutcome>> {
     let now = now_ms();
 
@@ -351,43 +351,7 @@ fn enqueue_batch_on_connection(
     #[cfg(feature = "__crash_test")]
     crate::failpoints::hit(crate::failpoints::Failpoint::EnqueueAfterBegin);
 
-    if let Some(policy) = capacity {
-        let pending: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM messages
-                 WHERE queue = ?1 AND status IN (0, 1)",
-            params![policy.queue_name],
-            |row| row.get(0),
-        )?;
-        let mut new_rows = entries
-            .iter()
-            .filter(|entry| entry.queue_name == policy.queue_name && entry.job_id.is_none())
-            .count() as i64;
-        let distinct_job_ids: HashSet<&str> = entries
-            .iter()
-            .filter(|entry| entry.queue_name == policy.queue_name)
-            .filter_map(|entry| entry.job_id)
-            .collect();
-        for job_id in distinct_job_ids {
-            let exists: bool = tx.query_row(
-                "SELECT EXISTS(
-                        SELECT 1 FROM messages WHERE queue = ?1 AND job_id = ?2
-                    )",
-                params![policy.queue_name, job_id],
-                |row| row.get(0),
-            )?;
-            if !exists {
-                new_rows += 1;
-            }
-        }
-        if new_rows > 0 {
-            if new_rows > policy.max_pending_jobs {
-                return Err(QueueError::FullImpossible);
-            }
-            if pending.saturating_add(new_rows) > policy.max_pending_jobs {
-                return Err(QueueError::Full);
-            }
-        }
-    }
+    enforce_capacity_policies(&tx, entries, capacity)?;
 
     let ids = insert_entries_in_transaction(&tx, entries, max_attempts, now)?;
 
@@ -395,6 +359,109 @@ fn enqueue_batch_on_connection(
     crate::failpoints::hit(crate::failpoints::Failpoint::EnqueueBeforeCommit);
     tx.commit().map_err(QueueError::from)?;
     Ok(ids)
+}
+
+/// Identity used for capacity planning: within a queue, entries sharing an
+/// identity collapse into at most one new row. `dedup_key` takes precedence
+/// over `job_id`; entries without identity always insert a new row.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum CapacityIdentity<'a> {
+    DedupKey(&'a str),
+    JobId(&'a str),
+}
+
+/// Plan exactly which rows a batch would insert and enforce the per-queue
+/// pending limits, all under the open BEGIN IMMEDIATE transaction.
+///
+/// Conflicting duplicate policies for the same queue are rejected; identical
+/// duplicates are normalized away. Planning only checks identity existence —
+/// payload/fingerprint conflicts remain the insert phase's job and roll the
+/// whole transaction back.
+fn enforce_capacity_policies(
+    tx: &Transaction<'_>,
+    entries: &[EnqueueEntry<'_>],
+    capacity: &[CapacityPolicy<'_>],
+) -> Result<()> {
+    if capacity.is_empty() {
+        return Ok(());
+    }
+    let mut limits: HashMap<&str, i64> = HashMap::new();
+    for policy in capacity {
+        match limits.entry(policy.queue_name) {
+            std::collections::hash_map::Entry::Occupied(existing) => {
+                if *existing.get() != policy.max_pending_jobs {
+                    return Err(QueueError::ConflictingCapacityPolicies);
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(policy.max_pending_jobs);
+            }
+        }
+    }
+
+    let mut anonymous: HashMap<&str, i64> = HashMap::new();
+    let mut identities: HashMap<&str, HashSet<CapacityIdentity<'_>>> = HashMap::new();
+    for entry in entries {
+        if !limits.contains_key(entry.queue_name) {
+            continue;
+        }
+        let identity = match (entry.dedup_key, entry.job_id) {
+            (Some(key), _) => Some(CapacityIdentity::DedupKey(key)),
+            (None, Some(job_id)) => Some(CapacityIdentity::JobId(job_id)),
+            (None, None) => None,
+        };
+        match identity {
+            Some(identity) => {
+                identities
+                    .entry(entry.queue_name)
+                    .or_default()
+                    .insert(identity);
+            }
+            None => *anonymous.entry(entry.queue_name).or_insert(0) += 1,
+        }
+    }
+
+    for (&queue_name, &max_pending_jobs) in &limits {
+        let mut new_rows = anonymous.get(queue_name).copied().unwrap_or(0);
+        if let Some(queue_identities) = identities.get(queue_name) {
+            for identity in queue_identities {
+                let exists: bool = match identity {
+                    CapacityIdentity::DedupKey(key) => tx.query_row(
+                        "SELECT EXISTS(
+                                SELECT 1 FROM messages WHERE queue = ?1 AND dedup_key = ?2
+                            )",
+                        params![queue_name, key],
+                        |row| row.get(0),
+                    )?,
+                    CapacityIdentity::JobId(job_id) => tx.query_row(
+                        "SELECT EXISTS(
+                                SELECT 1 FROM messages WHERE queue = ?1 AND job_id = ?2
+                            )",
+                        params![queue_name, job_id],
+                        |row| row.get(0),
+                    )?,
+                };
+                if !exists {
+                    new_rows += 1;
+                }
+            }
+        }
+        if new_rows > 0 {
+            if new_rows > max_pending_jobs {
+                return Err(QueueError::FullImpossible);
+            }
+            let pending: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM messages
+                     WHERE queue = ?1 AND status IN (0, 1)",
+                params![queue_name],
+                |row| row.get(0),
+            )?;
+            if pending.saturating_add(new_rows) > max_pending_jobs {
+                return Err(QueueError::Full);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn insert_entries_in_transaction(
@@ -598,7 +665,7 @@ mod tests {
     #[test]
     fn enqueue_batch_vazio_nao_abre_transacao() {
         let (_dir, storage) = open_storage();
-        let ids = storage.enqueue_batch(&[], 3, None, None).unwrap();
+        let ids = storage.enqueue_batch(&[], 3, &[], None).unwrap();
         assert!(ids.is_empty());
     }
 
@@ -614,7 +681,7 @@ mod tests {
         }];
 
         assert!(matches!(
-            storage.enqueue_batch_outcomes(&entries, 3, None, None),
+            storage.enqueue_batch_outcomes(&entries, 3, &[], None),
             Err(QueueError::InvalidDeduplicationMetadata)
         ));
     }
@@ -645,7 +712,7 @@ mod tests {
                 dedup_fingerprint: None,
             },
         ];
-        let ids = storage.enqueue_batch(&entries, 3, None, None).unwrap();
+        let ids = storage.enqueue_batch(&entries, 3, &[], None).unwrap();
         assert_eq!(ids.len(), 3);
         assert!(ids[0] < ids[1] && ids[1] < ids[2]);
     }
@@ -671,7 +738,7 @@ mod tests {
             dedup_key: None,
             dedup_fingerprint: None,
         }];
-        let origin_id = storage.enqueue_batch(&origin, 4, None, None).unwrap()[0];
+        let origin_id = storage.enqueue_batch(&origin, 4, &[], None).unwrap()[0];
         lease_message(&storage, origin_id, "origin", "receipt");
         let targets = [
             EnqueueEntry {
@@ -728,7 +795,7 @@ mod tests {
             dedup_key: None,
             dedup_fingerprint: None,
         }];
-        let origin_id = storage.enqueue_batch(&origin, 3, None, None).unwrap()[0];
+        let origin_id = storage.enqueue_batch(&origin, 3, &[], None).unwrap()[0];
         lease_message(&storage, origin_id, "origin", "valid");
         let existing = [EnqueueEntry {
             queue_name: "target",
@@ -737,7 +804,7 @@ mod tests {
             dedup_key: None,
             dedup_fingerprint: None,
         }];
-        let existing_id = storage.enqueue_batch(&existing, 3, None, None).unwrap()[0];
+        let existing_id = storage.enqueue_batch(&existing, 3, &[], None).unwrap()[0];
         let targets = [
             EnqueueEntry {
                 queue_name: "target",
@@ -788,7 +855,7 @@ mod tests {
             dedup_key: None,
             dedup_fingerprint: None,
         }];
-        let origin_id = storage.enqueue_batch(&origin, 3, None, None).unwrap()[0];
+        let origin_id = storage.enqueue_batch(&origin, 3, &[], None).unwrap()[0];
         lease_message(&storage, origin_id, "origin", "receipt");
         {
             let mut guard = storage.connection();
@@ -857,7 +924,7 @@ mod tests {
                     dedup_fingerprint: None,
                 }],
                 3,
-                None,
+                &[],
                 None,
             )
             .unwrap();
@@ -885,7 +952,7 @@ mod tests {
                 dedup_fingerprint: None,
             },
         ];
-        let ids = storage.enqueue_batch(&entries, 3, None, None).unwrap();
+        let ids = storage.enqueue_batch(&entries, 3, &[], None).unwrap();
         assert_eq!(ids[0], first[0]);
         assert_eq!(ids[1], first[0]);
         assert_ne!(ids[2], first[0]);
@@ -910,7 +977,7 @@ mod tests {
                 dedup_fingerprint: None,
             },
         ];
-        let ids = storage.enqueue_batch(&entries, 3, None, None).unwrap();
+        let ids = storage.enqueue_batch(&entries, 3, &[], None).unwrap();
         assert_ne!(ids[0], ids[1]);
     }
 
@@ -927,9 +994,7 @@ mod tests {
             dedup_key: None,
             dedup_fingerprint: None,
         }];
-        storage
-            .enqueue_batch(&first, 3, Some(policy), None)
-            .unwrap();
+        storage.enqueue_batch(&first, 3, &[policy], None).unwrap();
         let rejected = [
             EnqueueEntry {
                 queue_name: "q",
@@ -948,7 +1013,7 @@ mod tests {
         ];
 
         assert!(matches!(
-            storage.enqueue_batch(&rejected, 3, Some(policy), None),
+            storage.enqueue_batch(&rejected, 3, &[policy], None),
             Err(QueueError::Full)
         ));
         let guard = storage.connection();
@@ -974,7 +1039,7 @@ mod tests {
             dedup_fingerprint: None,
         }];
         let existing_id = storage
-            .enqueue_batch(&existing, 3, Some(policy), None)
+            .enqueue_batch(&existing, 3, &[policy], None)
             .unwrap()[0];
         let mixed = [
             EnqueueEntry {
@@ -1000,9 +1065,7 @@ mod tests {
             },
         ];
 
-        let ids = storage
-            .enqueue_batch(&mixed, 3, Some(policy), None)
-            .unwrap();
+        let ids = storage.enqueue_batch(&mixed, 3, &[policy], None).unwrap();
         assert_eq!(ids[0], existing_id);
         assert_eq!(ids[1], ids[2]);
     }
@@ -1020,7 +1083,7 @@ mod tests {
                 dedup_fingerprint: None,
             })
             .collect();
-        let original_ids = storage.enqueue_batch(&entries, 3, None, None).unwrap();
+        let original_ids = storage.enqueue_batch(&entries, 3, &[], None).unwrap();
         {
             let guard = storage.connection();
             let conn = guard.as_ref().unwrap();
@@ -1052,7 +1115,7 @@ mod tests {
         };
 
         let returned = storage
-            .enqueue_batch(&duplicates, 3, Some(policy), None)
+            .enqueue_batch(&duplicates, 3, &[policy], None)
             .unwrap();
 
         let expected: Vec<_> = original_ids.iter().flat_map(|id| [*id, *id]).collect();
@@ -1065,7 +1128,7 @@ mod tests {
             dedup_fingerprint: None,
         }];
         assert!(matches!(
-            storage.enqueue_batch(&new_entry, 3, Some(policy), None),
+            storage.enqueue_batch(&new_entry, 3, &[policy], None),
             Err(QueueError::Full)
         ));
     }
@@ -1101,7 +1164,7 @@ mod tests {
         ];
 
         assert!(matches!(
-            storage.enqueue_batch(&entries, 3, Some(policy), None),
+            storage.enqueue_batch(&entries, 3, &[policy], None),
             Err(QueueError::FullImpossible)
         ));
         let distinct_ids = [
@@ -1128,7 +1191,7 @@ mod tests {
             },
         ];
         assert!(matches!(
-            storage.enqueue_batch(&distinct_ids, 3, Some(policy), None),
+            storage.enqueue_batch(&distinct_ids, 3, &[policy], None),
             Err(QueueError::FullImpossible)
         ));
         let guard = storage.connection();
@@ -1158,7 +1221,7 @@ mod tests {
                 dedup_fingerprint: None,
             },
         ];
-        storage.enqueue_batch(&entries, 3, None, None).unwrap();
+        storage.enqueue_batch(&entries, 3, &[], None).unwrap();
 
         let alpha_duplicate = [EnqueueEntry {
             queue_name: "alpha",
@@ -1171,10 +1234,10 @@ mod tests {
             storage.enqueue_batch(
                 &alpha_duplicate,
                 3,
-                Some(CapacityPolicy {
+                &[CapacityPolicy {
                     queue_name: "alpha",
                     max_pending_jobs: 1,
-                }),
+                }],
                 None,
             ),
             Err(QueueError::Full)
@@ -1190,10 +1253,10 @@ mod tests {
             .enqueue_batch(
                 &beta_duplicate,
                 3,
-                Some(CapacityPolicy {
+                &[CapacityPolicy {
                     queue_name: "beta",
                     max_pending_jobs: 2,
-                }),
+                }],
                 None,
             )
             .unwrap();
@@ -1217,7 +1280,7 @@ mod tests {
                 dedup_fingerprint: None,
             },
         ];
-        storage.enqueue_batch(&entries, 3, None, None).unwrap();
+        storage.enqueue_batch(&entries, 3, &[], None).unwrap();
         let extra = [EnqueueEntry {
             queue_name: "q",
             payload: b"extra",
@@ -1230,10 +1293,10 @@ mod tests {
             storage.enqueue_batch(
                 &extra,
                 3,
-                Some(CapacityPolicy {
+                &[CapacityPolicy {
                     queue_name: "q",
                     max_pending_jobs: 1,
-                }),
+                }],
                 None,
             ),
             Err(QueueError::Full)
@@ -1269,10 +1332,10 @@ mod tests {
                     storage.enqueue_batch(
                         &entry,
                         3,
-                        Some(CapacityPolicy {
+                        &[CapacityPolicy {
                             queue_name: "q",
                             max_pending_jobs: 1,
-                        }),
+                        }],
                         None,
                     )
                 })
@@ -1311,10 +1374,10 @@ mod tests {
             .enqueue_batch(
                 &entry,
                 3,
-                Some(CapacityPolicy {
+                &[CapacityPolicy {
                     queue_name: "q",
                     max_pending_jobs: 1,
-                }),
+                }],
                 Some(0),
             )
             .unwrap_err();
@@ -1363,10 +1426,10 @@ mod tests {
             .enqueue_batch(
                 &entry,
                 3,
-                Some(CapacityPolicy {
+                &[CapacityPolicy {
                     queue_name: "q",
                     max_pending_jobs: 1,
-                }),
+                }],
                 Some(17),
             )
             .unwrap();
@@ -1398,10 +1461,10 @@ mod tests {
             storage.enqueue_batch(
                 &rejected,
                 3,
-                Some(CapacityPolicy {
+                &[CapacityPolicy {
                     queue_name: "q",
                     max_pending_jobs: 1,
-                }),
+                }],
                 Some(17),
             ),
             Err(QueueError::Full)
@@ -1442,7 +1505,7 @@ mod tests {
                 dedup_fingerprint: None,
             },
         ];
-        let ids = storage.enqueue_batch(&entries, 3, None, None).unwrap();
+        let ids = storage.enqueue_batch(&entries, 3, &[], None).unwrap();
         {
             let guard = storage.connection();
             guard
@@ -1497,10 +1560,10 @@ mod tests {
             storage.enqueue_batch(
                 &entry,
                 3,
-                Some(CapacityPolicy {
+                &[CapacityPolicy {
                     queue_name: "q",
                     max_pending_jobs: 1,
-                }),
+                }],
                 Some(0),
             ),
             Err(QueueError::Closed)
@@ -1509,6 +1572,415 @@ mod tests {
             storage.retry_failed("q", 1, Some(1)),
             Err(QueueError::Closed)
         ));
+    }
+
+    fn count_rows(storage: &Storage, queue: &str) -> i64 {
+        let guard = storage.connection();
+        guard
+            .as_ref()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE queue = ?1",
+                params![queue],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    fn check_multi_queue_batch_keeps_payloads_and_outcome_order() {
+        let (_dir, storage) = open_storage();
+        let entries = [
+            EnqueueEntry {
+                queue_name: "beta",
+                payload: b"payload-beta-1",
+                job_id: None,
+                dedup_key: None,
+                dedup_fingerprint: None,
+            },
+            EnqueueEntry {
+                queue_name: "alpha",
+                payload: b"payload-alpha",
+                job_id: Some("alpha-job"),
+                dedup_key: None,
+                dedup_fingerprint: None,
+            },
+            EnqueueEntry {
+                queue_name: "beta",
+                payload: b"payload-beta-2",
+                job_id: None,
+                dedup_key: None,
+                dedup_fingerprint: None,
+            },
+        ];
+
+        let outcomes = storage
+            .enqueue_batch_outcomes(&entries, 3, &[], None)
+            .unwrap();
+
+        assert_eq!(outcomes.len(), 3);
+        assert!(outcomes.iter().all(|outcome| outcome.inserted));
+        assert!(outcomes[0].id < outcomes[1].id && outcomes[1].id < outcomes[2].id);
+        let guard = storage.connection();
+        let conn = guard.as_ref().unwrap();
+        for (outcome, entry) in outcomes.iter().zip(entries.iter()) {
+            let row: (String, Vec<u8>) = conn
+                .query_row(
+                    "SELECT queue, payload FROM messages WHERE id = ?1",
+                    params![outcome.id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(row, (entry.queue_name.to_owned(), entry.payload.to_vec()));
+        }
+    }
+
+    fn check_dedup_key_deduplicates_within_batch() {
+        let (_dir, storage) = open_storage();
+        let entries = [
+            EnqueueEntry {
+                queue_name: "events",
+                payload: b"first",
+                job_id: None,
+                dedup_key: Some("identity"),
+                dedup_fingerprint: Some("fingerprint"),
+            },
+            EnqueueEntry {
+                queue_name: "events",
+                payload: b"second",
+                job_id: None,
+                dedup_key: Some("identity"),
+                dedup_fingerprint: Some("fingerprint"),
+            },
+        ];
+
+        let outcomes = storage
+            .enqueue_batch_outcomes(&entries, 3, &[], None)
+            .unwrap();
+
+        assert!(outcomes[0].inserted);
+        assert!(!outcomes[1].inserted);
+        assert_eq!(outcomes[0].id, outcomes[1].id);
+        assert_eq!(count_rows(&storage, "events"), 1);
+    }
+
+    fn check_fingerprint_conflict_within_batch_rolls_back_all_queues() {
+        let (_dir, storage) = open_storage();
+        let entries = [
+            EnqueueEntry {
+                queue_name: "qa",
+                payload: b"ok",
+                job_id: Some("ok-job"),
+                dedup_key: None,
+                dedup_fingerprint: None,
+            },
+            EnqueueEntry {
+                queue_name: "qb",
+                payload: b"original",
+                job_id: None,
+                dedup_key: Some("identity"),
+                dedup_fingerprint: Some("fingerprint-a"),
+            },
+            EnqueueEntry {
+                queue_name: "qb",
+                payload: b"conflicting",
+                job_id: None,
+                dedup_key: Some("identity"),
+                dedup_fingerprint: Some("fingerprint-b"),
+            },
+        ];
+
+        assert!(matches!(
+            storage.enqueue_batch_outcomes(&entries, 3, &[], None),
+            Err(QueueError::DeduplicationConflict)
+        ));
+        assert_eq!(count_rows(&storage, "qa"), 0);
+        assert_eq!(count_rows(&storage, "qb"), 0);
+    }
+
+    fn check_fingerprint_conflict_against_existing_row_rolls_back_all_queues() {
+        let (_dir, storage) = open_storage();
+        let existing = [EnqueueEntry {
+            queue_name: "qb",
+            payload: b"original",
+            job_id: None,
+            dedup_key: Some("identity"),
+            dedup_fingerprint: Some("fingerprint-a"),
+        }];
+        storage.enqueue_batch(&existing, 3, &[], None).unwrap();
+        let entries = [
+            EnqueueEntry {
+                queue_name: "qa",
+                payload: b"ok",
+                job_id: Some("ok-job"),
+                dedup_key: None,
+                dedup_fingerprint: None,
+            },
+            EnqueueEntry {
+                queue_name: "qb",
+                payload: b"conflicting",
+                job_id: None,
+                dedup_key: Some("identity"),
+                dedup_fingerprint: Some("fingerprint-b"),
+            },
+        ];
+
+        assert!(matches!(
+            storage.enqueue_batch_outcomes(&entries, 3, &[], None),
+            Err(QueueError::DeduplicationConflict)
+        ));
+        assert_eq!(count_rows(&storage, "qa"), 0);
+        assert_eq!(count_rows(&storage, "qb"), 1);
+    }
+
+    fn check_conflicting_duplicate_policies_are_rejected() {
+        let (_dir, storage) = open_storage();
+        let entry = [EnqueueEntry {
+            queue_name: "q",
+            payload: b"payload",
+            job_id: None,
+            dedup_key: None,
+            dedup_fingerprint: None,
+        }];
+        let conflicting = [
+            CapacityPolicy {
+                queue_name: "q",
+                max_pending_jobs: 1,
+            },
+            CapacityPolicy {
+                queue_name: "q",
+                max_pending_jobs: 2,
+            },
+        ];
+
+        assert!(matches!(
+            storage.enqueue_batch(&entry, 3, &conflicting, None),
+            Err(QueueError::ConflictingCapacityPolicies)
+        ));
+        assert_eq!(count_rows(&storage, "q"), 0);
+
+        let identical = [
+            CapacityPolicy {
+                queue_name: "q",
+                max_pending_jobs: 2,
+            },
+            CapacityPolicy {
+                queue_name: "q",
+                max_pending_jobs: 2,
+            },
+        ];
+        storage.enqueue_batch(&entry, 3, &identical, None).unwrap();
+        assert_eq!(count_rows(&storage, "q"), 1);
+    }
+
+    fn check_repeated_dedup_key_counts_as_one_new_row() {
+        let (_dir, storage) = open_storage();
+        let entries: Vec<_> = (0..1000)
+            .map(|_| EnqueueEntry {
+                queue_name: "events",
+                payload: b"payload",
+                job_id: None,
+                dedup_key: Some("identity"),
+                dedup_fingerprint: Some("fingerprint"),
+            })
+            .collect();
+        let policy = [CapacityPolicy {
+            queue_name: "events",
+            max_pending_jobs: 1,
+        }];
+
+        let outcomes = storage
+            .enqueue_batch_outcomes(&entries, 3, &policy, None)
+            .unwrap();
+
+        assert_eq!(outcomes.len(), 1000);
+        assert!(outcomes[0].inserted);
+        assert!(outcomes[1..].iter().all(|outcome| !outcome.inserted));
+        assert!(outcomes.iter().all(|outcome| outcome.id == outcomes[0].id));
+        assert_eq!(count_rows(&storage, "events"), 1);
+    }
+
+    fn check_existing_identity_counts_as_zero_new_rows() {
+        let (_dir, storage) = open_storage();
+        let existing = [EnqueueEntry {
+            queue_name: "events",
+            payload: b"original",
+            job_id: None,
+            dedup_key: Some("identity"),
+            dedup_fingerprint: Some("fingerprint"),
+        }];
+        storage.enqueue_batch(&existing, 3, &[], None).unwrap();
+        let duplicates = [EnqueueEntry {
+            queue_name: "events",
+            payload: b"duplicate",
+            job_id: None,
+            dedup_key: Some("identity"),
+            dedup_fingerprint: Some("fingerprint"),
+        }];
+        let policy = [CapacityPolicy {
+            queue_name: "events",
+            max_pending_jobs: 1,
+        }];
+
+        let outcomes = storage
+            .enqueue_batch_outcomes(&duplicates, 3, &policy, None)
+            .unwrap();
+
+        assert!(!outcomes[0].inserted);
+        assert_eq!(count_rows(&storage, "events"), 1);
+    }
+
+    fn check_capacity_failure_in_one_queue_rolls_back_other_queues() {
+        let (_dir, storage) = open_storage();
+        let entries = [
+            EnqueueEntry {
+                queue_name: "unbounded",
+                payload: b"fits",
+                job_id: None,
+                dedup_key: None,
+                dedup_fingerprint: None,
+            },
+            EnqueueEntry {
+                queue_name: "tight",
+                payload: b"one",
+                job_id: None,
+                dedup_key: None,
+                dedup_fingerprint: None,
+            },
+            EnqueueEntry {
+                queue_name: "tight",
+                payload: b"two",
+                job_id: None,
+                dedup_key: None,
+                dedup_fingerprint: None,
+            },
+        ];
+        let policies = [CapacityPolicy {
+            queue_name: "tight",
+            max_pending_jobs: 1,
+        }];
+
+        assert!(matches!(
+            storage.enqueue_batch_outcomes(&entries, 3, &policies, None),
+            Err(QueueError::FullImpossible)
+        ));
+        assert_eq!(count_rows(&storage, "unbounded"), 0);
+        assert_eq!(count_rows(&storage, "tight"), 0);
+
+        // Queues without a policy remain unlimited within the same batch.
+        let entries = [
+            EnqueueEntry {
+                queue_name: "unbounded",
+                payload: b"one",
+                job_id: None,
+                dedup_key: None,
+                dedup_fingerprint: None,
+            },
+            EnqueueEntry {
+                queue_name: "unbounded",
+                payload: b"two",
+                job_id: None,
+                dedup_key: None,
+                dedup_fingerprint: None,
+            },
+        ];
+        storage
+            .enqueue_batch_outcomes(&entries, 3, &policies, None)
+            .unwrap();
+        assert_eq!(count_rows(&storage, "unbounded"), 2);
+    }
+
+    fn check_multi_queue_policies_are_enforced_independently() {
+        let (_dir, storage) = open_storage();
+        let policies = [
+            CapacityPolicy {
+                queue_name: "qa",
+                max_pending_jobs: 2,
+            },
+            CapacityPolicy {
+                queue_name: "qb",
+                max_pending_jobs: 1,
+            },
+        ];
+        let first = [
+            EnqueueEntry {
+                queue_name: "qa",
+                payload: b"a1",
+                job_id: None,
+                dedup_key: None,
+                dedup_fingerprint: None,
+            },
+            EnqueueEntry {
+                queue_name: "qa",
+                payload: b"a2",
+                job_id: None,
+                dedup_key: None,
+                dedup_fingerprint: None,
+            },
+            EnqueueEntry {
+                queue_name: "qb",
+                payload: b"b1",
+                job_id: None,
+                dedup_key: None,
+                dedup_fingerprint: None,
+            },
+        ];
+        storage
+            .enqueue_batch_outcomes(&first, 3, &policies, None)
+            .unwrap();
+
+        let over_qb = [EnqueueEntry {
+            queue_name: "qb",
+            payload: b"b2",
+            job_id: None,
+            dedup_key: None,
+            dedup_fingerprint: None,
+        }];
+        assert!(matches!(
+            storage.enqueue_batch_outcomes(&over_qb, 3, &policies, None),
+            Err(QueueError::Full)
+        ));
+        assert_eq!(count_rows(&storage, "qa"), 2);
+        assert_eq!(count_rows(&storage, "qb"), 1);
+    }
+
+    fn check_malformed_dedup_metadata_writes_nothing() {
+        let (_dir, storage) = open_storage();
+        let entries = [
+            EnqueueEntry {
+                queue_name: "qa",
+                payload: b"valid",
+                job_id: None,
+                dedup_key: None,
+                dedup_fingerprint: None,
+            },
+            EnqueueEntry {
+                queue_name: "qa",
+                payload: b"invalid",
+                job_id: None,
+                dedup_key: Some("identity"),
+                dedup_fingerprint: None,
+            },
+        ];
+
+        assert!(matches!(
+            storage.enqueue_batch_outcomes(&entries, 3, &[], None),
+            Err(QueueError::InvalidDeduplicationMetadata)
+        ));
+        assert_eq!(count_rows(&storage, "qa"), 0);
+    }
+
+    #[test]
+    fn multi_queue_ingestion_contract() {
+        check_multi_queue_batch_keeps_payloads_and_outcome_order();
+        check_dedup_key_deduplicates_within_batch();
+        check_fingerprint_conflict_within_batch_rolls_back_all_queues();
+        check_fingerprint_conflict_against_existing_row_rolls_back_all_queues();
+        check_conflicting_duplicate_policies_are_rejected();
+        check_repeated_dedup_key_counts_as_one_new_row();
+        check_existing_identity_counts_as_zero_new_rows();
+        check_capacity_failure_in_one_queue_rolls_back_other_queues();
+        check_multi_queue_policies_are_enforced_independently();
+        check_malformed_dedup_metadata_writes_nothing();
     }
 
     #[test]

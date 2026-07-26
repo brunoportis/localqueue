@@ -84,8 +84,11 @@ class TestHandlerTimeoutConfiguration:
 
 
 class TestAsyncHandlerTimeout:
-    def test_async_handler_completing_before_deadline_is_acked(self, bus):
+    def test_async_handler_completing_before_deadline_is_acked(self, bus, monkeypatch):
         completed: list[int] = []
+        timer_started, _release_timer, timer_cancelled = controlled_deadline(
+            monkeypatch
+        )
 
         @bus.on(WorkSubmitted, subscription="email", timeout=0.1)
         async def handle(event):
@@ -102,6 +105,8 @@ class TestAsyncHandlerTimeout:
         finally:
             queue.close()
         assert completed == [1]
+        assert timer_started.is_set()
+        assert timer_cancelled.is_set()
 
     def test_timeout_cancels_handler_and_records_distinct_error(self, bus):
         cancelled = asyncio.Event()

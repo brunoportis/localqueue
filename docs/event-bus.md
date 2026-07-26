@@ -715,3 +715,126 @@ even if the worker crashes before the handler starts. Consequently, changing a
 subscription policy between deployments can change a message's persisted
 budget at its next claim. Deploy consistent policy configuration across all
 workers competing for that subscription.
+
+## Generic ingestion
+
+`EventBus.ingest()` routes events from any synchronous or asynchronous
+iterable into the bus. Lists, tuples, generators, and async generators are
+already valid sources; no adapter class is needed. Future sources (for
+example, CSV readers) only need to support Python's `iter()` or `aiter()`
+protocol.
+
+```python
+from localqueue.bus import BaseEvent, EventBus, IngestionResult
+
+
+class ContactCreated(BaseEvent):
+    contact_id: str
+
+
+result: IngestionResult = await bus.ingest([ContactCreated(contact_id="1")])
+```
+
+A generator works the same way and is consumed incrementally:
+
+```python
+def contact_events() -> Iterator[ContactCreated]:
+    for contact_id in load_ids():
+        yield ContactCreated(contact_id=contact_id)
+
+
+result = await bus.ingest(contact_events())
+```
+
+Non-event items need a `transform` that maps each item to an event. The
+transform may be synchronous or asynchronous, and the source may be an
+`AsyncIterable`:
+
+```python
+def to_event(row: dict) -> ContactCreated:
+    return ContactCreated(contact_id=row["contact_id"])
+
+
+result = await bus.ingest(rows, transform=to_event)
+
+
+async def async_to_event(row: dict) -> ContactCreated:
+    return ContactCreated(contact_id=row["contact_id"])
+
+
+result = await bus.ingest(stream_rows(), transform=async_to_event)
+```
+
+The source is never materialized in full: at most `batch_size` source items
+are prepared at a time. Fan-out creates one delivery entry per subscription,
+including a payload buffer at the Python/Rust boundary, so delivery count,
+transaction size, and peak memory are approximately proportional to
+`batch_size × fan-out × payload size`, plus intermediate Python and Rust
+structures. `batch_size` bounds source items, not delivery entries. Use
+`max_pending` to apply backpressure per subscription queue:
+
+```python
+result = await bus.ingest(
+    events,
+    batch_size=500,
+    max_pending=10_000,
+)
+```
+
+`max_pending` counts READY plus LEASED deliveries in each subscription queue
+(ACKED and FAILED deliveries do not count), including backlog produced by
+other producers. When a queue is at the limit, ingestion waits asynchronously;
+the event loop is not blocked. It is an ephemeral, per-subscription limit,
+not durable subscription configuration and not a global quota: a later plain
+`dispatch()` can exceed it, and it is not persisted across restarts. A batch
+larger than the available capacity is split internally into smaller commits;
+atomicity applies per effective commit and each split counts in
+`batches_committed`.
+
+If consumers do not free capacity, this wait has no implicit deadline.
+Applications that need a bound should compose one explicitly:
+
+```python
+result = await asyncio.wait_for(
+    bus.ingest(events, max_pending=10_000),
+    timeout=30,
+)
+```
+
+Cancellation or timeout while backpressure is waiting is observed promptly.
+If a native commit is already in flight, it is allowed to settle first; the
+batch may commit before the cancellation or timeout reaches the caller.
+
+Synchronous source iteration and synchronous transforms execute on the
+event-loop thread. This avoids a thread handoff for every item, but a blocking
+CSV reader or CPU-heavy transform can delay unrelated async tasks. Use an
+`AsyncIterable`, an async transform, or explicitly offload blocking work.
+
+Ingestion is incremental and batch-atomic, not all-or-nothing: batches
+committed before a later failure stay committed. There is no checkpoint or
+resume in this version; restarting a generic source re-consumes it from the
+start. Events with a durable identity (`@event(identity=...)`) are
+deduplicated on re-ingestion, so re-running an identified source is safe;
+events without identity are new occurrences. Future resumable sources will
+handle checkpoints explicitly.
+
+The first source, transform, serialization, routing, or native error stops the
+run. There is no `continue_on_error`, invalid-item skip policy, partial result,
+or source position in `IngestionResult`. For multi-million-item imports,
+`ingest()` is therefore a batch-dispatch primitive; applications that need
+restartable ingestion must own checkpoints and error policy around it.
+
+The returned `IngestionResult` aggregates counters for the run:
+
+```python
+result = await bus.ingest(events)
+print(result.items_read, result.events_dispatched, result.events_unrouted)
+print(result.deliveries_inserted, result.deliveries_deduplicated)
+print(result.deliveries_total)  # inserted + deduplicated
+print(result.batches_committed, result.elapsed_seconds)
+```
+
+Deduplication of identified events shows up as `deliveries_deduplicated`
+instead of `deliveries_inserted`. Fan-out means delivery counts can exceed
+`events_dispatched`: one event routed to N subscriptions produces N
+deliveries.

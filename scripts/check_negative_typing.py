@@ -34,6 +34,11 @@ EXPECTED_DIAGNOSTICS = (
     "localqueue.bus.bus.EventBus.handler",
     "localqueue.bus.bus.EventBus.handler",
     "nonexistent_service",
+    "`list[int]` is not assignable to parameter `source`",
+    "transform=Literal['ContactCreated']",
+    "transform=(row: Row) -> Coroutine[Unknown, Unknown, str]",
+    "transform=(row: OtherRow) -> ContactCreated",
+    "`Literal[42]` is not assignable to parameter `source`",
 )
 
 

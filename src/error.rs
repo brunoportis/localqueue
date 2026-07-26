@@ -62,6 +62,9 @@ pub enum QueueError {
     #[error("dedup_key and dedup_fingerprint must be provided together")]
     InvalidDeduplicationMetadata,
 
+    #[error("conflicting capacity policies for the same queue")]
+    ConflictingCapacityPolicies,
+
     #[error("job not found")]
     NotFound,
 
@@ -103,6 +106,9 @@ impl From<QueueError> for PyErr {
                 "an event with the same identity already exists with a different payload",
             ),
             QueueError::InvalidDeduplicationMetadata => {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string())
+            }
+            QueueError::ConflictingCapacityPolicies => {
                 PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string())
             }
             QueueError::NotFound => PyErr::new::<LocalQueueError, _>("job not found"),
