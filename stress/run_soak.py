@@ -465,6 +465,11 @@ def consume(
                 else:
                     increment(counters[f"{operation}s"])
                     diagnostic_event(events, operation, consumer_id)
+    except SQLiteContentionExhausted as error:
+        # Do not rely on multiprocessing's implicit exception-to-exit-code
+        # handling: the supervisor's report contract needs this worker
+        # failure to be unambiguously non-zero on every supported platform.
+        raise SystemExit(1) from error
     finally:
         queue.close()
         close_events = getattr(events, "close", None)
