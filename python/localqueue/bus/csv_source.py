@@ -22,7 +22,7 @@ import os
 import sys
 from collections.abc import Iterator, Mapping
 from dataclasses import asdict, dataclass
-from typing import Any, cast, override
+from typing import Any, cast
 
 from localqueue.bus.sources import SourceRecord
 
@@ -99,15 +99,12 @@ class CsvRow(Mapping[str, str]):
     def line_number(self) -> int:
         return self._line_number
 
-    @override
     def __getitem__(self, key: str) -> str:
         return self._data[key]
 
-    @override
     def __iter__(self) -> Iterator[str]:
         return iter(self._data)
 
-    @override
     def __len__(self) -> int:
         return len(self._data)
 
