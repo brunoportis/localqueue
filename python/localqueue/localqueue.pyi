@@ -141,6 +141,38 @@ class NativeQueue:
     def _execution_delivery_states(
         self, execution_id: str
     ) -> tuple[int, int, int, int, int]: ...
+    def _execution_open(
+        self,
+        candidate: str,
+        bus: str,
+        source: str,
+        checkpoint: str,
+        fingerprint: str,
+    ) -> tuple[str, bool]: ...
+    def _execution_claim_source(
+        self, id: str, receipt: str, lease_ms: int
+    ) -> tuple[bool, Optional[str], Optional[str], Optional[str], Optional[int]]: ...
+    def _execution_extend_source_lease(
+        self, id: str, receipt: str, lease_ms: int
+    ) -> int: ...
+    def _execution_release_source_lease(self, id: str, receipt: str) -> bool: ...
+    def _execution_mark_source_completed_claimed(
+        self, id: str, receipt: str
+    ) -> bool: ...
+    def _execution_finalize_if_complete(self, id: str) -> bool: ...
+    def _execution_snapshot(self, id: str) -> tuple[object, ...]: ...
+    def _enqueue_batch_with_claimed_execution(
+        self,
+        entries: list[tuple[str, bytes, Optional[str], Optional[str], Optional[str]]],
+        capacity: Optional[list[tuple[str, int]]],
+        checkpoint: tuple[
+            str, str, Optional[str], Optional[int], str, Optional[str], int
+        ],
+        execution_id: str,
+        receipt: str,
+        dispatched: int,
+        unrouted: int,
+    ) -> tuple[list[tuple[int, bool]], str, int]: ...
     def _checkpoint_inspect(
         self,
         bus_name: str,

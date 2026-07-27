@@ -49,6 +49,13 @@ pyo3::create_exception!(
     "Raised when an ingestion checkpoint version does not match the expected value."
 );
 
+pyo3::create_exception!(
+    localqueue,
+    ExecutionLeaseLost,
+    LocalQueueError,
+    "Raised when a finite execution source lease was fenced."
+);
+
 #[derive(thiserror::Error, Debug)]
 pub enum QueueError {
     #[error("queue is empty")]
@@ -80,6 +87,15 @@ pub enum QueueError {
         actual_generation: Option<String>,
         actual_version: Option<i64>,
     },
+
+    #[error("execution source lease was lost")]
+    ExecutionLeaseLost,
+
+    #[error("checkpoint generation is not owned by a durable execution runtime")]
+    ExecutionRuntimeMissing,
+
+    #[error("runtime-backed execution source completion requires an active receipt")]
+    ExecutionReceiptRequired,
 
     #[error("job not found")]
     NotFound,
@@ -129,6 +145,15 @@ impl From<QueueError> for PyErr {
             }
             QueueError::CheckpointConflict { .. } => {
                 PyErr::new::<CheckpointConflict, _>(err.to_string())
+            }
+            QueueError::ExecutionLeaseLost => {
+                PyErr::new::<ExecutionLeaseLost, _>("execution source lease was lost")
+            }
+            QueueError::ExecutionRuntimeMissing => {
+                PyErr::new::<LocalQueueError, _>(err.to_string())
+            }
+            QueueError::ExecutionReceiptRequired => {
+                PyErr::new::<LocalQueueError, _>(err.to_string())
             }
             QueueError::NotFound => PyErr::new::<LocalQueueError, _>("job not found"),
             QueueError::Closed => PyErr::new::<LocalQueueError, _>("queue is closed"),

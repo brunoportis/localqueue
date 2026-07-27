@@ -295,6 +295,7 @@ def test_many_spawn_consumers_preserve_operation_counters(tmp_path: Path) -> Non
         soak_args(
             tmp_path,
             messages=300,
+            duration=30.0,
             producers=4,
             consumers=8,
             seed=456,

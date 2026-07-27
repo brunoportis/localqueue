@@ -70,6 +70,35 @@ CREATE INDEX IF NOT EXISTS idx_event_bus_delivery_edges_child
     ON event_bus_delivery_edges(child_message_id);
 "#;
 
+pub const EXECUTION_RUNTIME_SCHEMA_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS event_bus_execution_runtime (
+    execution_id TEXT PRIMARY KEY,
+    bus_name TEXT NOT NULL,
+    checkpoint_name TEXT NOT NULL,
+    source_fingerprint TEXT NOT NULL,
+    checkpoint_generation TEXT,
+    source_receipt TEXT,
+    source_lease_until INTEGER,
+    source_completed_at INTEGER,
+    completed_at INTEGER,
+    items_committed INTEGER NOT NULL DEFAULT 0,
+    events_dispatched INTEGER NOT NULL DEFAULT 0,
+    events_unrouted INTEGER NOT NULL DEFAULT 0,
+    deliveries_inserted INTEGER NOT NULL DEFAULT 0,
+    deliveries_deduplicated INTEGER NOT NULL DEFAULT 0,
+    batches_committed INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (execution_id) REFERENCES event_bus_executions(execution_id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_execution_runtime_bound
+    ON event_bus_execution_runtime(bus_name, checkpoint_name, checkpoint_generation)
+    WHERE checkpoint_generation IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_execution_runtime_pending
+    ON event_bus_execution_runtime(bus_name, checkpoint_name, source_fingerprint)
+    WHERE checkpoint_generation IS NULL;
+CREATE INDEX IF NOT EXISTS idx_execution_runtime_claim
+    ON event_bus_execution_runtime(execution_id, source_completed_at, source_lease_until);
+"#;
+
 pub const SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT, queue TEXT NOT NULL, payload BLOB NOT NULL,
@@ -113,4 +142,17 @@ CREATE TABLE IF NOT EXISTS event_bus_delivery_edges (
 );
 CREATE INDEX IF NOT EXISTS idx_event_bus_delivery_edges_child
     ON event_bus_delivery_edges(child_message_id);
+CREATE TABLE IF NOT EXISTS event_bus_execution_runtime (
+    execution_id TEXT PRIMARY KEY, bus_name TEXT NOT NULL, checkpoint_name TEXT NOT NULL,
+    source_fingerprint TEXT NOT NULL, checkpoint_generation TEXT,
+    source_receipt TEXT, source_lease_until INTEGER, source_completed_at INTEGER,
+    completed_at INTEGER, items_committed INTEGER NOT NULL DEFAULT 0,
+    events_dispatched INTEGER NOT NULL DEFAULT 0, events_unrouted INTEGER NOT NULL DEFAULT 0,
+    deliveries_inserted INTEGER NOT NULL DEFAULT 0, deliveries_deduplicated INTEGER NOT NULL DEFAULT 0,
+    batches_committed INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (execution_id) REFERENCES event_bus_executions(execution_id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_execution_runtime_bound ON event_bus_execution_runtime(bus_name, checkpoint_name, checkpoint_generation) WHERE checkpoint_generation IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_execution_runtime_pending ON event_bus_execution_runtime(bus_name, checkpoint_name, source_fingerprint) WHERE checkpoint_generation IS NULL;
+CREATE INDEX IF NOT EXISTS idx_execution_runtime_claim ON event_bus_execution_runtime(execution_id, source_completed_at, source_lease_until);
 "#;

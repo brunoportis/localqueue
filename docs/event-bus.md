@@ -1008,3 +1008,30 @@ Execution state snapshots are derived by joining membership rows to durable
 message status at query time. They do not use mutable counters on executions,
 so retries, lease recovery, failures, and acknowledgements cannot make a
 secondary count drift from the message source of truth.
+
+## Private finite execution lifecycle
+
+The next ergonomic API will build on a private finite-execution handle; this
+release does not expose `EventBus.execute()`, start workers, or stop workers.
+It accepts only a declared `SourceDefinition` backed by a `ResumableSource`
+with a non-empty checkpoint name and stable non-empty fingerprint.
+
+An execution is identified by bus/checkpoint/generation once a checkpoint has
+committed. Before the first batch creates that checkpoint, callers share a
+pending execution identified by bus/checkpoint/fingerprint. This prevents a
+crash before the first source commit from creating unrelated logical runs;
+resetting a checkpoint makes a later invocation a new pending execution.
+
+Source ingestion has a renewable, opaque fenced lease. Every execution-aware
+source batch validates that lease, updates its checkpoint, attaches root
+delivery membership (including existing descendants), and increments durable
+source counters in one SQLite transaction. A stale owner cannot advance the
+checkpoint or commit a batch. Source completion is also a fenced transaction.
+
+Completion is operation-scoped: the source must be complete and that
+execution's READY and PROCESSING deliveries must both be zero. Failed
+deliveries are terminal. Timeout and cancellation release a held lease but do
+not erase committed progress, so a later caller can resume. This lifecycle
+does not use queue-idle detection and does not move synchronous blocking source
+or transform work to threads; use async source/transform code for blocking
+work.

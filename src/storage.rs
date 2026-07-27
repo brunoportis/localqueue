@@ -10,7 +10,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::error::{QueueError, Result};
 use crate::schema::{
-    BASE_SCHEMA_SQL, CHECKPOINTS_SCHEMA_SQL, EXECUTION_MEMBERSHIP_SCHEMA_SQL, SCHEMA_SQL,
+    BASE_SCHEMA_SQL, CHECKPOINTS_SCHEMA_SQL, EXECUTION_MEMBERSHIP_SCHEMA_SQL,
+    EXECUTION_RUNTIME_SCHEMA_SQL, SCHEMA_SQL,
 };
 
 pub(crate) const BUSY_TIMEOUT_MS: u64 = 5_000;
@@ -84,6 +85,42 @@ pub struct ExecutionDeliveryStateSnapshot {
     pub failed: i64,
 }
 
+/// Consistent durable lifecycle view used by the private Python handle.
+pub struct ExecutionRuntimeSnapshot {
+    pub execution_id: String,
+    pub source_name: String,
+    pub checkpoint_name: String,
+    pub source_fingerprint: String,
+    pub checkpoint_generation: Option<String>,
+    pub source_completed: bool,
+    pub source_completed_at: Option<i64>,
+    pub completed_at: Option<i64>,
+    pub items_committed: i64,
+    pub events_dispatched: i64,
+    pub events_unrouted: i64,
+    pub deliveries_inserted: i64,
+    pub deliveries_deduplicated: i64,
+    pub batches_committed: i64,
+    pub total: i64,
+    pub ready: i64,
+    pub processing: i64,
+    pub acknowledged: i64,
+    pub failed: i64,
+    pub source_lease_until: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// The checkpoint incarnation observed while acquiring an execution source
+/// lease.  All fields come from the same immediate transaction as the claim.
+pub struct ExecutionSourceClaim {
+    pub claimed: bool,
+    pub cursor: Option<String>,
+    pub source_fingerprint: Option<String>,
+    pub generation: Option<String>,
+    pub version: Option<i64>,
+}
+
 pub struct Storage {
     conn: Mutex<Option<Connection>>,
     path: PathBuf,
@@ -116,6 +153,7 @@ impl Storage {
         migrate_event_identity(&mut conn)?;
         migrate_ingestion_checkpoints(&mut conn)?;
         migrate_execution_membership(&mut conn)?;
+        migrate_execution_runtime(&mut conn)?;
 
         Ok(Self {
             conn: Mutex::new(Some(conn)),
@@ -332,20 +370,27 @@ impl Storage {
 
     pub fn execution_mark_source_completed(&self, execution_id: &str) -> Result<bool> {
         let now = now_ms();
-        let guard = self.connection();
-        let conn = guard.as_ref().ok_or(QueueError::Closed)?;
-        let changed = conn.execute(
+        let mut guard = self.connection();
+        let conn = guard.as_mut().ok_or(QueueError::Closed)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let has_runtime: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM event_bus_execution_runtime WHERE execution_id=?1)",
+            params![execution_id],
+            |row| row.get(0),
+        )?;
+        if has_runtime {
+            return Err(QueueError::ExecutionReceiptRequired);
+        }
+        let changed = tx.execute(
             "UPDATE event_bus_executions SET source_completed = 1, updated_at = ?2
              WHERE execution_id = ?1 AND source_completed = 0",
             params![execution_id, now],
         )?;
-        if changed == 1 {
-            return Ok(true);
-        }
-        if !execution_exists(conn, execution_id)? {
+        if !execution_exists(&tx, execution_id)? {
             return Err(QueueError::NotFound);
         }
-        Ok(false)
+        tx.commit()?;
+        Ok(changed == 1)
     }
 
     pub fn execution_delivery_states(
@@ -376,6 +421,210 @@ impl Storage {
             },
         )
         .map_err(QueueError::from)
+    }
+
+    pub fn execution_open(
+        &self,
+        candidate: &str,
+        bus: &str,
+        source: &str,
+        checkpoint: &str,
+        fingerprint: &str,
+        expected_fingerprint: &str,
+    ) -> Result<(String, bool)> {
+        let now = now_ms();
+        let mut guard = self.connection();
+        let conn = guard.as_mut().ok_or(QueueError::Closed)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let checkpoint_state: Option<(String, Option<String>)> = tx.query_row("SELECT generation, source_fingerprint FROM ingestion_checkpoints WHERE bus_name=?1 AND checkpoint_name=?2", params![bus, checkpoint], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+        if let Some((generation, source_fingerprint)) = &checkpoint_state {
+            if source_fingerprint.as_deref() != Some(expected_fingerprint) {
+                return Err(QueueError::CheckpointConflict {
+                    checkpoint_name: checkpoint.to_owned(),
+                    expected_generation: None,
+                    expected_version: None,
+                    actual_generation: Some(generation.clone()),
+                    actual_version: None,
+                });
+            }
+        }
+        let expected_generation = checkpoint_state
+            .as_ref()
+            .map(|(generation, _)| generation.as_str());
+        let existing: Option<String> = if let Some(generation) = expected_generation {
+            tx.query_row("SELECT execution_id FROM event_bus_execution_runtime WHERE bus_name=?1 AND checkpoint_name=?2 AND checkpoint_generation=?3", params![bus, checkpoint, generation], |r| r.get(0)).optional()?
+        } else {
+            tx.query_row("SELECT execution_id FROM event_bus_execution_runtime WHERE bus_name=?1 AND checkpoint_name=?2 AND source_fingerprint=?3 AND checkpoint_generation IS NULL", params![bus, checkpoint, fingerprint], |r| r.get(0)).optional()?
+        };
+        if let Some(id) = existing {
+            let meta: (String, String, String, String) = tx.query_row("SELECT e.bus_name,e.source_name,r.checkpoint_name,r.source_fingerprint FROM event_bus_executions e JOIN event_bus_execution_runtime r USING(execution_id) WHERE e.execution_id=?1", params![id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+            if meta
+                != (
+                    bus.to_owned(),
+                    source.to_owned(),
+                    checkpoint.to_owned(),
+                    fingerprint.to_owned(),
+                )
+            {
+                return Err(QueueError::InvalidDeduplicationMetadata);
+            }
+            tx.commit()?;
+            return Ok((id, false));
+        }
+        if expected_generation.is_some() {
+            return Err(QueueError::ExecutionRuntimeMissing);
+        }
+        tx.execute("INSERT INTO event_bus_executions (execution_id,bus_name,source_name,checkpoint_name,source_completed,created_at,updated_at) VALUES (?1,?2,?3,?4,0,?5,?5)", params![candidate,bus,source,checkpoint,now])?;
+        tx.execute("INSERT INTO event_bus_execution_runtime (execution_id,bus_name,checkpoint_name,source_fingerprint,checkpoint_generation) VALUES (?1,?2,?3,?4,?5)", params![candidate,bus,checkpoint,fingerprint,expected_generation])?;
+        tx.commit()?;
+        Ok((candidate.to_owned(), true))
+    }
+
+    pub fn execution_claim_source(
+        &self,
+        id: &str,
+        receipt: &str,
+        lease_ms: i64,
+    ) -> Result<ExecutionSourceClaim> {
+        let now = now_ms();
+        let mut guard = self.connection();
+        let conn = guard.as_mut().ok_or(QueueError::Closed)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed=tx.execute("UPDATE event_bus_execution_runtime SET source_receipt=?2,source_lease_until=?3 WHERE execution_id=?1 AND source_completed_at IS NULL AND (source_lease_until IS NULL OR source_lease_until <= ?4 OR source_receipt=?2)",params![id,receipt,now+lease_ms,now])?;
+        if changed == 0 && !execution_exists(&tx, id)? {
+            return Err(QueueError::NotFound);
+        }
+        if changed == 0 {
+            tx.commit()?;
+            return Ok(ExecutionSourceClaim {
+                claimed: false,
+                cursor: None,
+                source_fingerprint: None,
+                generation: None,
+                version: None,
+            });
+        }
+        let (bus_name, checkpoint_name, expected_fingerprint, expected_generation): (
+            String,
+            String,
+            String,
+            Option<String>,
+        ) = tx.query_row(
+            "SELECT bus_name, checkpoint_name, source_fingerprint, checkpoint_generation
+             FROM event_bus_execution_runtime WHERE execution_id=?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        let checkpoint = tx
+            .query_row(
+                "SELECT cursor, source_fingerprint, generation, version
+                 FROM ingestion_checkpoints WHERE bus_name=?1 AND checkpoint_name=?2",
+                params![bus_name, checkpoint_name],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+        match (&expected_generation, &checkpoint) {
+            (None, None) => {}
+            (Some(expected), Some((_, fingerprint, generation, version)))
+                if expected == generation
+                    && fingerprint.as_deref() == Some(&expected_fingerprint) =>
+            {
+                tx.commit()?;
+                return Ok(ExecutionSourceClaim {
+                    claimed: true,
+                    cursor: checkpoint.as_ref().map(|state| state.0.clone()),
+                    source_fingerprint: fingerprint.clone(),
+                    generation: Some(generation.clone()),
+                    version: Some(*version),
+                });
+            }
+            (_, Some((_, _, generation, version))) => {
+                return Err(QueueError::CheckpointConflict {
+                    checkpoint_name,
+                    expected_generation,
+                    expected_version: None,
+                    actual_generation: Some(generation.clone()),
+                    actual_version: Some(*version),
+                });
+            }
+            (Some(_), None) => {
+                return Err(QueueError::CheckpointConflict {
+                    checkpoint_name,
+                    expected_generation,
+                    expected_version: None,
+                    actual_generation: None,
+                    actual_version: None,
+                });
+            }
+        }
+        tx.commit()?;
+        Ok(ExecutionSourceClaim {
+            claimed: true,
+            cursor: None,
+            source_fingerprint: None,
+            generation: None,
+            version: None,
+        })
+    }
+    pub fn execution_extend_source_lease(
+        &self,
+        id: &str,
+        receipt: &str,
+        lease_ms: i64,
+    ) -> Result<i64> {
+        let now = now_ms();
+        let until = now + lease_ms;
+        let mut guard = self.connection();
+        let conn = guard.as_mut().ok_or(QueueError::Closed)?;
+        let changed=conn.execute("UPDATE event_bus_execution_runtime SET source_lease_until=?3 WHERE execution_id=?1 AND source_receipt=?2 AND source_completed_at IS NULL AND source_lease_until>?4",params![id,receipt,until,now])?;
+        if changed != 1 {
+            return Err(QueueError::ExecutionLeaseLost);
+        }
+        Ok(until)
+    }
+    pub fn execution_release_source_lease(&self, id: &str, receipt: &str) -> Result<bool> {
+        let guard = self.connection();
+        let conn = guard.as_ref().ok_or(QueueError::Closed)?;
+        let changed=conn.execute("UPDATE event_bus_execution_runtime SET source_receipt=NULL,source_lease_until=NULL WHERE execution_id=?1 AND source_receipt=?2",params![id,receipt])?;
+        if changed == 0 && !execution_exists(conn, id)? {
+            return Err(QueueError::NotFound);
+        }
+        Ok(changed == 1)
+    }
+    pub fn execution_mark_source_completed_claimed(&self, id: &str, receipt: &str) -> Result<bool> {
+        let now = now_ms();
+        let mut guard = self.connection();
+        let conn = guard.as_mut().ok_or(QueueError::Closed)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        validate_execution_claim(&tx, id, receipt, now)?;
+        tx.execute("UPDATE event_bus_execution_runtime SET source_completed_at=COALESCE(source_completed_at,?2),source_receipt=NULL,source_lease_until=NULL WHERE execution_id=?1",params![id,now])?;
+        tx.execute("UPDATE event_bus_executions SET source_completed=1,updated_at=?2 WHERE execution_id=?1",params![id,now])?;
+        tx.commit()?;
+        Ok(true)
+    }
+    pub fn execution_snapshot(&self, id: &str) -> Result<ExecutionRuntimeSnapshot> {
+        let guard = self.connection();
+        let conn = guard.as_ref().ok_or(QueueError::Closed)?;
+        execution_snapshot_conn(conn, id)
+    }
+    pub fn execution_finalize_if_complete(&self, id: &str) -> Result<bool> {
+        let now = now_ms();
+        let mut guard = self.connection();
+        let conn = guard.as_mut().ok_or(QueueError::Closed)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed=tx.execute("UPDATE event_bus_execution_runtime SET completed_at=COALESCE(completed_at,?2) WHERE execution_id=?1 AND source_completed_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM event_bus_execution_deliveries d JOIN messages m ON m.id=d.message_id WHERE d.execution_id=?1 AND m.status IN (0,1))",params![id,now])?;
+        if changed == 0 && !execution_exists(&tx, id)? {
+            return Err(QueueError::NotFound);
+        }
+        tx.commit()?;
+        Ok(changed == 1)
     }
 
     pub fn ack_and_fanout(
@@ -498,6 +747,11 @@ impl Storage {
         if changed == 0 {
             return Err(QueueError::NotFound);
         }
+        tx.execute(
+            "UPDATE event_bus_execution_runtime SET completed_at = NULL
+             WHERE execution_id IN (SELECT execution_id FROM event_bus_execution_deliveries WHERE message_id = ?1)",
+            params![id],
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -644,6 +898,42 @@ fn migrate_execution_membership(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_execution_runtime(conn: &mut Connection) -> Result<()> {
+    let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='event_bus_execution_runtime')", [], |r| r.get(0))?;
+    if exists {
+        return Ok(());
+    }
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    tx.execute_batch(EXECUTION_RUNTIME_SCHEMA_SQL)?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn validate_execution_claim(tx: &Transaction<'_>, id: &str, receipt: &str, now: i64) -> Result<()> {
+    let valid: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM event_bus_execution_runtime WHERE execution_id=?1 AND source_completed_at IS NULL AND source_receipt=?2 AND source_lease_until>?3)", params![id,receipt,now], |r| r.get(0))?;
+    if valid {
+        Ok(())
+    } else if !execution_exists(tx, id)? {
+        Err(QueueError::NotFound)
+    } else {
+        Err(QueueError::ExecutionLeaseLost)
+    }
+}
+
+fn execution_snapshot_conn(conn: &Connection, id: &str) -> Result<ExecutionRuntimeSnapshot> {
+    conn.query_row(
+        "SELECT e.execution_id,e.source_name,r.checkpoint_name,r.source_fingerprint,r.checkpoint_generation,
+         e.source_completed,r.source_completed_at,r.completed_at,r.items_committed,r.events_dispatched,r.events_unrouted,
+         r.deliveries_inserted,r.deliveries_deduplicated,r.batches_committed,
+         COUNT(d.message_id),COALESCE(SUM(m.status=0),0),COALESCE(SUM(m.status=1),0),COALESCE(SUM(m.status=2),0),COALESCE(SUM(m.status=3),0),
+         r.source_lease_until,e.created_at,e.updated_at
+         FROM event_bus_executions e JOIN event_bus_execution_runtime r USING(execution_id)
+         LEFT JOIN event_bus_execution_deliveries d ON d.execution_id=e.execution_id LEFT JOIN messages m ON m.id=d.message_id
+         WHERE e.execution_id=?1 GROUP BY e.execution_id", params![id], |r| Ok(ExecutionRuntimeSnapshot {
+            execution_id:r.get(0)?,source_name:r.get(1)?,checkpoint_name:r.get(2)?,source_fingerprint:r.get(3)?,checkpoint_generation:r.get(4)?,source_completed:r.get::<_,i64>(5)?!=0,source_completed_at:r.get(6)?,completed_at:r.get(7)?,items_committed:r.get(8)?,events_dispatched:r.get(9)?,events_unrouted:r.get(10)?,deliveries_inserted:r.get(11)?,deliveries_deduplicated:r.get(12)?,batches_committed:r.get(13)?,total:r.get(14)?,ready:r.get(15)?,processing:r.get(16)?,acknowledged:r.get(17)?,failed:r.get(18)?,source_lease_until:r.get(19)?,created_at:r.get(20)?,updated_at:r.get(21)?
+        })).optional()?.ok_or(QueueError::NotFound)
+}
+
 fn membership_message_foreign_key_is_restrict(conn: &Connection) -> Result<bool> {
     let mut statement = conn.prepare("PRAGMA foreign_key_list(event_bus_execution_deliveries)")?;
     let rows = statement.query_map([], |row| {
@@ -741,6 +1031,33 @@ fn enqueue_batch_on_connection(
     crate::failpoints::hit(crate::failpoints::Failpoint::EnqueueBeforeCommit);
     tx.commit().map_err(QueueError::from)?;
     Ok((ids, new_version))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn enqueue_batch_claimed_execution(
+    conn: &mut Connection,
+    entries: &[EnqueueEntry<'_>],
+    max_attempts: i64,
+    capacity: &[CapacityPolicy<'_>],
+    checkpoint: &CheckpointUpdate,
+    execution_id: &str,
+    receipt: &str,
+    dispatched: i64,
+    unrouted: i64,
+) -> Result<(Vec<EnqueueOutcome>, CheckpointCommit)> {
+    let now = now_ms();
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    validate_execution_claim(&tx, execution_id, receipt, now)?;
+    validate_checkpoint_precondition(&tx, checkpoint)?;
+    enforce_capacity_policies(&tx, entries, capacity)?;
+    let outcomes = insert_entries_in_transaction(&tx, entries, max_attempts, now)?;
+    attach_execution_memberships(&tx, &[execution_id.to_owned()], &outcomes)?;
+    let commit = apply_checkpoint_update(&tx, checkpoint, now)?;
+    let inserted = outcomes.iter().filter(|o| o.inserted).count() as i64;
+    let deduplicated = outcomes.len() as i64 - inserted;
+    tx.execute("UPDATE event_bus_execution_runtime SET checkpoint_generation=COALESCE(checkpoint_generation,?2),items_committed=items_committed+?3,events_dispatched=events_dispatched+?4,events_unrouted=events_unrouted+?5,deliveries_inserted=deliveries_inserted+?6,deliveries_deduplicated=deliveries_deduplicated+?7,batches_committed=batches_committed+1 WHERE execution_id=?1",params![execution_id,commit.generation,checkpoint.items_committed,dispatched,unrouted,inserted,deduplicated])?;
+    tx.commit()?;
+    Ok((outcomes, commit))
 }
 
 fn execution_memberships_for_message(tx: &Transaction<'_>, message_id: i64) -> Result<Vec<String>> {
