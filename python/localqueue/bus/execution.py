@@ -86,14 +86,15 @@ class _ExecutionHandle:
         )
 
     async def wait(self, *, timeout: float | None = None) -> _ExecutionSnapshot:
+        self._validate_timeout(timeout)
         return await self._with_timeout(self._wait(), timeout)
 
     async def run(self, *, timeout: float | None = None) -> _ExecutionSnapshot:
+        self._validate_timeout(timeout)
         return await self._with_timeout(self._run(), timeout)
 
-    async def _with_timeout(
-        self, coro: Coroutine[object, object, _ExecutionSnapshot], timeout: float | None
-    ) -> _ExecutionSnapshot:
+    @staticmethod
+    def _validate_timeout(timeout: float | None) -> None:
         if timeout is not None and (
             isinstance(timeout, bool)
             or not isinstance(timeout, (int, float))
@@ -101,6 +102,10 @@ class _ExecutionHandle:
             or timeout <= 0
         ):
             raise ValueError("'timeout' must be a positive finite number or None")
+
+    async def _with_timeout(
+        self, coro: Coroutine[object, object, _ExecutionSnapshot], timeout: float | None
+    ) -> _ExecutionSnapshot:
         return (
             await asyncio.wait_for(coro, timeout) if timeout is not None else await coro
         )

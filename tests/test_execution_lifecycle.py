@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from uuid import UUID, uuid4
 
 import pytest
 from localqueue import SimpleQueue
@@ -13,6 +14,7 @@ from localqueue.bus import (
     SourceChanged,
     event,
 )
+from localqueue.bus.execution import _ExecutionHandle
 
 
 @event(identity="key")
@@ -138,6 +140,84 @@ def test_execution_rejects_changed_checkpoint_source_before_opening(tmp_path) ->
         )
         with pytest.raises(SourceChanged):
             await bus._open_execution(changed)
+
+    try:
+        asyncio.run(run())
+    finally:
+        bus.close()
+
+
+def test_execution_timeout_validation_and_contended_source_claim(tmp_path) -> None:
+    bus = EventBus(str(tmp_path), topology=BusTopology({"imports": [Imported]}))
+
+    @bus.source(SequenceSource([], fingerprint="v1"), checkpoint="imports")
+    def imports(value: str) -> Imported:
+        return Imported(key=value)
+
+    async def run() -> None:
+        execution = await bus._open_execution(imports)
+        native = bus._get_native()
+        assert native._execution_claim_source(
+            str(execution.execution_id), "other", 60_000
+        )
+        with pytest.raises(ValueError, match="positive finite"):
+            await execution.run(timeout=0)
+        with pytest.raises(TimeoutError):
+            await execution.run(timeout=0.01)
+        assert native._execution_release_source_lease(
+            str(execution.execution_id), "other"
+        )
+
+    try:
+        asyncio.run(run())
+    finally:
+        bus.close()
+
+
+def test_execution_heartbeat_renews_owned_source_claim(tmp_path, monkeypatch) -> None:
+    bus = EventBus(str(tmp_path), topology=BusTopology({"imports": [Imported]}))
+    native = bus._get_native()
+    execution_id, _ = native._execution_open(
+        str(uuid4()), bus.name, "source", "checkpoint", "v1", None
+    )
+    assert native._execution_claim_source(execution_id, "owner", 60_000)
+    handle = _ExecutionHandle(bus, None, UUID(execution_id), False)
+    monkeypatch.setattr("localqueue.bus.execution._LEASE_MS", 3)
+
+    async def run() -> None:
+        heartbeat = asyncio.create_task(handle._heartbeat("owner"))
+        try:
+            await asyncio.sleep(0.01)
+        finally:
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
+        assert handle.inspect().source_lease_until is not None
+
+    try:
+        asyncio.run(run())
+    finally:
+        bus.close()
+
+
+def test_execution_invalid_source_record_releases_lease(tmp_path) -> None:
+    class InvalidSource:
+        fingerprint = "v1"
+
+        def open(self, cursor):
+            del cursor
+            yield object()
+
+    bus = EventBus(str(tmp_path), topology=BusTopology({"imports": [Imported]}))
+
+    @bus.source(InvalidSource(), checkpoint="imports")
+    def imports(value: object) -> Imported:
+        return Imported(key=str(value))
+
+    async def run() -> None:
+        execution = await bus._open_execution(imports)
+        with pytest.raises(TypeError, match="SourceRecord"):
+            await execution.run(timeout=1)
+        assert execution.inspect().source_completed is False
 
     try:
         asyncio.run(run())
