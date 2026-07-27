@@ -978,3 +978,33 @@ For an executable end-to-end walkthrough — checkpointed CSV ingestion,
 resume, durable-identity deduplication, retry/reject mapping, and
 backpressure — see the resumable bulk customer import example in the
 repository at `examples/resumable_customer_import/README.md`.
+
+## Internal durable execution membership
+
+The storage layer has internal support for associating deliveries with a
+finite EventBus execution. This is deliberately not a public workload API:
+there is no `EventBus.execute()`, completion waiting, source lifecycle control,
+or resume semantics yet.
+
+Membership is many-to-many rather than an `execution_id` column on
+`messages`. Durable identity deduplication can return a delivery that already
+exists while making that same delivery relevant to a second execution. In that
+case the existing message joins the new execution; its payload, durable event
+identity, and queue state are not changed.
+
+The internal ACK-and-fan-out transaction reads every execution membership of
+the parent, persists child deliveries with the normal identity rules, then
+attaches every parent membership to every resulting child — including a child
+row returned by deduplication. The ACK, children, and joins therefore commit or
+roll back together.
+
+Fan-out also records internal parent/child delivery edges. If a later
+deduplicated root joins another execution after its fan-out already committed,
+the new membership traverses those edges and joins every known descendant in
+the same transaction. Tracked terminal deliveries are retained by normal queue
+purge so execution state cannot lose acknowledged or failed results.
+
+Execution state snapshots are derived by joining membership rows to durable
+message status at query time. They do not use mutable counters on executions,
+so retries, lease recovery, failures, and acknowledgements cannot make a
+secondary count drift from the message source of truth.

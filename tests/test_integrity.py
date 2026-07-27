@@ -71,6 +71,24 @@ def test_integrity_check_preserves_sqlite_failure_messages(tmp_path: Path) -> No
     reopened.close()
 
 
+def test_foreign_key_violations_share_the_max_errors_budget(tmp_path: Path) -> None:
+    queue = SimpleQueue(str(tmp_path / "queue"))
+    database = tmp_path / "queue" / "localqueue.db"
+    try:
+        with sqlite3.connect(database) as connection:
+            connection.execute("PRAGMA foreign_keys = OFF")
+            connection.execute(
+                "INSERT INTO event_bus_execution_deliveries (execution_id, message_id) "
+                "VALUES ('missing', 999)"
+            )
+        result = queue.check_integrity(max_errors=1)
+        assert result.ok is False
+        assert len(result.messages) == 1
+        assert "foreign key violation" in result.messages[0]
+    finally:
+        queue.close()
+
+
 @pytest.mark.parametrize("max_errors", [0, 1001, -1])
 def test_integrity_check_rejects_max_errors_outside_public_interval(
     tmp_path: Path, max_errors: int

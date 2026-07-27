@@ -118,6 +118,29 @@ class NativeQueue:
             tuple[str, str, Optional[str], Optional[int], str, Optional[str], int]
         ],
     ) -> tuple[list[tuple[int, bool]], Optional[str], Optional[int]]: ...
+    def _enqueue_batch_with_identity_and_checkpoint_and_execution(
+        self,
+        entries: list[tuple[str, bytes, Optional[str], Optional[str], Optional[str]]],
+        capacity: Optional[list[tuple[str, int]]],
+        checkpoint: Optional[
+            tuple[str, str, Optional[str], Optional[int], str, Optional[str], int]
+        ],
+        execution_id: Optional[str],
+    ) -> tuple[list[tuple[int, bool]], Optional[str], Optional[int]]: ...
+    def _execution_create(
+        self,
+        execution_id: str,
+        bus_name: str,
+        source_name: str,
+        checkpoint_name: Optional[str] = None,
+    ) -> None: ...
+    def _execution_inspect(
+        self, execution_id: str
+    ) -> Optional[tuple[str, str, str, Optional[str], bool, int, int]]: ...
+    def _execution_mark_source_completed(self, execution_id: str) -> bool: ...
+    def _execution_delivery_states(
+        self, execution_id: str
+    ) -> tuple[int, int, int, int, int]: ...
     def _checkpoint_inspect(
         self,
         bus_name: str,

@@ -40,6 +40,36 @@ CREATE TABLE IF NOT EXISTS ingestion_checkpoints (
 );
 "#;
 
+pub const EXECUTION_MEMBERSHIP_SCHEMA_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS event_bus_executions (
+    execution_id    TEXT PRIMARY KEY,
+    bus_name        TEXT NOT NULL,
+    source_name     TEXT NOT NULL,
+    checkpoint_name TEXT,
+    source_completed INTEGER NOT NULL DEFAULT 0 CHECK (source_completed IN (0, 1)),
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS event_bus_execution_deliveries (
+    execution_id TEXT NOT NULL,
+    message_id   INTEGER NOT NULL,
+    PRIMARY KEY (execution_id, message_id),
+    FOREIGN KEY (execution_id) REFERENCES event_bus_executions(execution_id) ON DELETE CASCADE,
+    FOREIGN KEY (message_id) REFERENCES messages(id)
+);
+CREATE INDEX IF NOT EXISTS idx_event_bus_execution_deliveries_message
+    ON event_bus_execution_deliveries(message_id);
+CREATE TABLE IF NOT EXISTS event_bus_delivery_edges (
+    parent_message_id INTEGER NOT NULL,
+    child_message_id  INTEGER NOT NULL,
+    PRIMARY KEY (parent_message_id, child_message_id),
+    FOREIGN KEY (parent_message_id) REFERENCES messages(id) ON DELETE CASCADE,
+    FOREIGN KEY (child_message_id) REFERENCES messages(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_event_bus_delivery_edges_child
+    ON event_bus_delivery_edges(child_message_id);
+"#;
+
 pub const SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT, queue TEXT NOT NULL, payload BLOB NOT NULL,
@@ -62,4 +92,25 @@ CREATE TABLE IF NOT EXISTS ingestion_checkpoints (
     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
     PRIMARY KEY (bus_name, checkpoint_name)
 );
+CREATE TABLE IF NOT EXISTS event_bus_executions (
+    execution_id TEXT PRIMARY KEY, bus_name TEXT NOT NULL, source_name TEXT NOT NULL,
+    checkpoint_name TEXT, source_completed INTEGER NOT NULL DEFAULT 0 CHECK (source_completed IN (0, 1)),
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS event_bus_execution_deliveries (
+    execution_id TEXT NOT NULL, message_id INTEGER NOT NULL,
+    PRIMARY KEY (execution_id, message_id),
+    FOREIGN KEY (execution_id) REFERENCES event_bus_executions(execution_id) ON DELETE CASCADE,
+    FOREIGN KEY (message_id) REFERENCES messages(id)
+);
+CREATE INDEX IF NOT EXISTS idx_event_bus_execution_deliveries_message
+    ON event_bus_execution_deliveries(message_id);
+CREATE TABLE IF NOT EXISTS event_bus_delivery_edges (
+    parent_message_id INTEGER NOT NULL, child_message_id INTEGER NOT NULL,
+    PRIMARY KEY (parent_message_id, child_message_id),
+    FOREIGN KEY (parent_message_id) REFERENCES messages(id) ON DELETE CASCADE,
+    FOREIGN KEY (child_message_id) REFERENCES messages(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_event_bus_delivery_edges_child
+    ON event_bus_delivery_edges(child_message_id);
 "#;
