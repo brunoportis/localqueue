@@ -181,6 +181,7 @@ from localqueue.bus import (
     event,
 )
 
+
 @event(identity=("import_id", "external_id"))
 class UserCreated(BaseEvent):
     event_name = "user.created"
