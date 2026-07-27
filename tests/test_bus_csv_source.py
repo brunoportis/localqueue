@@ -109,8 +109,36 @@ class CloseTrackingCsvSource(CsvSource):
             self.closed = stream.closed
 
 
+class BatchSpy:
+    """Record native batch attempts while preserving the queue interface."""
+
+    def __init__(self, native) -> None:
+        self._native = native
+        self.calls = 0
+
+    def _enqueue_batch_with_identity(self, entries, capacity):
+        self.calls += 1
+        return self._native._enqueue_batch_with_identity(entries, capacity)
+
+    def _enqueue_batch_with_identity_and_checkpoint(
+        self, entries, capacity, checkpoint
+    ):
+        self.calls += 1
+        return self._native._enqueue_batch_with_identity_and_checkpoint(
+            entries, capacity, checkpoint
+        )
+
+    def __getattr__(self, name):
+        return getattr(self._native, name)
+
+
 async def _wait_for_records(source: CloseTrackingCsvSource, *, expected: int) -> None:
     while source.records_read < expected:
+        await asyncio.sleep(0)
+
+
+async def _wait_for_batch_calls(spy: BatchSpy, *, expected: int) -> None:
+    while spy.calls < expected:
         await asyncio.sleep(0)
 
 
@@ -641,6 +669,10 @@ class TestCsvSourceResourceClosure:
             source = CloseTrackingCsvSource(path)
             bus = make_bus(tmp_path / "cancel")
             try:
+                native = bus._native_queue
+                assert native is not None
+                spy = BatchSpy(native)
+                bus._native_queue = spy
                 task = asyncio.create_task(
                     bus.ingest(
                         source,
@@ -651,12 +683,14 @@ class TestCsvSourceResourceClosure:
                     )
                 )
                 await asyncio.wait_for(_wait_for_records(source, expected=2), timeout=1)
-                # Let the second prepared record enter the backpressure retry
-                # after the first one filled the queue.
-                await asyncio.sleep(0.05)
+                # The first batch filled the queue; the second call proves the
+                # prepared record is retrying under backpressure.
+                await asyncio.wait_for(
+                    _wait_for_batch_calls(spy, expected=2), timeout=1
+                )
                 task.cancel()
                 with pytest.raises(asyncio.CancelledError):
-                    await task
+                    await asyncio.wait_for(task, timeout=1)
                 assert source.closed
             finally:
                 if bus._native_queue is not None:

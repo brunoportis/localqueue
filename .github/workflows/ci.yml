@@ -553,21 +553,34 @@ jobs:
         run: cargo check --locked
 
   python-tests:
-    name: Python tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    name: Python tests (${{ matrix.os }}, Python ${{ matrix.python }}, ${{ matrix.suite }})
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             python: '3.14'
+            suite: standard
+            coverage: false
+          - os: ubuntu-latest
+            python: '3.14'
+            suite: coverage
+            coverage: true
           - os: macos-15
             python: '3.14'
+            suite: standard
+            coverage: false
           - os: windows-latest
             python: '3.14'
+            suite: standard
+            coverage: false
     runs-on: ${{ matrix.os }}
-    # The normal matrix completes in minutes. Bound a deadlock so the job
-    # fails with a visible timeout instead of consuming a runner indefinitely.
+    # The normal matrix completes in minutes. This remains a final job-level
+    # guard; pytest reports the active test and thread stacks first.
     timeout-minutes: 20
+    env:
+      PYTHONFAULTHANDLER: '1'
+      PYTHONUNBUFFERED: '1'
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -606,11 +619,12 @@ jobs:
             "hypothesis>=6,<7" \
             "pytest>=8,<10" \
             "pytest-cov>=7,<8" \
+            "pytest-timeout>=2,<3" \
             "pydantic>=2,<3"
           maturin develop --locked
 
       - name: Run tests
-        if: matrix.os != 'ubuntu-latest' || matrix.python != '3.14'
+        if: matrix.coverage == false
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
@@ -618,18 +632,18 @@ jobs:
           else
             source .venv/bin/activate
           fi
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            pytest -vv -s -ra
-          else
-            pytest -ra
-          fi
+          pytest -vv -ra --tb=short \
+            --timeout=60 \
+            --timeout-method=thread
 
       - name: Run tests with branch coverage
-        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.14'
+        if: matrix.coverage == true
         shell: bash
         run: |
           source .venv/bin/activate
-          pytest -ra \
+          pytest -vv -ra --tb=short \
+            --timeout=60 \
+            --timeout-method=thread \
             --cov=localqueue \
             --cov-branch \
             --cov-report=term-missing \
@@ -637,14 +651,14 @@ jobs:
             --cov-fail-under=80
 
       - name: Validate canonical benchmark smoke profile
-        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.14'
+        if: matrix.coverage == true
         shell: bash
         run: |
           source .venv/bin/activate
           python -m localqueue.benchmark --profile smoke --output "$RUNNER_TEMP/benchmark-smoke.json"
 
       - name: Upload coverage to Codecov
-        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.14'
+        if: matrix.coverage == true
         uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
