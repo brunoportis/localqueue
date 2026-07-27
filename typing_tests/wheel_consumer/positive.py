@@ -2,7 +2,9 @@
 
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Callable
+from uuid import UUID
 
 from localqueue import (
     FailedMessage,
@@ -17,9 +19,11 @@ from localqueue.bus import (
     BaseEvent,
     BusTopology,
     EventBus,
+    ExecutionResult,
     FailedDelivery,
     Reject,
     Retry,
+    SequenceSource,
 )
 
 
@@ -109,3 +113,19 @@ failed_event: BaseEvent | None = delivery.event
 failure_category: str | None = delivery.failure_category
 retry_after: float | None = Retry(after=30).after
 reject_category: str | None = Reject("invalid", category="validation").category
+
+
+@bus.source(
+    SequenceSource([UserCreated(user_id="1")], fingerprint="users-v1"),
+    checkpoint="users-v1",
+)
+def users(event: UserCreated) -> UserCreated:
+    return event
+
+
+async def execute_users() -> None:
+    result: ExecutionResult = await bus.execute(users)
+    execution_id: UUID = result.execution_id
+    completed_at: datetime = result.completed_at
+    result.raise_for_failures()
+    print(execution_id, completed_at)

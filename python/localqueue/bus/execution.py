@@ -7,6 +7,7 @@ import math
 import secrets
 from collections.abc import Coroutine
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, cast
 from uuid import UUID
 
@@ -17,6 +18,61 @@ from localqueue.bus.ingestion import (
 
 _LEASE_MS = 60_000
 _POLL_SECONDS = 0.05
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionResult:
+    """Terminal, durable outcome of one finite source execution."""
+
+    execution_id: UUID
+    resumed: bool
+    source_name: str
+    checkpoint_name: str
+    source_fingerprint: str
+    checkpoint_generation: str | None
+    source_completed: bool
+    source_completed_at: datetime | None
+    completed_at: datetime
+    items_committed: int
+    events_dispatched: int
+    events_unrouted: int
+    deliveries_inserted: int
+    deliveries_deduplicated: int
+    batches_committed: int
+    deliveries_total: int
+    deliveries_ready: int
+    deliveries_processing: int
+    deliveries_acknowledged: int
+    deliveries_failed: int
+    created_at: datetime
+    updated_at: datetime
+
+    @property
+    def completed(self) -> bool:
+        return self.completed_at is not None
+
+    @property
+    def succeeded(self) -> bool:
+        return self.completed and self.deliveries_failed == 0
+
+    def raise_for_failures(self) -> None:
+        """Raise :class:`ExecutionFailed` when a delivery failed terminally."""
+        if self.deliveries_failed:
+            raise ExecutionFailed(self)
+
+
+class ExecutionFailed(RuntimeError):
+    """A finite execution completed with terminal failed deliveries."""
+
+    result: ExecutionResult
+
+    def __init__(self, result: ExecutionResult) -> None:
+        self.result = result
+        noun = "delivery" if result.deliveries_failed == 1 else "deliveries"
+        super().__init__(
+            f"execution {result.execution_id} completed with "
+            f"{result.deliveries_failed} failed {noun}"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +103,56 @@ class _ExecutionSnapshot:
     @property
     def completed(self) -> bool:
         return self.completed_at is not None
+
+
+def _utc_from_milliseconds(value: int) -> datetime:
+    return datetime.fromtimestamp(value / 1000, tz=timezone.utc)
+
+
+def _to_execution_result(
+    snapshot: _ExecutionSnapshot, *, resumed: bool
+) -> ExecutionResult:
+    """Convert one terminal private snapshot at the public API boundary."""
+    terminal = (
+        snapshot.source_completed
+        and snapshot.completed_at is not None
+        and snapshot.ready == 0
+        and snapshot.processing == 0
+        and snapshot.acknowledged + snapshot.failed == snapshot.total
+    )
+    if not terminal:
+        raise RuntimeError(
+            f"execution {snapshot.execution_id} returned a non-terminal snapshot"
+        )
+    assert snapshot.completed_at is not None
+    return ExecutionResult(
+        execution_id=snapshot.execution_id,
+        resumed=resumed,
+        source_name=snapshot.source_name,
+        checkpoint_name=snapshot.checkpoint_name,
+        source_fingerprint=snapshot.source_fingerprint,
+        checkpoint_generation=snapshot.checkpoint_generation,
+        source_completed=snapshot.source_completed,
+        source_completed_at=(
+            _utc_from_milliseconds(snapshot.source_completed_at)
+            if snapshot.source_completed_at is not None
+            else None
+        ),
+        completed_at=_utc_from_milliseconds(snapshot.completed_at),
+        items_committed=snapshot.items_committed,
+        events_dispatched=snapshot.events_dispatched,
+        events_unrouted=snapshot.events_unrouted,
+        deliveries_inserted=snapshot.deliveries_inserted,
+        deliveries_deduplicated=snapshot.deliveries_deduplicated,
+        batches_committed=snapshot.batches_committed,
+        deliveries_total=snapshot.total,
+        deliveries_ready=snapshot.ready,
+        deliveries_processing=snapshot.processing,
+        deliveries_acknowledged=snapshot.acknowledged,
+        deliveries_failed=snapshot.failed,
+        created_at=_utc_from_milliseconds(snapshot.created_at),
+        updated_at=_utc_from_milliseconds(snapshot.updated_at),
+    )
 
 
 def _snapshot(row: tuple[tuple[object, ...], tuple[object, ...]]) -> _ExecutionSnapshot:

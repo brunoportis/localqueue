@@ -170,57 +170,79 @@ uv add "localqueue[bus]"
 ```
 
 ```python
-# shared.py
-from localqueue.bus import BaseEvent, BusTopology
+import asyncio
 
+from localqueue.bus import (
+    BaseEvent,
+    CsvRow,
+    CsvSource,
+    EventBus,
+    RetryPolicy,
+    event,
+)
 
+@event(identity=("import_id", "external_id"))
 class UserCreated(BaseEvent):
     event_name = "user.created"
 
-    user_id: str
+    import_id: str
+    external_id: str
+    name: str
 
 
-TOPOLOGY = BusTopology({"email": [UserCreated]})
+bus = EventBus("./data")
+
+
+@bus.handler(UserCreated)
+async def create_user(event: UserCreated, ctx) -> None:
+    await api.create_user(
+        external_id=event.external_id,
+        name=event.name,
+        idempotency_key=ctx.event_id,
+    )
+
+
+creator = bus.subscription(UserCreated.event_name)
+creator.config.concurrency = 50
+creator.config.retry = RetryPolicy.exponential(max_attempts=8)
+
+
+@bus.source(CsvSource("users.csv"), checkpoint="users:2026-07")
+def users(row: CsvRow) -> UserCreated:
+    return UserCreated(
+        import_id="2026-07",
+        external_id=row["external_id"],
+        name=row["name"],
+    )
+
+
+users.config.batch_size = 5_000
+users.config.max_pending = 100_000
+
+
+async def main() -> None:
+    try:
+        result = await bus.execute(users)
+        result.raise_for_failures()
+        print(result.items_committed, result.deliveries_acknowledged)
+    finally:
+        bus.close()
+
+
+asyncio.run(main())
 ```
 
-```python
-# producer.py
-from localqueue.bus import EventBus
+`execute()` resumes after interruption, starts registered local handlers when
+needed, and also allows worker processes sharing the database to participate.
+It waits for this execution's root and descendant deliveries—not global bus
+idleness. Failed deliveries are terminal and reported in `ExecutionResult`;
+`raise_for_failures()` makes failure explicit. External effects remain
+at-least-once, so use a stable idempotency key. The caller always owns
+`bus.close()`.
 
-from shared import TOPOLOGY, UserCreated
-
-
-bus = EventBus("./data", name="app", topology=TOPOLOGY)
-bus.dispatch(UserCreated(user_id="123"))  # atomic fan-out, committed
-bus.close()
-```
-
-```python
-# email_worker.py
-import asyncio
-
-from localqueue.bus import EventBus
-
-from shared import TOPOLOGY, UserCreated
-
-
-bus = EventBus("./data", name="app", topology=TOPOLOGY)
-email = bus.subscription("email")
-
-
-@email.handler(UserCreated)
-async def send_welcome(event: UserCreated) -> None: ...
-
-
-asyncio.run(bus.run())  # consume subscriptions handled by this process
-```
-
-Each subscription is a durable queue (`__bus__:{bus}:{subscription}`), so
-workers in multiple processes act as consumer groups. Handlers get the same
-retry, lease, and dead-letter semantics as regular jobs. The static topology
-decides where events are persisted; local handlers decide what the current
-process consumes. Producers do not import handlers, and workers do not
-participate in dispatch. See
+Lower-level `dispatch()` plus standalone `bus.run()` producer/worker
+deployments remain supported. Each subscription is a durable queue, so local
+worker processes act as a consumer group. See
 [docs/event-bus.md](https://github.com/brunoportis/localqueue/blob/main/docs/event-bus.md).
 
 ## Delivery guarantees

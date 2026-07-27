@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Awaitable, Callable, Generic, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Generic, TypeVar, overload
 
 from localqueue.bus.context import ContextT
 from localqueue.bus.deadletter import FailedDelivery, inspect_delivery
@@ -19,6 +19,34 @@ _HandlerResultT = TypeVar(
 )
 
 
+class SubscriptionConfig:
+    """Mutable process-local subscription settings, frozen on consumption."""
+
+    def __init__(self, bus: EventBus[Any], name: str) -> None:
+        self._bus = bus
+        self._name = name
+
+    @property
+    def concurrency(self) -> int:
+        return self._bus._concurrency_for(self._name)
+
+    @concurrency.setter
+    def concurrency(self, value: int) -> None:
+        self._bus._configure_subscription_concurrency(self._name, value)
+
+    @property
+    def retry(self) -> RetryPolicy | None:
+        return self._bus._retry_for(self._name)
+
+    @retry.setter
+    def retry(self, value: RetryPolicy | None) -> None:
+        self._bus._configure_subscription_retry(self._name, value)
+
+    @property
+    def frozen(self) -> bool:
+        return self._name in self._bus._frozen_subscriptions
+
+
 class Subscription(Generic[ContextT]):
     """Bind local handlers to one statically declared subscription."""
 
@@ -30,6 +58,11 @@ class Subscription(Generic[ContextT]):
     def concurrency(self) -> int:
         """Return the subscription's current process-local concurrency bound."""
         return self._bus._concurrency_for(self.name)
+
+    @property
+    def config(self) -> SubscriptionConfig:
+        """Return a facade over this subscription's canonical local settings."""
+        return SubscriptionConfig(self._bus, self.name)
 
     @overload
     def handler(

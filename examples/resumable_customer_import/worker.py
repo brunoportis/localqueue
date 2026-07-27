@@ -118,10 +118,12 @@ def build_bus(data_dir: Path, api: CustomerApi) -> EventBus[CustomerWorkerContex
         topology=TOPOLOGY,
         context_factory=lambda runtime: CustomerWorkerContext(runtime, api),
     )
-    bus.subscription(CUSTOMER_CREATOR, concurrency=CREATOR_CONCURRENCY).handler(
+    creator = bus.subscription(CUSTOMER_CREATOR)
+    creator.config.concurrency = CREATOR_CONCURRENCY
+    creator.config.retry = RETRY_POLICY
+    creator.handler(
         CustomerCreationRequested,
         create_customer,
-        retry=RETRY_POLICY,
     )
     bus.subscription(CUSTOMER_AUDIT).handler(CustomerCreated, audit_customer_created)
     return bus
