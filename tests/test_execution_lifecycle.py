@@ -60,13 +60,63 @@ def test_execution_claim_is_exclusive_and_stale_receipt_is_fenced(tmp_path) -> N
         execution_id, _ = native._execution_open(
             "run", "bus", "source", "checkpoint", "v1"
         )
-        assert native._execution_claim_source(execution_id, "one", 60_000) is True
-        assert native._execution_claim_source(execution_id, "two", 60_000) is False
+        assert native._execution_claim_source(execution_id, "one", 60_000)[0] is True
+        assert native._execution_claim_source(execution_id, "two", 60_000)[0] is False
         with pytest.raises(_native.ExecutionLeaseLost):
             native._execution_mark_source_completed_claimed(execution_id, "two")
         assert (
             native._execution_mark_source_completed_claimed(execution_id, "one") is True
         )
+    finally:
+        queue.close()
+
+
+def test_execution_claim_fences_reset_recreate_with_same_checkpoint_version(
+    tmp_path,
+) -> None:
+    queue = SimpleQueue(str(tmp_path), name="q")
+    native = queue._get_native()
+    try:
+        execution_id, _ = native._execution_open(
+            "run", "bus", "source", "checkpoint", "v1"
+        )
+        claimed, cursor, fingerprint, generation, version = (
+            native._execution_claim_source(execution_id, "owner", 60_000)
+        )
+        assert (claimed, cursor, fingerprint, generation, version) == (
+            True,
+            None,
+            None,
+            None,
+            None,
+        )
+        native._enqueue_batch_with_claimed_execution(
+            [],
+            None,
+            ("bus", "checkpoint", None, None, "old-cursor", "v1", 1),
+            execution_id,
+            "owner",
+            0,
+            1,
+        )
+        old = native._checkpoint_inspect("bus", "checkpoint")
+        assert old is not None
+        assert native._execution_release_source_lease(execution_id, "owner")
+        assert native._checkpoint_reset("bus", "checkpoint")
+        native._enqueue_batch_with_identity_and_checkpoint(
+            [],
+            None,
+            ("bus", "checkpoint", None, None, "new-cursor", "v1", 1),
+        )
+        new = native._checkpoint_inspect("bus", "checkpoint")
+        assert new is not None
+        assert old[0] == "old-cursor"
+        assert new[0] == "new-cursor"
+        assert old[3] == new[3]
+        assert old[2] != new[2]
+
+        with pytest.raises(_native.CheckpointConflict):
+            native._execution_claim_source(execution_id, "next-owner", 60_000)
     finally:
         queue.close()
 
@@ -183,7 +233,7 @@ def test_execution_timeout_validation_and_contended_source_claim(tmp_path) -> No
         native = bus._get_native()
         assert native._execution_claim_source(
             str(execution.execution_id), "other", 60_000
-        )
+        )[0]
         with pytest.raises(ValueError, match="positive finite"):
             await execution.run(timeout=0)
         with pytest.raises(TimeoutError):
@@ -204,7 +254,7 @@ def test_execution_heartbeat_renews_owned_source_claim(tmp_path, monkeypatch) ->
     execution_id, _ = native._execution_open(
         str(uuid4()), bus.name, "source", "checkpoint", "v1"
     )
-    assert native._execution_claim_source(execution_id, "owner", 60_000)
+    assert native._execution_claim_source(execution_id, "owner", 60_000)[0]
     handle = _ExecutionHandle(bus, None, UUID(execution_id), False)
     monkeypatch.setattr("localqueue.bus.execution._LEASE_MS", 3)
 
@@ -302,8 +352,8 @@ def test_execution_retries_claim_and_rechecks_finalization_before_returning(
 
         def _execution_claim_source(
             self, _execution_id: str, _receipt: str, _lease_ms: int
-        ) -> bool:
-            return False
+        ) -> tuple[bool, None, None, None, None]:
+            return False, None, None, None, None
 
         def _execution_finalize_if_complete(self, _execution_id: str) -> bool:
             self.finalize_calls += 1

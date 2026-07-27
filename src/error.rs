@@ -94,6 +94,9 @@ pub enum QueueError {
     #[error("checkpoint generation is not owned by a durable execution runtime")]
     ExecutionRuntimeMissing,
 
+    #[error("runtime-backed execution source completion requires an active receipt")]
+    ExecutionReceiptRequired,
+
     #[error("job not found")]
     NotFound,
 
@@ -147,6 +150,9 @@ impl From<QueueError> for PyErr {
                 PyErr::new::<ExecutionLeaseLost, _>("execution source lease was lost")
             }
             QueueError::ExecutionRuntimeMissing => {
+                PyErr::new::<LocalQueueError, _>(err.to_string())
+            }
+            QueueError::ExecutionReceiptRequired => {
                 PyErr::new::<LocalQueueError, _>(err.to_string())
             }
             QueueError::NotFound => PyErr::new::<LocalQueueError, _>("job not found"),

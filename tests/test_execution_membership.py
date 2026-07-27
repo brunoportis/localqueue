@@ -46,6 +46,27 @@ def test_execution_creation_inspection_and_duplicate_is_not_an_upsert(
         queue.close()
 
 
+def test_runtime_backed_execution_requires_receipt_to_complete_source(
+    tmp_path: Path,
+) -> None:
+    queue, native = native_queue(tmp_path / "queue")
+    try:
+        execution_id, _ = native._execution_open(
+            "run", "bus", "source", "checkpoint", "v1"
+        )
+        claimed, *_ = native._execution_claim_source(execution_id, "owner", 60_000)
+        assert claimed is True
+
+        with pytest.raises(LocalQueueError, match="requires an active receipt"):
+            native._execution_mark_source_completed(execution_id)
+
+        snapshot = native._execution_snapshot(execution_id)
+        assert snapshot[0][5] is False
+        assert snapshot[1][8] is not None
+    finally:
+        queue.close()
+
+
 def test_root_membership_includes_new_and_deduplicated_deliveries(
     tmp_path: Path,
 ) -> None:

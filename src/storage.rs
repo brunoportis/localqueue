@@ -111,6 +111,16 @@ pub struct ExecutionRuntimeSnapshot {
     pub updated_at: i64,
 }
 
+/// The checkpoint incarnation observed while acquiring an execution source
+/// lease.  All fields come from the same immediate transaction as the claim.
+pub struct ExecutionSourceClaim {
+    pub claimed: bool,
+    pub cursor: Option<String>,
+    pub source_fingerprint: Option<String>,
+    pub generation: Option<String>,
+    pub version: Option<i64>,
+}
+
 pub struct Storage {
     conn: Mutex<Option<Connection>>,
     path: PathBuf,
@@ -369,10 +379,7 @@ impl Storage {
             |row| row.get(0),
         )?;
         if has_runtime {
-            tx.execute(
-                "UPDATE event_bus_execution_runtime SET source_completed_at=COALESCE(source_completed_at,?2),source_receipt=NULL,source_lease_until=NULL WHERE execution_id=?1",
-                params![execution_id, now],
-            )?;
+            return Err(QueueError::ExecutionReceiptRequired);
         }
         let changed = tx.execute(
             "UPDATE event_bus_executions SET source_completed = 1, updated_at = ?2
@@ -473,7 +480,12 @@ impl Storage {
         Ok((candidate.to_owned(), true))
     }
 
-    pub fn execution_claim_source(&self, id: &str, receipt: &str, lease_ms: i64) -> Result<bool> {
+    pub fn execution_claim_source(
+        &self,
+        id: &str,
+        receipt: &str,
+        lease_ms: i64,
+    ) -> Result<ExecutionSourceClaim> {
         let now = now_ms();
         let mut guard = self.connection();
         let conn = guard.as_mut().ok_or(QueueError::Closed)?;
@@ -482,8 +494,84 @@ impl Storage {
         if changed == 0 && !execution_exists(&tx, id)? {
             return Err(QueueError::NotFound);
         }
+        if changed == 0 {
+            tx.commit()?;
+            return Ok(ExecutionSourceClaim {
+                claimed: false,
+                cursor: None,
+                source_fingerprint: None,
+                generation: None,
+                version: None,
+            });
+        }
+        let (bus_name, checkpoint_name, expected_fingerprint, expected_generation): (
+            String,
+            String,
+            String,
+            Option<String>,
+        ) = tx.query_row(
+            "SELECT bus_name, checkpoint_name, source_fingerprint, checkpoint_generation
+             FROM event_bus_execution_runtime WHERE execution_id=?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        let checkpoint = tx
+            .query_row(
+                "SELECT cursor, source_fingerprint, generation, version
+                 FROM ingestion_checkpoints WHERE bus_name=?1 AND checkpoint_name=?2",
+                params![bus_name, checkpoint_name],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+        match (&expected_generation, &checkpoint) {
+            (None, None) => {}
+            (Some(expected), Some((_, fingerprint, generation, version)))
+                if expected == generation
+                    && fingerprint.as_deref() == Some(&expected_fingerprint) =>
+            {
+                tx.commit()?;
+                return Ok(ExecutionSourceClaim {
+                    claimed: true,
+                    cursor: checkpoint.as_ref().map(|state| state.0.clone()),
+                    source_fingerprint: fingerprint.clone(),
+                    generation: Some(generation.clone()),
+                    version: Some(*version),
+                });
+            }
+            (_, Some((_, _, generation, version))) => {
+                return Err(QueueError::CheckpointConflict {
+                    checkpoint_name,
+                    expected_generation,
+                    expected_version: None,
+                    actual_generation: Some(generation.clone()),
+                    actual_version: Some(*version),
+                });
+            }
+            (Some(_), None) => {
+                return Err(QueueError::CheckpointConflict {
+                    checkpoint_name,
+                    expected_generation,
+                    expected_version: None,
+                    actual_generation: None,
+                    actual_version: None,
+                });
+            }
+        }
         tx.commit()?;
-        Ok(changed == 1)
+        Ok(ExecutionSourceClaim {
+            claimed: true,
+            cursor: None,
+            source_fingerprint: None,
+            generation: None,
+            version: None,
+        })
     }
     pub fn execution_extend_source_lease(
         &self,

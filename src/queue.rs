@@ -33,6 +33,13 @@ type EnqueueOutcomes = Vec<(i64, bool)>;
 type CheckpointInspectTuple = (String, Option<String>, String, i64, i64, i64, i64, i64);
 type ExecutionInspectTuple = (String, String, String, Option<String>, bool, i64, i64);
 type ExecutionStateTuple = (i64, i64, i64, i64, i64);
+type ExecutionSourceClaimTuple = (
+    bool,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+);
 type ExecutionRuntimeTuple = (
     (
         String,
@@ -604,11 +611,18 @@ impl NativeQueue {
         id: String,
         receipt: String,
         lease_ms: i64,
-    ) -> PyResult<bool> {
+    ) -> PyResult<ExecutionSourceClaimTuple> {
         py.detach(move || {
-            Ok(self
+            let claim = self
                 .storage
-                .execution_claim_source(&id, &receipt, lease_ms)?)
+                .execution_claim_source(&id, &receipt, lease_ms)?;
+            Ok((
+                claim.claimed,
+                claim.cursor,
+                claim.source_fingerprint,
+                claim.generation,
+                claim.version,
+            ))
         })
     }
     #[pyo3(name = "_execution_extend_source_lease")]

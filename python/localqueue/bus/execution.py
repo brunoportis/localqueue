@@ -113,7 +113,13 @@ class _ExecutionHandle:
     async def _run(self) -> _ExecutionSnapshot:
         while not self.inspect().source_completed:
             receipt = secrets.token_urlsafe(24)
-            claimed = await asyncio.to_thread(
+            (
+                claimed,
+                cursor,
+                checkpoint_fingerprint,
+                generation,
+                version,
+            ) = await asyncio.to_thread(
                 self._bus._get_native()._execution_claim_source,
                 str(self._id),
                 receipt,
@@ -127,10 +133,6 @@ class _ExecutionHandle:
                 definition = cast(Any, self._source)
                 checkpoint_name = cast(str, definition.checkpoint)
                 source = cast(Any, definition.source)
-                checkpoint = self._bus.checkpoint(checkpoint_name).inspect()
-                checkpoint_row = self._bus._get_native()._checkpoint_inspect(
-                    self._bus.name, checkpoint_name
-                )
                 ingestion = asyncio.create_task(
                     _run_claimed_execution_ingestion(
                         self._bus,
@@ -142,14 +144,14 @@ class _ExecutionHandle:
                             max_pending=definition.config.max_pending,
                             execution_id=str(self._id),
                             receipt=receipt,
-                            start_cursor=None
-                            if checkpoint is None
-                            else checkpoint.cursor,
-                            generation=None
-                            if checkpoint_row is None
-                            else checkpoint_row[2],
-                            version=None if checkpoint is None else checkpoint.version,
-                            fingerprint=source.fingerprint,
+                            start_cursor=cursor,
+                            generation=generation,
+                            version=version,
+                            fingerprint=(
+                                source.fingerprint
+                                if checkpoint_fingerprint is None
+                                else checkpoint_fingerprint
+                            ),
                         ),
                     )
                 )
