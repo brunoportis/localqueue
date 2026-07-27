@@ -65,7 +65,7 @@ def _concurrently_open_execution(path: str, result: object) -> None:
 
 def _produce_lifecycle_source(
     path: str,
-    opened: object,
+    producer_claimed: object,
     waiter_attempted: object,
     source_completed: object,
     finalized: object,
@@ -77,9 +77,9 @@ def _produce_lifecycle_source(
         execution_id, _ = native._execution_open(
             "producer", "bus", "source", "checkpoint", "v1"
         )
-        opened.set()
         claimed, *_ = native._execution_claim_source(execution_id, "producer", 60_000)
         assert claimed
+        producer_claimed.set()
         assert waiter_attempted.wait(10)
         native._enqueue_batch_with_claimed_execution(
             [],
@@ -100,13 +100,13 @@ def _produce_lifecycle_source(
 
 def _wait_lifecycle_source(
     path: str,
-    opened: object,
+    producer_claimed: object,
     waiter_attempted: object,
     source_completed: object,
     finalized: object,
     result: object,
 ) -> None:
-    assert opened.wait(10)
+    assert producer_claimed.wait(10)
     queue = SimpleQueue(path, name="q")
     native = queue._get_native()
     try:
@@ -291,7 +291,7 @@ def test_execution_open_converges_across_bounded_spawn_processes(tmp_path) -> No
 
 def test_execution_lifecycle_has_one_producer_and_one_process_waiter(tmp_path) -> None:
     context = mp.get_context("spawn")
-    opened = context.Event()
+    producer_claimed = context.Event()
     waiter_attempted = context.Event()
     source_completed = context.Event()
     finalized = context.Event()
@@ -300,7 +300,7 @@ def test_execution_lifecycle_has_one_producer_and_one_process_waiter(tmp_path) -
         target=_produce_lifecycle_source,
         args=(
             str(tmp_path),
-            opened,
+            producer_claimed,
             waiter_attempted,
             source_completed,
             finalized,
@@ -311,7 +311,7 @@ def test_execution_lifecycle_has_one_producer_and_one_process_waiter(tmp_path) -
         target=_wait_lifecycle_source,
         args=(
             str(tmp_path),
-            opened,
+            producer_claimed,
             waiter_attempted,
             source_completed,
             finalized,
