@@ -14,7 +14,7 @@ from localqueue.bus import (
     SourceChanged,
     event,
 )
-from localqueue.bus.execution import _ExecutionHandle
+from localqueue.bus.execution import _ExecutionHandle, _ExecutionSnapshot
 from localqueue.bus.ingestion import (
     _ClaimedExecutionIngestion,
     _run_claimed_execution_ingestion,
@@ -41,8 +41,10 @@ def test_pending_execution_is_shared_and_empty_source_finalizes(tmp_path) -> Non
         assert first.execution_id == second.execution_id
         assert second.resumed is True
         result = await first.run(timeout=1)
+        finished = await second.wait(timeout=1)
         assert result.source_completed is True
         assert result.completed is True
+        assert finished.execution_id == result.execution_id
         assert result.total == result.ready == result.processing == 0
 
     try:
@@ -219,6 +221,143 @@ def test_execution_heartbeat_renews_owned_source_claim(tmp_path, monkeypatch) ->
         asyncio.run(run())
     finally:
         bus.close()
+
+
+def test_execution_propagates_heartbeat_failure_and_cancels_ingestion(
+    tmp_path, monkeypatch
+) -> None:
+    """A lost lease must stop an active source before another batch can commit."""
+    bus = EventBus(str(tmp_path), topology=BusTopology({"imports": [Imported]}))
+    ingestion_started = asyncio.Event()
+    ingestion_cancelled = asyncio.Event()
+
+    @bus.source(SequenceSource([], fingerprint="v1"), checkpoint="imports")
+    def imports(value: str) -> Imported:
+        return Imported(key=value)
+
+    async def blocked_ingestion(*_args: object) -> None:
+        ingestion_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            ingestion_cancelled.set()
+
+    async def lost_lease(_receipt: str) -> None:
+        await ingestion_started.wait()
+        raise _native.ExecutionLeaseLost("lease reclaimed")
+
+    async def run() -> None:
+        execution = await bus._open_execution(imports)
+        monkeypatch.setattr(
+            "localqueue.bus.execution._run_claimed_execution_ingestion",
+            blocked_ingestion,
+        )
+        monkeypatch.setattr(execution, "_heartbeat", lost_lease)
+        with pytest.raises(_native.ExecutionLeaseLost, match="reclaimed"):
+            await execution.run(timeout=1)
+        assert ingestion_cancelled.is_set()
+        assert execution.inspect().source_lease_until is None
+
+    try:
+        asyncio.run(run())
+    finally:
+        bus.close()
+
+
+def test_execution_retries_claim_and_rechecks_finalization_before_returning(
+    monkeypatch,
+) -> None:
+    """A retry that reopens work between snapshots keeps wait() polling."""
+    execution_id = uuid4()
+
+    def snapshot(*, completed: bool = False, ready: int = 0) -> _ExecutionSnapshot:
+        return _ExecutionSnapshot(
+            execution_id=execution_id,
+            source_name="source",
+            checkpoint_name="checkpoint",
+            source_fingerprint="v1",
+            checkpoint_generation="generation",
+            source_completed=True,
+            source_completed_at=1,
+            completed_at=2 if completed else None,
+            items_committed=0,
+            events_dispatched=0,
+            events_unrouted=0,
+            deliveries_inserted=0,
+            deliveries_deduplicated=0,
+            batches_committed=0,
+            total=ready,
+            ready=ready,
+            processing=0,
+            acknowledged=0,
+            failed=0,
+            source_lease_until=None,
+            created_at=1,
+            updated_at=1,
+        )
+
+    class Native:
+        def __init__(self) -> None:
+            self.finalize_calls = 0
+
+        def _execution_claim_source(
+            self, _execution_id: str, _receipt: str, _lease_ms: int
+        ) -> bool:
+            return False
+
+        def _execution_finalize_if_complete(self, _execution_id: str) -> bool:
+            self.finalize_calls += 1
+            return self.finalize_calls == 2
+
+    class Bus:
+        def __init__(self) -> None:
+            self.native = Native()
+
+        def _get_native(self) -> Native:
+            return self.native
+
+    bus = Bus()
+    handle = _ExecutionHandle(bus, None, execution_id, False)
+    snapshots = iter(
+        (
+            _ExecutionSnapshot(
+                execution_id=execution_id,
+                source_name="source",
+                checkpoint_name="checkpoint",
+                source_fingerprint="v1",
+                checkpoint_generation="generation",
+                source_completed=False,
+                source_completed_at=None,
+                completed_at=None,
+                items_committed=0,
+                events_dispatched=0,
+                events_unrouted=0,
+                deliveries_inserted=0,
+                deliveries_deduplicated=0,
+                batches_committed=0,
+                total=0,
+                ready=0,
+                processing=0,
+                acknowledged=0,
+                failed=0,
+                source_lease_until=None,
+                created_at=1,
+                updated_at=1,
+            ),
+            snapshot(),
+            snapshot(),
+            snapshot(ready=1),
+            snapshot(),
+            snapshot(completed=True),
+        )
+    )
+    monkeypatch.setattr(handle, "inspect", lambda: next(snapshots))
+    monkeypatch.setattr("localqueue.bus.execution._POLL_SECONDS", 0)
+
+    result = asyncio.run(handle.run(timeout=1))
+
+    assert result.completed is True
+    assert bus.native.finalize_calls == 2
 
 
 def test_execution_invalid_source_record_releases_lease(tmp_path) -> None:
