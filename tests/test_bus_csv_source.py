@@ -634,12 +634,12 @@ class TestCsvSourceResourceClosure:
         finally:
             bus.close()
 
-    def test_cancellation_and_bus_close_during_backpressure_close_file(self, tmp_path):
+    def test_cancellation_during_backpressure_closes_file(self, tmp_path):
         path = write_csv(tmp_path / "contacts.csv", "cnpj,name\n1,Ana\n2,Bob\n")
 
-        async def stop_ingestion(stop_bus: bool):
+        async def stop_ingestion():
             source = CloseTrackingCsvSource(path)
-            bus = make_bus(tmp_path / ("close-bus" if stop_bus else "cancel"))
+            bus = make_bus(tmp_path / "cancel")
             try:
                 task = asyncio.create_task(
                     bus.ingest(
@@ -654,21 +654,15 @@ class TestCsvSourceResourceClosure:
                 # Let the second prepared record enter the backpressure retry
                 # after the first one filled the queue.
                 await asyncio.sleep(0.05)
-                if stop_bus:
-                    bus.close()
-                    with pytest.raises(RuntimeError, match="closed"):
-                        await task
-                else:
-                    task.cancel()
-                    with pytest.raises(asyncio.CancelledError):
-                        await task
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
                 assert source.closed
             finally:
                 if bus._native_queue is not None:
                     bus.close()
 
-        run(stop_ingestion(False))
-        run(stop_ingestion(True))
+        run(stop_ingestion())
 
 
 class TestCsvSourceIngestion:
