@@ -655,10 +655,7 @@ class TestCsvSourceResourceClosure:
                 # after the first one filled the queue.
                 await asyncio.sleep(0.05)
                 if stop_bus:
-                    # Closing a native handle can wait for an in-flight
-                    # ingestion attempt. Keep that wait off the event loop so
-                    # the attempt can observe the published closed state.
-                    await asyncio.to_thread(bus.close)
+                    bus.close()
                     with pytest.raises(RuntimeError, match="closed"):
                         await task
                 else:
