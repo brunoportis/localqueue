@@ -383,3 +383,11 @@ async def run_declared_ingestion() -> None:
     async_iterable_result: IngestionResult = await declared_async_iterable.ingest()
     resumable_result: IngestionResult = await declared_resumable.ingest()
     print(iterable_result, async_iterable_result, resumable_result)
+
+
+@typed_bus.source([{"contact_id": "7"}])
+def declared_with_custom_context(row: Row) -> ContactCreated:
+    return ContactCreated(contact_id=row["contact_id"])
+
+
+custom_context_bus: EventBus[AppContext] = declared_with_custom_context.bus

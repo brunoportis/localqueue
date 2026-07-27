@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterable, Awaitable, Callable, Iterable
-from typing import TYPE_CHECKING, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 from localqueue.bus.event import BaseEvent
 from localqueue.bus.ingestion import (
@@ -15,7 +15,6 @@ from localqueue.bus.sources import ResumableSource
 
 if TYPE_CHECKING:
     from localqueue.bus.bus import EventBus
-    from localqueue.bus.context import HandlerContext
 
 ItemT = TypeVar("ItemT")
 EventT = TypeVar("EventT", bound=BaseEvent)
@@ -72,7 +71,7 @@ class SourceDefinition(Generic[ItemT, EventT]):
     def __init__(
         self,
         *,
-        bus: EventBus[HandlerContext],
+        bus: EventBus[Any],
         source: Iterable[ItemT] | AsyncIterable[ItemT] | ResumableSource[ItemT],
         transform: Callable[[ItemT], EventT | Awaitable[EventT]],
         checkpoint: str | None,
@@ -87,10 +86,10 @@ class SourceDefinition(Generic[ItemT, EventT]):
     @property
     def name(self) -> str:
         """The transform's display name."""
-        return self._transform.__name__
+        return getattr(self._transform, "__name__", type(self._transform).__name__)
 
     @property
-    def bus(self) -> EventBus[HandlerContext]:
+    def bus(self) -> EventBus[Any]:
         """The bus that owns this source definition."""
         return self._bus
 

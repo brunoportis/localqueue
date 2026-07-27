@@ -9,6 +9,7 @@ from collections.abc import AsyncIterable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import (
+    Any,
     Awaitable,
     Callable,
     Generic,
@@ -22,7 +23,7 @@ from typing import (
 from uuid import UUID
 
 from localqueue import localqueue as _native
-from localqueue.bus.context import ContextFactory, ContextT, HandlerContext
+from localqueue.bus.context import ContextFactory, ContextT
 from localqueue.bus.event import BaseEvent, event_type_of
 from localqueue.bus.identity import business_payload, prepare_event_persistence
 from localqueue.bus.ingestion import (
@@ -832,11 +833,13 @@ class EventBus(Generic[ContextT]):
         max_pending: int | None = None,
     ) -> object:
         """Declare a typed source that delegates execution to :meth:`ingest`."""
-        config = SourceConfig(batch_size=batch_size, max_pending=max_pending)
+        # Validate declaration-time values before the source is consumed.
+        # Each decorated transform gets its own mutable configuration below.
+        SourceConfig(batch_size=batch_size, max_pending=max_pending)
 
         def define(transform: object) -> object:
             return SourceDefinition(
-                bus=cast("EventBus[HandlerContext]", self),
+                bus=cast("EventBus[Any]", self),
                 source=cast(
                     "Iterable[object] | AsyncIterable[object] | ResumableSource[object]",
                     source,
@@ -845,7 +848,7 @@ class EventBus(Generic[ContextT]):
                     "Callable[[object], BaseEvent | Awaitable[BaseEvent]]", transform
                 ),
                 checkpoint=checkpoint,
-                config=config,
+                config=SourceConfig(batch_size=batch_size, max_pending=max_pending),
             )
 
         return define
