@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from localqueue.bus.context import HandlerContext
 
 _ContextT = TypeVar("_ContextT", bound="HandlerContext")
+_CommitResultT = TypeVar("_CommitResultT")
 
 _MAX_BATCH_SIZE = 2**31 - 1
 _MAX_PENDING_BOUND = 2**63 - 1
@@ -298,6 +299,23 @@ def _capacity_entries(
     return queues
 
 
+async def _settle_cancelled_commit(commit: asyncio.Task[_CommitResultT]) -> None:
+    """Wait for a native commit and preserve the caller's cancellation."""
+    while not commit.done():
+        try:
+            await asyncio.shield(commit)
+        except asyncio.CancelledError:
+            # Repeated cancellation requests must not reopen the same
+            # ambiguity while SQLite is still running.
+            continue
+        except Exception:
+            # The commit completed with an error while this task was already
+            # cancelling. Retrieve it below, but keep the original cancellation.
+            break
+    if not commit.cancelled():
+        commit.exception()
+
+
 async def _commit_group(
     bus: EventBus[_ContextT],
     group: list[_PreparedDispatch],
@@ -333,15 +351,7 @@ async def _commit_group(
                 # worker thread. Do not expose cancellation while that commit
                 # is still in flight: settle it first, then propagate the
                 # original cancellation.
-                while not commit.done():
-                    try:
-                        await asyncio.shield(commit)
-                    except asyncio.CancelledError:
-                        # Repeated cancellation requests must not reopen the
-                        # same ambiguity while SQLite is still running.
-                        continue
-                if not commit.cancelled():
-                    commit.exception()
+                await _settle_cancelled_commit(commit)
                 raise
             break
         except _native._FullImpossible:
@@ -585,15 +595,7 @@ async def _commit_resumable_group(
                 # worker thread. Do not expose cancellation while that commit
                 # is still in flight: settle it first, then propagate the
                 # original cancellation.
-                while not commit.done():
-                    try:
-                        await asyncio.shield(commit)
-                    except asyncio.CancelledError:
-                        # Repeated cancellation requests must not reopen the
-                        # same ambiguity while SQLite is still running.
-                        continue
-                if not commit.cancelled():
-                    commit.exception()
+                await _settle_cancelled_commit(commit)
                 raise
             break
         except _native._FullImpossible:
