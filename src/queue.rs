@@ -1181,7 +1181,11 @@ impl NativeQueue {
             let changed = tx
                 .execute(
                     "DELETE FROM messages
-                     WHERE queue = ?1 AND status = ?2 AND updated_at < ?3",
+                     WHERE queue = ?1 AND status = ?2 AND updated_at < ?3
+                       AND NOT EXISTS (
+                           SELECT 1 FROM event_bus_execution_deliveries d
+                           WHERE d.message_id = messages.id
+                       )",
                     params![self.queue, status_filter, cutoff],
                 )
                 .map_err(QueueError::from)?;

@@ -43,8 +43,10 @@ quick = queue.check_integrity(mode="quick", max_errors=25)
 database formatting, table and index consistency, constraints, and freelist
 ownership. `mode="quick"` runs `PRAGMA quick_check`; it is faster but skips
 UNIQUE and index-content consistency checks. SQLite does not include foreign
-key violations in either operation. `max_errors` limits the reported
-diagnostics and must be an integer from 1 through 1000, inclusive.
+key violations in either operation, so localqueue also runs
+`PRAGMA foreign_key_check`. Both sources share the same `max_errors` budget;
+when any violation exists the result is not `"ok"`. `max_errors` must be an
+integer from 1 through 1000, inclusive.
 
 `IntegrityCheckResult` contains:
 

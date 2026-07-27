@@ -42,6 +42,11 @@ pub fn check(storage: &Storage, quick: bool, max_errors: u16) -> Result<Integrit
     let mut query = conn.prepare(&statement)?;
     let rows = query.query_map([], |row| row.get::<_, String>(0))?;
     let mut messages = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+    let sqlite_ok = messages.len() == 1 && messages[0] == "ok";
+    if sqlite_ok {
+        messages.clear();
+    }
+    let remaining = usize::from(max_errors).saturating_sub(messages.len());
     let mut foreign_keys = conn.prepare("PRAGMA foreign_key_check")?;
     let violations = foreign_keys.query_map([], |row| {
         Ok(format!(
@@ -52,8 +57,15 @@ pub fn check(storage: &Storage, quick: bool, max_errors: u16) -> Result<Integrit
             row.get::<_, i64>(3)?,
         ))
     })?;
-    messages.extend(violations.collect::<std::result::Result<Vec<_>, _>>()?);
-    let ok = messages.len() == 1 && messages[0] == "ok";
+    messages.extend(
+        violations
+            .take(remaining)
+            .collect::<std::result::Result<Vec<_>, _>>()?,
+    );
+    if messages.is_empty() && sqlite_ok {
+        messages.push("ok".to_owned());
+    }
+    let ok = messages == ["ok"];
 
     Ok(IntegrityCheckSnapshot {
         schema_version: 1,

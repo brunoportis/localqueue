@@ -334,11 +334,18 @@ impl Storage {
         let now = now_ms();
         let guard = self.connection();
         let conn = guard.as_ref().ok_or(QueueError::Closed)?;
-        Ok(conn.execute(
+        let changed = conn.execute(
             "UPDATE event_bus_executions SET source_completed = 1, updated_at = ?2
              WHERE execution_id = ?1 AND source_completed = 0",
             params![execution_id, now],
-        )? == 1)
+        )?;
+        if changed == 1 {
+            return Ok(true);
+        }
+        if !execution_exists(conn, execution_id)? {
+            return Err(QueueError::NotFound);
+        }
+        Ok(false)
     }
 
     pub fn execution_delivery_states(
@@ -347,6 +354,9 @@ impl Storage {
     ) -> Result<ExecutionDeliveryStateSnapshot> {
         let guard = self.connection();
         let conn = guard.as_ref().ok_or(QueueError::Closed)?;
+        if !execution_exists(conn, execution_id)? {
+            return Err(QueueError::NotFound);
+        }
         conn.query_row(
             "SELECT COUNT(*),
                     COALESCE(SUM(m.status = 0), 0), COALESCE(SUM(m.status = 1), 0),
@@ -410,6 +420,7 @@ impl Storage {
             return Err(QueueError::LeaseExpired);
         }
         let ids = insert_entries_in_transaction(&tx, entries, max_attempts, now)?;
+        insert_delivery_edges(&tx, id, &ids)?;
         attach_execution_memberships(&tx, &parent_executions, &ids)?;
         #[cfg(feature = "__crash_test")]
         crate::failpoints::hit(crate::failpoints::Failpoint::AckFanoutBeforeCommit);
@@ -604,13 +615,56 @@ fn migrate_execution_membership(conn: &mut Connection) -> Result<()> {
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_event_bus_execution_deliveries_message')",
         [], |row| row.get(0),
     )?;
-    if executions && deliveries && message_index {
+    let edges = delivery_edges_exist(conn)?;
+    if executions
+        && deliveries
+        && message_index
+        && edges
+        && membership_message_foreign_key_is_restrict(conn)?
+    {
         return Ok(());
     }
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    tx.execute_batch(EXECUTION_MEMBERSHIP_SCHEMA_SQL)?;
+    if executions && deliveries && !membership_message_foreign_key_is_restrict(&tx)? {
+        tx.execute_batch(
+            "ALTER TABLE event_bus_execution_deliveries RENAME TO event_bus_execution_deliveries_old;",
+        )?;
+        tx.execute_batch(EXECUTION_MEMBERSHIP_SCHEMA_SQL)?;
+        tx.execute_batch(
+            "INSERT INTO event_bus_execution_deliveries (execution_id, message_id)
+             SELECT execution_id, message_id FROM event_bus_execution_deliveries_old;
+             DROP TABLE event_bus_execution_deliveries_old;
+             CREATE INDEX IF NOT EXISTS idx_event_bus_execution_deliveries_message
+                ON event_bus_execution_deliveries(message_id);",
+        )?;
+    } else if !executions || !deliveries || !message_index || !edges {
+        tx.execute_batch(EXECUTION_MEMBERSHIP_SCHEMA_SQL)?;
+    }
     tx.commit()?;
     Ok(())
+}
+
+fn membership_message_foreign_key_is_restrict(conn: &Connection) -> Result<bool> {
+    let mut statement = conn.prepare("PRAGMA foreign_key_list(event_bus_execution_deliveries)")?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(2)?, row.get::<_, String>(6)?))
+    })?;
+    for row in rows {
+        let (table, action) = row?;
+        if table == "messages" {
+            return Ok(
+                action.eq_ignore_ascii_case("RESTRICT") || action.eq_ignore_ascii_case("NO ACTION")
+            );
+        }
+    }
+    Ok(false)
+}
+
+fn delivery_edges_exist(conn: &Connection) -> Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'event_bus_delivery_edges')",
+        [], |row| row.get(0),
+    ).map_err(QueueError::from)
 }
 
 fn has_ingestion_checkpoint_column(conn: &Connection, expected: &str) -> Result<bool> {
@@ -699,6 +753,30 @@ fn execution_memberships_for_message(tx: &Transaction<'_>, message_id: i64) -> R
     Ok(memberships)
 }
 
+fn execution_exists(conn: &Connection, execution_id: &str) -> Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM event_bus_executions WHERE execution_id = ?1)",
+        params![execution_id],
+        |row| row.get(0),
+    )
+    .map_err(QueueError::from)
+}
+
+fn insert_delivery_edges(
+    tx: &Transaction<'_>,
+    parent_message_id: i64,
+    outcomes: &[EnqueueOutcome],
+) -> Result<()> {
+    let mut statement = tx.prepare(
+        "INSERT OR IGNORE INTO event_bus_delivery_edges (parent_message_id, child_message_id)
+         VALUES (?1, ?2)",
+    )?;
+    for outcome in outcomes {
+        statement.execute(params![parent_message_id, outcome.id])?;
+    }
+    Ok(())
+}
+
 fn attach_execution_memberships(
     tx: &Transaction<'_>,
     execution_ids: &[String],
@@ -707,12 +785,20 @@ fn attach_execution_memberships(
     if execution_ids.is_empty() || outcomes.is_empty() {
         return Ok(());
     }
-    let mut statement = tx.prepare(
-        "INSERT OR IGNORE INTO event_bus_execution_deliveries (execution_id, message_id) VALUES (?1, ?2)",
-    )?;
     for execution_id in execution_ids {
         for outcome in outcomes {
-            statement.execute(params![execution_id, outcome.id])?;
+            tx.execute(
+                "WITH RECURSIVE descendants(message_id) AS (
+                    VALUES (?2)
+                    UNION
+                    SELECT edge.child_message_id
+                    FROM event_bus_delivery_edges edge
+                    JOIN descendants ON edge.parent_message_id = descendants.message_id
+                 )
+                 INSERT OR IGNORE INTO event_bus_execution_deliveries (execution_id, message_id)
+                 SELECT ?1, message_id FROM descendants",
+                params![execution_id, outcome.id],
+            )?;
         }
     }
     Ok(())
@@ -1160,6 +1246,45 @@ mod tests {
 
         migrate_ingestion_checkpoints(&mut tested).unwrap();
         blocker.execute_batch("ROLLBACK").unwrap();
+    }
+
+    #[test]
+    fn execution_membership_migration_restricts_tracked_messages() {
+        let dir = tempfile_guard::TempDir::new();
+        let path = dir.path().join("legacy-membership.db");
+        let mut conn = Connection::open(&path).unwrap();
+        conn.execute_batch(BASE_SCHEMA_SQL).unwrap();
+        conn.execute_batch(CHECKPOINTS_SCHEMA_SQL).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE event_bus_executions (
+                execution_id TEXT PRIMARY KEY, bus_name TEXT NOT NULL, source_name TEXT NOT NULL,
+                checkpoint_name TEXT, source_completed INTEGER NOT NULL,
+                created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE event_bus_execution_deliveries (
+                execution_id TEXT NOT NULL, message_id INTEGER NOT NULL,
+                PRIMARY KEY (execution_id, message_id),
+                FOREIGN KEY (execution_id) REFERENCES event_bus_executions(execution_id) ON DELETE CASCADE,
+                FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+             );
+             CREATE INDEX idx_event_bus_execution_deliveries_message
+                ON event_bus_execution_deliveries(message_id);",
+        )
+        .unwrap();
+
+        migrate_execution_membership(&mut conn).unwrap();
+
+        assert!(delivery_edges_exist(&conn).unwrap());
+        assert!(membership_message_foreign_key_is_restrict(&conn).unwrap());
+        let index: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index'
+                 AND name = 'idx_event_bus_execution_deliveries_message')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(index);
     }
 
     #[test]

@@ -998,6 +998,12 @@ attaches every parent membership to every resulting child — including a child
 row returned by deduplication. The ACK, children, and joins therefore commit or
 roll back together.
 
+Fan-out also records internal parent/child delivery edges. If a later
+deduplicated root joins another execution after its fan-out already committed,
+the new membership traverses those edges and joins every known descendant in
+the same transaction. Tracked terminal deliveries are retained by normal queue
+purge so execution state cannot lose acknowledged or failed results.
+
 Execution state snapshots are derived by joining membership rows to durable
 message status at query time. They do not use mutable counters on executions,
 so retries, lease recovery, failures, and acknowledgements cannot make a

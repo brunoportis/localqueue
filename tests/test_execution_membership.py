@@ -4,7 +4,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from localqueue import LeaseExpired, SimpleQueue
+from localqueue import LeaseExpired, LocalQueueError, SimpleQueue
 
 
 def native_queue(path: Path, name: str = "parent"):
@@ -139,6 +139,33 @@ def test_ack_fanout_deduplicated_child_and_lease_error_are_atomic(
         queue.close()
 
 
+def test_late_root_membership_reaches_existing_fanout_descendants(
+    tmp_path: Path,
+) -> None:
+    queue, native = native_queue(tmp_path / "queue")
+    try:
+        create_execution(native, "first")
+        create_execution(native, "late")
+        root = entries(("parent", b"root", "root", "root", "root-fingerprint"))
+        native._enqueue_batch_with_identity_and_checkpoint_and_execution(
+            root, None, None, "first"
+        )
+        lease = native.get(60_000)
+        assert lease is not None
+        native._ack_and_fanout_with_identity(
+            lease.id,
+            lease.receipt,
+            b"child",
+            [("child", "child", "child", "child-fingerprint")],
+        )
+        native._enqueue_batch_with_identity_and_checkpoint_and_execution(
+            root, None, None, "late"
+        )
+        assert native._execution_delivery_states("late") == (2, 1, 0, 1, 0)
+    finally:
+        queue.close()
+
+
 def test_membership_survives_retry_and_failure_and_foreign_keys_are_clean(
     tmp_path: Path,
 ) -> None:
@@ -206,5 +233,42 @@ def test_backup_preserves_execution_records_and_memberships(tmp_path: Path) -> N
                 "SELECT execution_id, message_id FROM event_bus_execution_deliveries"
             ).fetchall() == [("run", 1)]
             assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        queue.close()
+
+
+@pytest.mark.parametrize("terminal", ["ack", "fail"])
+def test_purge_preserves_tracked_terminal_deliveries(
+    tmp_path: Path, terminal: str
+) -> None:
+    queue, native = native_queue(tmp_path / "queue")
+    try:
+        create_execution(native, "run")
+        native._enqueue_batch_with_identity_and_checkpoint_and_execution(
+            entries(("parent", b"root", None, None, None)), None, None, "run"
+        )
+        lease = native.get(60_000)
+        assert lease is not None
+        if terminal == "ack":
+            native.ack(lease.id, lease.receipt)
+            expected = (1, 0, 0, 1, 0)
+            status = 2
+        else:
+            native.fail(lease.id, lease.receipt, "permanent")
+            expected = (1, 0, 0, 0, 1)
+            status = 3
+        assert native.purge(-1, status) == 0
+        assert native._execution_delivery_states("run") == expected
+    finally:
+        queue.close()
+
+
+def test_missing_execution_operations_raise_not_found(tmp_path: Path) -> None:
+    queue, native = native_queue(tmp_path / "queue")
+    try:
+        with pytest.raises(LocalQueueError):
+            native._execution_mark_source_completed("missing")
+        with pytest.raises(LocalQueueError):
+            native._execution_delivery_states("missing")
     finally:
         queue.close()
