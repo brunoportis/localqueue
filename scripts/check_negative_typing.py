@@ -40,6 +40,10 @@ EXPECTED_DIAGNOSTICS = (
     "transform=(row: OtherRow) -> ContactCreated",
     "`Literal[42]` is not assignable to parameter `source`",
     "checkpoint=Literal['import:v1']",
+    "(row: Row) -> str",
+    "(row: OtherRow) -> ContactCreated",
+    "SourceConfig.batch_size",
+    "SourceConfig.max_pending",
 )
 
 

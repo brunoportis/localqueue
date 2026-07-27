@@ -816,6 +816,50 @@ resume position and is therefore always re-consumed from the start. Events
 with a durable identity (`@event(identity=...)`) are deduplicated on
 re-ingestion; events without identity are new occurrences.
 
+### Declarative sources
+
+`@bus.source` is a small typed facade over `EventBus.ingest()`. It declares a
+source and its item-to-event transform, but does not introduce another
+ingestion runtime:
+
+```python
+from localqueue.bus import CsvRow, CsvSource
+
+
+@bus.source(
+    CsvSource("contacts.csv"),
+    checkpoint="contacts:2026-07",
+)
+def contacts(row: CsvRow) -> ContactCreationRequested:
+    return ContactCreationRequested(...)
+
+
+contacts.config.batch_size = 5_000
+contacts.config.max_pending = 50_000
+
+result = await contacts.ingest()
+```
+
+The equivalent lower-level call is:
+
+```python
+result = await bus.ingest(
+    contacts.source,
+    checkpoint=contacts.checkpoint,
+    transform=contacts.transform,
+    batch_size=contacts.config.batch_size,
+    max_pending=contacts.config.max_pending,
+)
+```
+
+`SourceDefinition.ingest()` only publishes source events. It does not start
+`EventBus.run()`, wait for handlers to finish, or close the bus: producer and
+worker lifecycle remain separate. The checkpoint remains explicit, and the
+underlying `source` and `transform` stay directly accessible. `SourceConfig`
+is mutable until the first ingestion starts, then remains frozen permanently;
+use `config.frozen` to inspect that state. Calling `EventBus.ingest()`
+directly remains fully supported.
+
 ### Durable resumable ingestion
 
 Use `SequenceSource` (or another `ResumableSource`) with a named checkpoint

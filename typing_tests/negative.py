@@ -12,6 +12,7 @@ from localqueue.bus import (
     Reject,
     Retry,
     RuntimeContext,
+    SourceConfig,
 )
 
 
@@ -166,3 +167,20 @@ async def run_bad_ingestion() -> None:
     await bus.ingest(rows, transform=other_row_transform)
     await bus.ingest(42)
     await bus.ingest([1, 2, 3], checkpoint="import:v1")
+
+
+@bus.source([{"contact_id": "1"}])
+def declared_bad_return(row: Row) -> str:
+    return row["contact_id"]
+
+
+@bus.source([{"contact_id": "1"}])
+def declared_bad_input(row: OtherRow) -> ContactCreated:
+    return ContactCreated(contact_id=row["order_id"])
+
+
+source_config = SourceConfig()
+source_config.batch_size = "large"
+source_config.batch_size = True
+source_config.max_pending = "many"
+source_config.max_pending = False
