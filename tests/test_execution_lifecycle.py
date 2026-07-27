@@ -17,6 +17,8 @@ from localqueue.bus import (
 
 @event(identity="key")
 class Imported(BaseEvent):
+    event_name = "execution-lifecycle.imported"
+
     key: str
 
 
