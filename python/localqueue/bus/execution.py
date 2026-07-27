@@ -10,7 +10,10 @@ from dataclasses import dataclass
 from typing import Any, cast
 from uuid import UUID
 
-from localqueue.bus.ingestion import _run_claimed_execution_ingestion
+from localqueue.bus.ingestion import (
+    _ClaimedExecutionIngestion,
+    _run_claimed_execution_ingestion,
+)
 
 _LEASE_MS = 60_000
 _POLL_SECONDS = 0.05
@@ -126,16 +129,20 @@ class _ExecutionHandle:
                 await _run_claimed_execution_ingestion(
                     self._bus,
                     source,
-                    checkpoint=checkpoint_name,
-                    transform=definition.transform,
-                    batch_size=definition.config.batch_size,
-                    max_pending=definition.config.max_pending,
-                    execution_id=str(self._id),
-                    receipt=receipt,
-                    start_cursor=None if checkpoint is None else checkpoint.cursor,
-                    generation=None if checkpoint_row is None else checkpoint_row[2],
-                    version=None if checkpoint is None else checkpoint.version,
-                    fingerprint=source.fingerprint,
+                    _ClaimedExecutionIngestion(
+                        checkpoint=checkpoint_name,
+                        transform=definition.transform,
+                        batch_size=definition.config.batch_size,
+                        max_pending=definition.config.max_pending,
+                        execution_id=str(self._id),
+                        receipt=receipt,
+                        start_cursor=None if checkpoint is None else checkpoint.cursor,
+                        generation=None
+                        if checkpoint_row is None
+                        else checkpoint_row[2],
+                        version=None if checkpoint is None else checkpoint.version,
+                        fingerprint=source.fingerprint,
+                    ),
                 )
                 await asyncio.to_thread(
                     self._bus._get_native()._execution_mark_source_completed_claimed,

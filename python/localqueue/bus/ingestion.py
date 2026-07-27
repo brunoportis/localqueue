@@ -792,26 +792,36 @@ async def run_resumable_ingestion(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _ClaimedExecutionIngestion:
+    """Private execution-specific state carried through claimed source batches."""
+
+    checkpoint: str
+    transform: Callable[[object], object] | None
+    batch_size: int
+    max_pending: int | None
+    execution_id: str
+    receipt: str
+    start_cursor: str | None
+    generation: str | None
+    version: int | None
+    fingerprint: str
+
+
 async def _run_claimed_execution_ingestion(
     bus: EventBus[_ContextT],
     source: ResumableSource[object],
-    *,
-    checkpoint: str,
-    transform: Callable[[object], object] | None,
-    batch_size: int,
-    max_pending: int | None,
-    execution_id: str,
-    receipt: str,
-    start_cursor: str | None,
-    generation: str | None,
-    version: int | None,
-    fingerprint: str,
+    claimed: _ClaimedExecutionIngestion,
 ) -> None:
     """Private resumable route whose source batches are fenced by an execution lease."""
     tracker = _CheckpointTracker(
-        checkpoint, fingerprint, generation, version, start_cursor
+        claimed.checkpoint,
+        claimed.fingerprint,
+        claimed.generation,
+        claimed.version,
+        claimed.start_cursor,
     )
-    items = _iterate_source(source.open(start_cursor))
+    items = _iterate_source(source.open(claimed.start_cursor))
 
     async def commit(group: list[_PreparedSourceItem]) -> None:
         if not group:
@@ -820,8 +830,8 @@ async def _run_claimed_execution_ingestion(
         entries = _flatten_entries(bus, dispatches)
         capacity = (
             None
-            if max_pending is None
-            else _capacity_entries(bus, dispatches, max_pending)
+            if claimed.max_pending is None
+            else _capacity_entries(bus, dispatches, claimed.max_pending)
         )
         dispatched = len(dispatches)
         unrouted = len(group) - dispatched
@@ -834,15 +844,15 @@ async def _run_claimed_execution_ingestion(
                         capacity,
                         (
                             bus.name,
-                            checkpoint,
+                            claimed.checkpoint,
                             tracker.expected_generation,
                             tracker.expected_version,
                             group[-1].cursor,
-                            fingerprint,
+                            claimed.fingerprint,
                             len(group),
                         ),
-                        execution_id,
-                        receipt,
+                        claimed.execution_id,
+                        claimed.receipt,
                         dispatched,
                         unrouted,
                     )
@@ -887,11 +897,11 @@ async def _run_claimed_execution_ingestion(
                 raise TypeError(
                     f"resumable source item {index} must be a SourceRecord with a string cursor"
                 )
-            event = await _resolve_event(transform, record.value, index)
+            event = await _resolve_event(claimed.transform, record.value, index)
             group.append(
                 _PreparedSourceItem(record.cursor, _prepare_dispatch(bus, event))
             )
-            if len(group) >= batch_size:
+            if len(group) >= claimed.batch_size:
                 await commit(group)
                 group = []
         await commit(group)
