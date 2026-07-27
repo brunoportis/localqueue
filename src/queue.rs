@@ -33,6 +33,34 @@ type EnqueueOutcomes = Vec<(i64, bool)>;
 type CheckpointInspectTuple = (String, Option<String>, String, i64, i64, i64, i64, i64);
 type ExecutionInspectTuple = (String, String, String, Option<String>, bool, i64, i64);
 type ExecutionStateTuple = (i64, i64, i64, i64, i64);
+type ExecutionRuntimeTuple = (
+    (
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        bool,
+        Option<i64>,
+        Option<i64>,
+        i64,
+        i64,
+        i64,
+    ),
+    (
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        Option<i64>,
+        i64,
+        i64,
+    ),
+);
 
 #[derive(Debug, Clone)]
 #[pyclass(skip_from_py_object)]
@@ -543,6 +571,186 @@ impl NativeQueue {
                 state.processing,
                 state.acknowledged,
                 state.failed,
+            ))
+        })
+    }
+
+    #[pyo3(name = "_execution_open")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn execution_open(
+        &self,
+        py: Python<'_>,
+        candidate: String,
+        bus: String,
+        source: String,
+        checkpoint: String,
+        fingerprint: String,
+        generation: Option<String>,
+    ) -> PyResult<(String, bool)> {
+        py.detach(move || {
+            Ok(self.storage.execution_open(
+                &candidate,
+                &bus,
+                &source,
+                &checkpoint,
+                &fingerprint,
+                generation.as_deref(),
+            )?)
+        })
+    }
+    #[pyo3(name = "_execution_claim_source")]
+    pub fn execution_claim_source(
+        &self,
+        py: Python<'_>,
+        id: String,
+        receipt: String,
+        lease_ms: i64,
+    ) -> PyResult<bool> {
+        py.detach(move || {
+            Ok(self
+                .storage
+                .execution_claim_source(&id, &receipt, lease_ms)?)
+        })
+    }
+    #[pyo3(name = "_execution_extend_source_lease")]
+    pub fn execution_extend_source_lease(
+        &self,
+        py: Python<'_>,
+        id: String,
+        receipt: String,
+        lease_ms: i64,
+    ) -> PyResult<i64> {
+        py.detach(move || {
+            Ok(self
+                .storage
+                .execution_extend_source_lease(&id, &receipt, lease_ms)?)
+        })
+    }
+    #[pyo3(name = "_execution_release_source_lease")]
+    pub fn execution_release_source_lease(
+        &self,
+        py: Python<'_>,
+        id: String,
+        receipt: String,
+    ) -> PyResult<bool> {
+        py.detach(move || Ok(self.storage.execution_release_source_lease(&id, &receipt)?))
+    }
+    #[pyo3(name = "_execution_mark_source_completed_claimed")]
+    pub fn execution_mark_source_completed_claimed(
+        &self,
+        py: Python<'_>,
+        id: String,
+        receipt: String,
+    ) -> PyResult<bool> {
+        py.detach(move || {
+            Ok(self
+                .storage
+                .execution_mark_source_completed_claimed(&id, &receipt)?)
+        })
+    }
+    #[pyo3(name = "_execution_snapshot")]
+    pub fn execution_snapshot(
+        &self,
+        py: Python<'_>,
+        id: String,
+    ) -> PyResult<ExecutionRuntimeTuple> {
+        py.detach(move || {
+            let s = self.storage.execution_snapshot(&id)?;
+            Ok((
+                (
+                    s.execution_id,
+                    s.source_name,
+                    s.checkpoint_name,
+                    s.source_fingerprint,
+                    s.checkpoint_generation,
+                    s.source_completed,
+                    s.source_completed_at,
+                    s.completed_at,
+                    s.items_committed,
+                    s.events_dispatched,
+                    s.events_unrouted,
+                ),
+                (
+                    s.deliveries_inserted,
+                    s.deliveries_deduplicated,
+                    s.batches_committed,
+                    s.total,
+                    s.ready,
+                    s.processing,
+                    s.acknowledged,
+                    s.failed,
+                    s.source_lease_until,
+                    s.created_at,
+                    s.updated_at,
+                ),
+            ))
+        })
+    }
+    #[pyo3(name = "_execution_finalize_if_complete")]
+    pub fn execution_finalize_if_complete(&self, py: Python<'_>, id: String) -> PyResult<bool> {
+        py.detach(move || Ok(self.storage.execution_finalize_if_complete(&id)?))
+    }
+
+    #[pyo3(name = "_enqueue_batch_with_claimed_execution")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn enqueue_batch_with_claimed_execution(
+        &self,
+        py: Python<'_>,
+        entries: Vec<EnqueueIdentityEntry>,
+        capacity: Option<Vec<(String, i64)>>,
+        checkpoint: CheckpointUpdateTuple,
+        execution_id: String,
+        receipt: String,
+        dispatched: i64,
+        unrouted: i64,
+    ) -> PyResult<(EnqueueOutcomes, String, i64)> {
+        py.detach(move || {
+            let entries: Vec<EnqueueEntry<'_>> = entries
+                .iter()
+                .map(|(q, p, j, k, f)| EnqueueEntry {
+                    queue_name: q,
+                    payload: p,
+                    job_id: j.as_deref(),
+                    dedup_key: k.as_deref(),
+                    dedup_fingerprint: f.as_deref(),
+                })
+                .collect();
+            let policies: Vec<CapacityPolicy<'_>> = capacity
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .map(|(q, n)| CapacityPolicy {
+                    queue_name: q,
+                    max_pending_jobs: *n,
+                })
+                .collect();
+            let (bus, name, generation, version, cursor, fingerprint, items) = checkpoint;
+            let update = CheckpointUpdate {
+                bus_name: bus,
+                checkpoint_name: name,
+                expected_generation: generation,
+                expected_version: version,
+                new_cursor: cursor,
+                source_fingerprint: fingerprint,
+                items_committed: items,
+            };
+            let mut guard = self.storage.connection();
+            let conn = guard.as_mut().ok_or(QueueError::Closed)?;
+            let (outcomes, commit) = crate::storage::enqueue_batch_claimed_execution(
+                conn,
+                &entries,
+                self.max_attempts,
+                &policies,
+                &update,
+                &execution_id,
+                &receipt,
+                dispatched,
+                unrouted,
+            )?;
+            Ok((
+                outcomes.into_iter().map(|o| (o.id, o.inserted)).collect(),
+                commit.generation,
+                commit.version,
             ))
         })
     }

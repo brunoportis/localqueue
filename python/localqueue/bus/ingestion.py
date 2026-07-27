@@ -790,3 +790,112 @@ async def run_resumable_ingestion(
             resumed=resumed,
         ),
     )
+
+
+async def _run_claimed_execution_ingestion(
+    bus: EventBus[_ContextT],
+    source: ResumableSource[object],
+    *,
+    checkpoint: str,
+    transform: Callable[[object], object] | None,
+    batch_size: int,
+    max_pending: int | None,
+    execution_id: str,
+    receipt: str,
+    start_cursor: str | None,
+    generation: str | None,
+    version: int | None,
+    fingerprint: str,
+) -> None:
+    """Private resumable route whose source batches are fenced by an execution lease."""
+    tracker = _CheckpointTracker(
+        checkpoint, fingerprint, generation, version, start_cursor
+    )
+    items = _iterate_source(source.open(start_cursor))
+
+    async def commit(group: list[_PreparedSourceItem]) -> None:
+        if not group:
+            return
+        dispatches = [item.dispatch for item in group if item.dispatch is not None]
+        entries = _flatten_entries(bus, dispatches)
+        capacity = (
+            None
+            if max_pending is None
+            else _capacity_entries(bus, dispatches, max_pending)
+        )
+        dispatched = len(dispatches)
+        unrouted = len(group) - dispatched
+        while True:
+            try:
+                task = asyncio.create_task(
+                    asyncio.to_thread(
+                        bus._get_native()._enqueue_batch_with_claimed_execution,
+                        entries,
+                        capacity,
+                        (
+                            bus.name,
+                            checkpoint,
+                            tracker.expected_generation,
+                            tracker.expected_version,
+                            group[-1].cursor,
+                            fingerprint,
+                            len(group),
+                        ),
+                        execution_id,
+                        receipt,
+                        dispatched,
+                        unrouted,
+                    )
+                )
+                try:
+                    _, next_generation, next_version = await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    while not task.done():
+                        try:
+                            await asyncio.shield(task)
+                        except asyncio.CancelledError:
+                            continue
+                    if not task.cancelled():
+                        task.exception()
+                    raise
+                tracker.expected_generation, tracker.expected_version = (
+                    next_generation,
+                    next_version,
+                )
+                tracker.end_cursor = group[-1].cursor
+                return
+            except _native._FullImpossible:
+                if len(group) == 1:
+                    raise Full(
+                        "a single event exceeds 'max_pending' on an empty subscription queue"
+                    ) from None
+                middle = len(group) // 2
+                await commit(group[:middle])
+                await commit(group[middle:])
+                return
+            except _native.Full:
+                await asyncio.sleep(_BACKOFF_INITIAL_SECONDS)
+
+    group: list[_PreparedSourceItem] = []
+    index = 0
+    try:
+        async for record in items:
+            index += 1
+            if not isinstance(record, SourceRecord) or not isinstance(
+                record.cursor, str
+            ):
+                raise TypeError(
+                    f"resumable source item {index} must be a SourceRecord with a string cursor"
+                )
+            event = await _resolve_event(transform, record.value, index)
+            group.append(
+                _PreparedSourceItem(record.cursor, _prepare_dispatch(bus, event))
+            )
+            if len(group) >= batch_size:
+                await commit(group)
+                group = []
+        await commit(group)
+    finally:
+        aclose = getattr(items, "aclose", None)
+        if aclose is not None:
+            await aclose()

@@ -69,6 +69,21 @@ neither rebuilds nor rewrites `messages`.
 Online backups copy these tables as part of the SQLite database snapshot, and
 normal SQLite integrity checks include their foreign-key structure.
 
+## v1.6 migration
+
+Version 1.6 adds `event_bus_execution_runtime`, an additive one-to-one
+lifecycle record for each internal execution. It stores checkpoint identity,
+source lease fencing, source completion/finalization timestamps, and
+cumulative source-ingestion counters. Delivery-state counts remain derived
+from the existing membership table and `messages`.
+
+The runtime table has partial unique indexes for checkpoint-bound and pending
+execution identities. Opening an already-current database first checks for the
+table without a writer lock; only a missing table takes `BEGIN IMMEDIATE` to
+create the additive schema. Existing messages, checkpoints, execution
+memberships, and delivery edges are not rewritten. SQLite backup, restore,
+integrity, and foreign-key checks include the table normally.
+
 ## Guaranteed
 
 - A database made by a published, tested baseline can be opened by v1.3.
