@@ -98,12 +98,20 @@ class CloseTrackingCsvSource(CsvSource):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.closed = False
+        self.records_read = 0
 
     def _iterate(self, stream, position):
         try:
-            yield from super()._iterate(stream, position)
+            for record in super()._iterate(stream, position):
+                self.records_read += 1
+                yield record
         finally:
             self.closed = stream.closed
+
+
+async def _wait_for_records(source: CloseTrackingCsvSource, *, expected: int) -> None:
+    while source.records_read < expected:
+        await asyncio.sleep(0)
 
 
 class TestCsvSourceBasics:
@@ -642,6 +650,9 @@ class TestCsvSourceResourceClosure:
                         max_pending=1,
                     )
                 )
+                await asyncio.wait_for(_wait_for_records(source, expected=2), timeout=1)
+                # Let the second prepared record enter the backpressure retry
+                # after the first one filled the queue.
                 await asyncio.sleep(0.05)
                 if stop_bus:
                     # Closing a native handle can wait for an in-flight
