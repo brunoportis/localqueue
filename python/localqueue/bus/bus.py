@@ -476,14 +476,7 @@ class EventBus(Generic[ContextT]):
                 f"subscription {name!r} is not declared in the bus topology"
             )
         if concurrency is not None:
-            validated_concurrency = _validate_concurrency(concurrency)
-            configured = self._subscription_concurrency.get(name)
-            if configured is not None and configured != validated_concurrency:
-                raise ValueError(
-                    f"subscription {name!r} is already configured with "
-                    f"concurrency={configured}"
-                )
-            self._configure_subscription_concurrency(name, validated_concurrency)
+            self._configure_subscription_concurrency(name, concurrency)
         return Subscription(self, name)
 
     def _ensure_subscription_config_open(self, subscription: str) -> None:
@@ -494,22 +487,58 @@ class EventBus(Generic[ContextT]):
 
     def _configure_subscription_concurrency(
         self, subscription: str, concurrency: object
-    ) -> None:
-        self._ensure_subscription_config_open(subscription)
-        self._subscription_concurrency[subscription] = _validate_concurrency(
-            concurrency
+    ) -> int:
+        validated, _ = self._configure_subscription_settings(
+            subscription, concurrency=concurrency
         )
+        assert validated is not None
+        return validated
 
     def _configure_subscription_retry(
         self, subscription: str, retry: RetryPolicy | None
-    ) -> None:
+    ) -> RetryPolicy | None:
+        _, validated = self._configure_subscription_settings(
+            subscription, retry=retry, set_retry=True
+        )
+        return validated
+
+    def _configure_subscription_settings(
+        self,
+        subscription: str,
+        *,
+        concurrency: object | None = None,
+        retry: object = None,
+        set_retry: bool = False,
+    ) -> tuple[int | None, RetryPolicy | None]:
+        """Validate and atomically update canonical local subscription settings."""
         self._ensure_subscription_config_open(subscription)
-        if retry is not None and not isinstance(retry, RetryPolicy):
+        validated_concurrency = (
+            _validate_concurrency(concurrency) if concurrency is not None else None
+        )
+        if set_retry and retry is not None and not isinstance(retry, RetryPolicy):
             raise TypeError("'retry' must be a RetryPolicy or None")
-        if retry is None:
-            self._subscription_retry.pop(subscription, None)
-        else:
-            self._subscription_retry[subscription] = retry
+        validated_retry = cast(RetryPolicy | None, retry)
+        configured_retry = self._subscription_retry.get(subscription)
+        if set_retry and configured_retry is not None and configured_retry != retry:
+            raise ValueError(
+                f"subscription {subscription!r} is already configured with "
+                "a conflicting retry policy"
+            )
+        configured_concurrency = self._subscription_concurrency.get(subscription)
+        if (
+            validated_concurrency is not None
+            and configured_concurrency is not None
+            and configured_concurrency != validated_concurrency
+        ):
+            raise ValueError(
+                f"subscription {subscription!r} is already configured with "
+                f"concurrency={configured_concurrency}"
+            )
+        if set_retry and validated_retry is not None:
+            self._subscription_retry[subscription] = validated_retry
+        if validated_concurrency is not None:
+            self._subscription_concurrency[subscription] = validated_concurrency
+        return validated_concurrency, validated_retry
 
     def _concurrency_for(self, subscription: str) -> int:
         """Return this process's configured bound for ``subscription``."""
@@ -520,17 +549,6 @@ class EventBus(Generic[ContextT]):
     def _retry_for(self, subscription: str) -> RetryPolicy | None:
         """Return the explicit retry policy for ``subscription``, if any."""
         return self._subscription_retry.get(subscription)
-
-    def _ensure_retry_compatible(
-        self, subscription: str, retry: RetryPolicy | None
-    ) -> None:
-        """Reject a process-local subscription policy conflict."""
-        configured = self._subscription_retry.get(subscription)
-        if retry is not None and configured is not None and configured != retry:
-            raise ValueError(
-                f"subscription {subscription!r} is already configured with "
-                "a conflicting retry policy"
-            )
 
     def _begin_consuming(self, subscription: str) -> None:
         """Freeze configuration and claim the local runner for a subscription."""
@@ -679,11 +697,6 @@ class EventBus(Generic[ContextT]):
                 "'permanent_errors' must be a tuple or list of exception classes"
             )
         validated_timeout = _validate_timeout(timeout)
-        validated_concurrency = (
-            _validate_concurrency(concurrency) if concurrency is not None else None
-        )
-        if retry is not None and not isinstance(retry, RetryPolicy):
-            raise TypeError("'retry' must be a RetryPolicy or None")
 
         def decorator(fn: object) -> object:
             self._ensure_handler_registration_open(subscription)
@@ -700,17 +713,6 @@ class EventBus(Generic[ContextT]):
             if combo in self._handlers:
                 raise ValueError(
                     f"handler already registered for ({subscription!r}, {key!r})"
-                )
-            self._ensure_retry_compatible(subscription, retry)
-            configured = self._subscription_concurrency.get(subscription)
-            if (
-                validated_concurrency is not None
-                and configured is not None
-                and configured != validated_concurrency
-            ):
-                raise ValueError(
-                    f"subscription {subscription!r} is already configured with "
-                    f"concurrency={configured}"
                 )
             if declare_route:
                 new_topology = self.topology._with_route(subscription, pattern)
@@ -733,13 +735,15 @@ class EventBus(Generic[ContextT]):
                 handler_name=getattr(fn, "__name__", type(fn).__name__),
                 accepts_context=accepts_context,
             )
+            self._configure_subscription_settings(
+                subscription,
+                concurrency=concurrency,
+                retry=retry,
+                set_retry=retry is not None,
+            )
             if isinstance(pattern, type) and issubclass(pattern, BaseEvent):
                 self.registry.register(pattern)
             self.topology = new_topology
-            if validated_concurrency is not None:
-                self._subscription_concurrency[subscription] = validated_concurrency
-            if retry is not None:
-                self._subscription_retry[subscription] = retry
             self._handlers[combo] = registration
             return fn
 
@@ -1111,20 +1115,17 @@ class EventBus(Generic[ContextT]):
     async def _release_execute_runner(self, runner: asyncio.Task[None] | None) -> None:
         if runner is None:
             return
-        stop = False
         async with self._execute_runner_lock:
             if self._execute_runner_task is runner:
                 self._execute_runner_users -= 1
                 if self._execute_runner_users == 0:
+                    if not runner.done():
+                        runner.cancel()
+                    try:
+                        await runner
+                    except BaseException:
+                        pass
                     self._execute_runner_task = None
-                    stop = True
-        if stop:
-            if not runner.done():
-                runner.cancel()
-            try:
-                await runner
-            except BaseException:
-                pass
 
     @staticmethod
     async def _wait_for_execution(

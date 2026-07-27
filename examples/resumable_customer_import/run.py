@@ -7,18 +7,17 @@ import asyncio
 from pathlib import Path
 from typing import Sequence
 
-from localqueue.bus import CsvRow, CsvSource, ExecutionResult
+from localqueue.bus import ExecutionResult
 
 from examples.resumable_customer_import.demo_api import DemoCustomerApi
-from examples.resumable_customer_import.events import CustomerCreationRequested
 from examples.resumable_customer_import.producer import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_CSV_PATH,
     DEFAULT_DATA_DIR,
     DEFAULT_IMPORT_ID,
     DEFAULT_MAX_PENDING,
+    build_customer_source,
     default_checkpoint_name,
-    to_customer_creation_requested,
 )
 from examples.resumable_customer_import.worker import build_bus
 
@@ -35,13 +34,14 @@ async def run_operation(
     """Declare, execute, and fully await one customer import."""
     bus = build_bus(data_dir, DemoCustomerApi())
     try:
-
-        @bus.source(CsvSource(csv_path), checkpoint=checkpoint_name)
-        def customer_source(row: CsvRow) -> CustomerCreationRequested:
-            return to_customer_creation_requested(row, import_id=import_id)
-
-        customer_source.config.batch_size = batch_size
-        customer_source.config.max_pending = max_pending
+        customer_source = build_customer_source(
+            bus,
+            csv_path,
+            import_id=import_id,
+            batch_size=batch_size,
+            max_pending=max_pending,
+            checkpoint_name=checkpoint_name,
+        )
         return await bus.execute(customer_source)
     finally:
         bus.close()

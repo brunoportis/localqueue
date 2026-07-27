@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import importlib
+import multiprocessing as mp
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,9 @@ from examples.resumable_customer_import import (
     events,
     producer,
     worker,
+)
+from examples.resumable_customer_import import (
+    run as run_module,
 )
 from examples.resumable_customer_import.demo_api import (
     RATE_LIMITED_EMAIL,
@@ -71,6 +75,28 @@ def make_event(email: str, *, external_id: str = "EXT-1") -> CustomerCreationReq
         email=email,
         phone="+1 555 010 0000",
     )
+
+
+def external_worker_process(data_dir: str, ready: object, stop: object) -> None:
+    """Run the example worker in a separate process for the public API test."""
+
+    async def consume() -> None:
+        bus = worker.build_bus(Path(data_dir), DemoCustomerApi())
+        runner = asyncio.create_task(bus.run())
+        try:
+            while not bus._run_active:
+                await asyncio.sleep(0)
+            ready.set()
+            await asyncio.to_thread(stop.wait)
+        finally:
+            runner.cancel()
+            try:
+                await runner
+            except asyncio.CancelledError:
+                pass
+            bus.close()
+
+    asyncio.run(consume())
 
 
 def test_transform_normalizes_fields_and_carries_import_id():
@@ -352,17 +378,17 @@ def test_end_to_end_smoke(tmp_path, capsys):
             await asyncio.sleep(0.05)
 
     async def scenario():
-        ingestion = await producer.run_import(
-            csv_path,
-            data_dir,
-            import_id="smoke-v1",
-            batch_size=100,
-            max_pending=1_000,
-            checkpoint_name="customer-import:smoke-v1",
-        )
         bus = worker.build_bus(data_dir, api)
         runner = asyncio.create_task(bus.run())
         try:
+            execution = await producer.run_import(
+                csv_path,
+                data_dir,
+                import_id="smoke-v1",
+                batch_size=100,
+                max_pending=1_000,
+                checkpoint_name="customer-import:smoke-v1",
+            )
             # Wait until every creator delivery reaches a terminal state:
             # 4 acked (flaky/throttled included, after retries) + 1 failed.
             await wait_for(
@@ -384,11 +410,13 @@ def test_end_to_end_smoke(tmp_path, capsys):
             except asyncio.CancelledError:
                 pass
             bus.close()
-        return ingestion
+        return execution
 
-    ingestion = run(scenario())
-    assert ingestion.items_read == 5
-    assert ingestion.deliveries_inserted == 5
+    execution = run(scenario())
+    assert execution.items_committed == 5
+    assert execution.deliveries_inserted == 5
+    assert execution.deliveries_acknowledged == 8
+    assert execution.deliveries_failed == 1
 
     # Validation row landed rejected with the modeled category.
     bus = make_bus(data_dir)
@@ -415,6 +443,67 @@ def test_end_to_end_smoke(tmp_path, capsys):
     assert set(api._by_external_id) == {"EXT-1", "EXT-2", "EXT-4", "EXT-5"}
 
 
+def test_execute_without_local_handlers_completes_via_worker_process(tmp_path):
+    csv_path = write_csv(
+        tmp_path / "customers.csv",
+        ["EXT-1,Alice,alice@example.com,+1 555 010 0001"],
+    )
+    data_dir = tmp_path / "data"
+    context = mp.get_context("spawn")
+    ready = context.Event()
+    stop = context.Event()
+    process = context.Process(
+        target=external_worker_process,
+        args=(str(data_dir), ready, stop),
+    )
+    process.start()
+    try:
+        assert ready.wait(10)
+        result = run(
+            producer.run_import(
+                csv_path,
+                data_dir,
+                import_id="process-v1",
+                batch_size=100,
+                max_pending=1_000,
+                checkpoint_name="customer-import:process-v1",
+            )
+        )
+        assert result.items_committed == 1
+        assert result.deliveries_total == 2
+        assert result.deliveries_acknowledged == 2
+        assert result.deliveries_failed == 0
+    finally:
+        stop.set()
+        process.join(10)
+        if process.is_alive():
+            process.terminate()
+            process.join(10)
+    assert process.exitcode == 0
+
+
+def test_run_module_executes_root_and_descendant_handlers(tmp_path, capsys):
+    csv_path = write_csv(
+        tmp_path / "customers.csv",
+        ["EXT-1,Alice,alice@example.com,+1 555 010 0001"],
+    )
+    result = run(
+        run_module.run_operation(
+            csv_path,
+            tmp_path / "data",
+            import_id="run-v1",
+            batch_size=100,
+            max_pending=1_000,
+            checkpoint_name="customer-import:run-v1",
+        )
+    )
+    assert result.items_committed == 1
+    assert result.deliveries_total == 2
+    assert result.deliveries_acknowledged == 2
+    assert result.deliveries_failed == 0
+    assert "audit import=run-v1" in capsys.readouterr().out
+
+
 def test_example_modules_importable_without_side_effects(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     for module in (
@@ -423,6 +512,7 @@ def test_example_modules_importable_without_side_effects(tmp_path, monkeypatch):
         "examples.resumable_customer_import.topology",
         "examples.resumable_customer_import.demo_api",
         "examples.resumable_customer_import.producer",
+        "examples.resumable_customer_import.run",
         "examples.resumable_customer_import.worker",
     ):
         importlib.import_module(module)

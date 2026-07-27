@@ -23,7 +23,9 @@ customers.csv ──CsvSource──▶ EventBus.execute(source) ──▶ custom
   both handlers, configures concurrency/retry, awaits `bus.execute(source)`,
   prints the durable `ExecutionResult`, and calls `raise_for_failures()`.
 - `producer.py` and `worker.py` — advanced separate producer/worker
-  deployment using the same database and shared builders.
+  deployment using the same database and finite execution. The producer
+  registers no handlers and awaits `bus.execute(source)`; the worker runs
+  those handlers with `bus.run()`.
   The CSV schema is
   `external_id,name,email,phone` — there is no `import_id` column; the
   `--import-id` CLI value is the logical import identity and is injected
@@ -97,8 +99,10 @@ In terminal 2:
 uv run python -m examples.resumable_customer_import.producer
 ```
 
-Both processes share the same SQLite database, topology, source transform,
-handler builders, and retry policy.
+Both processes share the same SQLite database, topology, checkpoint, and
+durable execution. The producer has no local handlers, so `execute()` ingests
+and waits; the worker consumes the roots and descendants. Stopping either
+process and rerunning it resumes the same operation without a network service.
 
 ## 4. Rerun — resume the durable operation
 
@@ -225,6 +229,5 @@ uv run python -m examples.resumable_customer_import.producer \
     --csv /tmp/big_customers.csv --import-id bulk-v1 --batch-size 500
 ```
 
-The rerun prints `resumed: True`, a non-`None` start cursor, and only the
-remaining rows in `items read` — no row already committed is re-read or
-re-delivered.
+The rerun prints `resumed: True` and cumulative durable execution counters.
+No row from an already committed checkpoint batch is re-read or re-delivered.
