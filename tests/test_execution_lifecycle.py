@@ -5,8 +5,14 @@ import asyncio
 import pytest
 from localqueue import SimpleQueue
 from localqueue import localqueue as _native
-from localqueue.bus import BaseEvent, BusTopology, EventBus, SequenceSource, event
-from localqueue.bus import SourceChanged
+from localqueue.bus import (
+    BaseEvent,
+    BusTopology,
+    EventBus,
+    SequenceSource,
+    SourceChanged,
+    event,
+)
 
 
 @event(identity="key")
