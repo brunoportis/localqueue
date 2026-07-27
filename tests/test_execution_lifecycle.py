@@ -15,6 +15,10 @@ from localqueue.bus import (
     event,
 )
 from localqueue.bus.execution import _ExecutionHandle
+from localqueue.bus.ingestion import (
+    _ClaimedExecutionIngestion,
+    _run_claimed_execution_ingestion,
+)
 
 
 @event(identity="key")
@@ -221,5 +225,49 @@ def test_execution_invalid_source_record_releases_lease(tmp_path) -> None:
 
     try:
         asyncio.run(run())
+    finally:
+        bus.close()
+
+
+def test_claimed_execution_splits_an_impossible_batch(tmp_path, monkeypatch) -> None:
+    bus = EventBus(str(tmp_path), topology=BusTopology({"imports": [Imported]}))
+
+    class Native:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def _enqueue_batch_with_claimed_execution(self, *args):
+            del args
+            self.calls += 1
+            if self.calls == 1:
+                raise _native._FullImpossible()
+            return [], "generation", self.calls
+
+    native = Native()
+    monkeypatch.setattr(bus, "_get_native", lambda: native)
+
+    async def run() -> None:
+        await _run_claimed_execution_ingestion(
+            bus,
+            SequenceSource(
+                [Imported(key="one"), Imported(key="two")], fingerprint="v1"
+            ),
+            _ClaimedExecutionIngestion(
+                checkpoint="imports",
+                transform=None,
+                batch_size=2,
+                max_pending=None,
+                execution_id="run",
+                receipt="receipt",
+                start_cursor=None,
+                generation=None,
+                version=None,
+                fingerprint="v1",
+            ),
+        )
+
+    try:
+        asyncio.run(run())
+        assert native.calls == 3
     finally:
         bus.close()
