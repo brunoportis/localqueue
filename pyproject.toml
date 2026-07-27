@@ -26,6 +26,7 @@ dev = [
     "import-linter>=2,<3",
     "pytest>=8,<10",
     "pytest-cov>=7,<8",
+    "pytest-timeout>=2,<3",
     "maturin>=1.14",
     "pydantic>=2,<3",
     "packaging>=24,<26",
@@ -60,6 +61,7 @@ features = ["pyo3/extension-module"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+faulthandler_timeout = 30
 
 [tool.pyrefly]
 preset = "strict"
