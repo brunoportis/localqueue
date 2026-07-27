@@ -55,6 +55,18 @@ Existing rows remain unchanged with a `NULL` category. Rejected deliveries
 persist their reason in `last_error`, their stable classification as
 `FailureReason.REJECTED`, and their optional category in `failure_category`.
 
+## v1.5 migration
+
+Version 1.5 adds `event_bus_executions` and the many-to-many
+`event_bus_execution_deliveries` table. The membership key is
+`(execution_id, message_id)` with cascading foreign keys to executions and
+messages, plus an index from a message to all of its execution memberships.
+Opening an older database creates only these tables and indexes in one
+transaction; it neither rebuilds nor rewrites `messages`.
+
+Online backups copy these tables as part of the SQLite database snapshot, and
+normal SQLite integrity checks include their foreign-key structure.
+
 ## Guaranteed
 
 - A database made by a published, tested baseline can be opened by v1.3.

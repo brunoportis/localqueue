@@ -41,7 +41,18 @@ pub fn check(storage: &Storage, quick: bool, max_errors: u16) -> Result<Integrit
 
     let mut query = conn.prepare(&statement)?;
     let rows = query.query_map([], |row| row.get::<_, String>(0))?;
-    let messages = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut messages = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut foreign_keys = conn.prepare("PRAGMA foreign_key_check")?;
+    let violations = foreign_keys.query_map([], |row| {
+        Ok(format!(
+            "foreign key violation: table={}, rowid={}, parent={}, fkid={}",
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
+        ))
+    })?;
+    messages.extend(violations.collect::<std::result::Result<Vec<_>, _>>()?);
     let ok = messages.len() == 1 && messages[0] == "ok";
 
     Ok(IntegrityCheckSnapshot {

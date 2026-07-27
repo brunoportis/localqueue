@@ -9,7 +9,9 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::error::{QueueError, Result};
-use crate::schema::{BASE_SCHEMA_SQL, CHECKPOINTS_SCHEMA_SQL, SCHEMA_SQL};
+use crate::schema::{
+    BASE_SCHEMA_SQL, CHECKPOINTS_SCHEMA_SQL, EXECUTION_MEMBERSHIP_SCHEMA_SQL, SCHEMA_SQL,
+};
 
 pub(crate) const BUSY_TIMEOUT_MS: u64 = 5_000;
 
@@ -61,6 +63,27 @@ pub struct CheckpointSnapshot {
     pub updated_at: i64,
 }
 
+/// Immutable metadata for one finite EventBus execution. This is internal
+/// infrastructure; it deliberately contains no event payload data.
+pub struct ExecutionSnapshot {
+    pub execution_id: String,
+    pub bus_name: String,
+    pub source_name: String,
+    pub checkpoint_name: Option<String>,
+    pub source_completed: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// Counts are derived from membership joined to `messages`, never persisted.
+pub struct ExecutionDeliveryStateSnapshot {
+    pub total: i64,
+    pub ready: i64,
+    pub processing: i64,
+    pub acknowledged: i64,
+    pub failed: i64,
+}
+
 pub struct Storage {
     conn: Mutex<Option<Connection>>,
     path: PathBuf,
@@ -92,6 +115,7 @@ impl Storage {
         migrate_failure_category(&mut conn)?;
         migrate_event_identity(&mut conn)?;
         migrate_ingestion_checkpoints(&mut conn)?;
+        migrate_execution_membership(&mut conn)?;
 
         Ok(Self {
             conn: Mutex::new(Some(conn)),
@@ -169,6 +193,25 @@ impl Storage {
         busy_timeout_ms: Option<u64>,
         checkpoint: Option<&CheckpointUpdate>,
     ) -> Result<(Vec<EnqueueOutcome>, Option<CheckpointCommit>)> {
+        self.enqueue_batch_outcomes_with_checkpoint_and_execution(
+            entries,
+            max_attempts,
+            capacity,
+            busy_timeout_ms,
+            checkpoint,
+            None,
+        )
+    }
+
+    pub fn enqueue_batch_outcomes_with_checkpoint_and_execution(
+        &self,
+        entries: &[EnqueueEntry<'_>],
+        max_attempts: i64,
+        capacity: &[CapacityPolicy<'_>],
+        busy_timeout_ms: Option<u64>,
+        checkpoint: Option<&CheckpointUpdate>,
+        execution_id: Option<&str>,
+    ) -> Result<(Vec<EnqueueOutcome>, Option<CheckpointCommit>)> {
         if entries.is_empty() && checkpoint.is_none() {
             return Ok((Vec::new(), None));
         }
@@ -185,11 +228,17 @@ impl Storage {
                     max_attempts,
                     capacity,
                     checkpoint,
+                    execution_id,
                 )
             }
-            None => {
-                enqueue_batch_on_connection(primary, entries, max_attempts, capacity, checkpoint)
-            }
+            None => enqueue_batch_on_connection(
+                primary,
+                entries,
+                max_attempts,
+                capacity,
+                checkpoint,
+                execution_id,
+            ),
         }
     }
 
@@ -237,6 +286,88 @@ impl Storage {
         Ok(changed == 1)
     }
 
+    pub fn execution_create(
+        &self,
+        execution_id: &str,
+        bus_name: &str,
+        source_name: &str,
+        checkpoint_name: Option<&str>,
+    ) -> Result<()> {
+        let now = now_ms();
+        let guard = self.connection();
+        let conn = guard.as_ref().ok_or(QueueError::Closed)?;
+        conn.execute(
+            "INSERT INTO event_bus_executions (
+                execution_id, bus_name, source_name, checkpoint_name,
+                source_completed, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5)",
+            params![execution_id, bus_name, source_name, checkpoint_name, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn execution_inspect(&self, execution_id: &str) -> Result<Option<ExecutionSnapshot>> {
+        let guard = self.connection();
+        let conn = guard.as_ref().ok_or(QueueError::Closed)?;
+        conn.query_row(
+            "SELECT execution_id, bus_name, source_name, checkpoint_name,
+                    source_completed, created_at, updated_at
+             FROM event_bus_executions WHERE execution_id = ?1",
+            params![execution_id],
+            |row| {
+                Ok(ExecutionSnapshot {
+                    execution_id: row.get(0)?,
+                    bus_name: row.get(1)?,
+                    source_name: row.get(2)?,
+                    checkpoint_name: row.get(3)?,
+                    source_completed: row.get::<_, i64>(4)? != 0,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(QueueError::from)
+    }
+
+    pub fn execution_mark_source_completed(&self, execution_id: &str) -> Result<bool> {
+        let now = now_ms();
+        let guard = self.connection();
+        let conn = guard.as_ref().ok_or(QueueError::Closed)?;
+        Ok(conn.execute(
+            "UPDATE event_bus_executions SET source_completed = 1, updated_at = ?2
+             WHERE execution_id = ?1 AND source_completed = 0",
+            params![execution_id, now],
+        )? == 1)
+    }
+
+    pub fn execution_delivery_states(
+        &self,
+        execution_id: &str,
+    ) -> Result<ExecutionDeliveryStateSnapshot> {
+        let guard = self.connection();
+        let conn = guard.as_ref().ok_or(QueueError::Closed)?;
+        conn.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(m.status = 0), 0), COALESCE(SUM(m.status = 1), 0),
+                    COALESCE(SUM(m.status = 2), 0), COALESCE(SUM(m.status = 3), 0)
+             FROM event_bus_execution_deliveries d
+             JOIN messages m ON m.id = d.message_id
+             WHERE d.execution_id = ?1",
+            params![execution_id],
+            |row| {
+                Ok(ExecutionDeliveryStateSnapshot {
+                    total: row.get(0)?,
+                    ready: row.get(1)?,
+                    processing: row.get(2)?,
+                    acknowledged: row.get(3)?,
+                    failed: row.get(4)?,
+                })
+            },
+        )
+        .map_err(QueueError::from)
+    }
+
     pub fn ack_and_fanout(
         &self,
         queue_name: &str,
@@ -264,6 +395,7 @@ impl Storage {
         let mut guard = self.connection();
         let conn = guard.as_mut().ok_or(QueueError::Closed)?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let parent_executions = execution_memberships_for_message(&tx, id)?;
         let changed = tx.execute(
             "UPDATE messages SET
                 status = 2,
@@ -278,6 +410,7 @@ impl Storage {
             return Err(QueueError::LeaseExpired);
         }
         let ids = insert_entries_in_transaction(&tx, entries, max_attempts, now)?;
+        attach_execution_memberships(&tx, &parent_executions, &ids)?;
         #[cfg(feature = "__crash_test")]
         crate::failpoints::hit(crate::failpoints::Failpoint::AckFanoutBeforeCommit);
         tx.commit()?;
@@ -458,6 +591,28 @@ fn migrate_ingestion_checkpoints(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_execution_membership(conn: &mut Connection) -> Result<()> {
+    let executions: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'event_bus_executions')",
+        [], |row| row.get(0),
+    )?;
+    let deliveries: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'event_bus_execution_deliveries')",
+        [], |row| row.get(0),
+    )?;
+    let message_index: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_event_bus_execution_deliveries_message')",
+        [], |row| row.get(0),
+    )?;
+    if executions && deliveries && message_index {
+        return Ok(());
+    }
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    tx.execute_batch(EXECUTION_MEMBERSHIP_SCHEMA_SQL)?;
+    tx.commit()?;
+    Ok(())
+}
+
 fn has_ingestion_checkpoint_column(conn: &Connection, expected: &str) -> Result<bool> {
     let mut statement = conn.prepare("PRAGMA table_info(ingestion_checkpoints)")?;
     let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
@@ -497,6 +652,7 @@ fn enqueue_batch_on_connection(
     max_attempts: i64,
     capacity: &[CapacityPolicy<'_>],
     checkpoint: Option<&CheckpointUpdate>,
+    execution_id: Option<&str>,
 ) -> Result<(Vec<EnqueueOutcome>, Option<CheckpointCommit>)> {
     let now = now_ms();
 
@@ -518,6 +674,9 @@ fn enqueue_batch_on_connection(
     enforce_capacity_policies(&tx, entries, capacity)?;
 
     let ids = insert_entries_in_transaction(&tx, entries, max_attempts, now)?;
+    if let Some(execution_id) = execution_id {
+        attach_execution_memberships(&tx, &[execution_id.to_owned()], &ids)?;
+    }
 
     let new_version = match checkpoint {
         Some(update) => Some(apply_checkpoint_update(&tx, update, now)?),
@@ -528,6 +687,35 @@ fn enqueue_batch_on_connection(
     crate::failpoints::hit(crate::failpoints::Failpoint::EnqueueBeforeCommit);
     tx.commit().map_err(QueueError::from)?;
     Ok((ids, new_version))
+}
+
+fn execution_memberships_for_message(tx: &Transaction<'_>, message_id: i64) -> Result<Vec<String>> {
+    let mut statement = tx
+        .prepare("SELECT execution_id FROM event_bus_execution_deliveries WHERE message_id = ?1")?;
+    let memberships = statement
+        .query_map(params![message_id], |row| row.get(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(QueueError::from)?;
+    Ok(memberships)
+}
+
+fn attach_execution_memberships(
+    tx: &Transaction<'_>,
+    execution_ids: &[String],
+    outcomes: &[EnqueueOutcome],
+) -> Result<()> {
+    if execution_ids.is_empty() || outcomes.is_empty() {
+        return Ok(());
+    }
+    let mut statement = tx.prepare(
+        "INSERT OR IGNORE INTO event_bus_execution_deliveries (execution_id, message_id) VALUES (?1, ?2)",
+    )?;
+    for execution_id in execution_ids {
+        for outcome in outcomes {
+            statement.execute(params![execution_id, outcome.id])?;
+        }
+    }
+    Ok(())
 }
 
 /// Apply one ingestion checkpoint update inside the open transaction.

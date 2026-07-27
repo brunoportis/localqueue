@@ -31,6 +31,8 @@ type CheckpointUpdateTuple = (
 );
 type EnqueueOutcomes = Vec<(i64, bool)>;
 type CheckpointInspectTuple = (String, Option<String>, String, i64, i64, i64, i64, i64);
+type ExecutionInspectTuple = (String, String, String, Option<String>, bool, i64, i64);
+type ExecutionStateTuple = (i64, i64, i64, i64, i64);
 
 #[derive(Debug, Clone)]
 #[pyclass(skip_from_py_object)]
@@ -385,6 +387,162 @@ impl NativeQueue {
                     .collect(),
                 commit.as_ref().map(|commit| commit.generation.clone()),
                 commit.map(|commit| commit.version),
+            ))
+        })
+    }
+
+    /// Private execution-aware enqueue variant.  It is intentionally separate
+    /// from public ingestion until EventBus.execute is introduced.
+    #[pyo3(name = "_enqueue_batch_with_identity_and_checkpoint_and_execution")]
+    pub fn enqueue_batch_with_identity_and_checkpoint_and_execution(
+        &self,
+        py: Python<'_>,
+        entries: Vec<EnqueueIdentityEntry>,
+        capacity: Option<Vec<(String, i64)>>,
+        checkpoint: Option<CheckpointUpdateTuple>,
+        execution_id: Option<String>,
+    ) -> PyResult<(EnqueueOutcomes, Option<String>, Option<i64>)> {
+        if let Some(policies) = &capacity {
+            for (_, max_pending) in policies {
+                if *max_pending < 1 {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "capacity limits must be at least 1",
+                    ));
+                }
+            }
+        }
+        py.detach(move || {
+            let entries: Vec<EnqueueEntry<'_>> = entries
+                .iter()
+                .map(
+                    |(queue_name, payload, job_id, dedup_key, dedup_fingerprint)| EnqueueEntry {
+                        queue_name,
+                        payload,
+                        job_id: job_id.as_deref(),
+                        dedup_key: dedup_key.as_deref(),
+                        dedup_fingerprint: dedup_fingerprint.as_deref(),
+                    },
+                )
+                .collect();
+            let policies: Vec<CapacityPolicy<'_>> = capacity
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .map(|(queue_name, max_pending_jobs)| CapacityPolicy {
+                    queue_name,
+                    max_pending_jobs: *max_pending_jobs,
+                })
+                .collect();
+            let update = checkpoint.map(
+                |(
+                    bus_name,
+                    checkpoint_name,
+                    expected_generation,
+                    expected_version,
+                    new_cursor,
+                    source_fingerprint,
+                    items_committed,
+                )| CheckpointUpdate {
+                    bus_name,
+                    checkpoint_name,
+                    expected_generation,
+                    expected_version,
+                    new_cursor,
+                    source_fingerprint,
+                    items_committed,
+                },
+            );
+            let (outcomes, commit) = self
+                .storage
+                .enqueue_batch_outcomes_with_checkpoint_and_execution(
+                    &entries,
+                    self.max_attempts,
+                    &policies,
+                    None,
+                    update.as_ref(),
+                    execution_id.as_deref(),
+                )?;
+            Ok((
+                outcomes
+                    .into_iter()
+                    .map(|outcome| (outcome.id, outcome.inserted))
+                    .collect(),
+                commit.as_ref().map(|commit| commit.generation.clone()),
+                commit.map(|commit| commit.version),
+            ))
+        })
+    }
+
+    #[pyo3(name = "_execution_create")]
+    pub fn execution_create(
+        &self,
+        py: Python<'_>,
+        execution_id: String,
+        bus_name: String,
+        source_name: String,
+        checkpoint_name: Option<String>,
+    ) -> PyResult<()> {
+        py.detach(move || {
+            Ok(self.storage.execution_create(
+                &execution_id,
+                &bus_name,
+                &source_name,
+                checkpoint_name.as_deref(),
+            )?)
+        })
+    }
+
+    #[pyo3(name = "_execution_inspect")]
+    pub fn execution_inspect(
+        &self,
+        py: Python<'_>,
+        execution_id: String,
+    ) -> PyResult<Option<ExecutionInspectTuple>> {
+        py.detach(move || {
+            Ok(self
+                .storage
+                .execution_inspect(&execution_id)?
+                .map(|snapshot| {
+                    (
+                        snapshot.execution_id,
+                        snapshot.bus_name,
+                        snapshot.source_name,
+                        snapshot.checkpoint_name,
+                        snapshot.source_completed,
+                        snapshot.created_at,
+                        snapshot.updated_at,
+                    )
+                }))
+        })
+    }
+
+    #[pyo3(name = "_execution_mark_source_completed")]
+    pub fn execution_mark_source_completed(
+        &self,
+        py: Python<'_>,
+        execution_id: String,
+    ) -> PyResult<bool> {
+        py.detach(move || {
+            Ok(self
+                .storage
+                .execution_mark_source_completed(&execution_id)?)
+        })
+    }
+
+    #[pyo3(name = "_execution_delivery_states")]
+    pub fn execution_delivery_states(
+        &self,
+        py: Python<'_>,
+        execution_id: String,
+    ) -> PyResult<ExecutionStateTuple> {
+        py.detach(move || {
+            let state = self.storage.execution_delivery_states(&execution_id)?;
+            Ok((
+                state.total,
+                state.ready,
+                state.processing,
+                state.acknowledged,
+                state.failed,
             ))
         })
     }

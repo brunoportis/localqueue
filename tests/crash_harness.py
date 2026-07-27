@@ -185,6 +185,11 @@ with sqlite3.connect(DB_PATH + "/localqueue.db") as connection:
         "SELECT COUNT(*) FROM ingestion_checkpoints "
         "WHERE bus_name = 'crash' AND checkpoint_name = 'import'"
     ).fetchone()[0]
+    fanout_membership_count = connection.execute(
+        "SELECT COUNT(*) FROM event_bus_execution_deliveries d "
+        "JOIN messages m ON m.id = d.message_id "
+        "WHERE d.execution_id = 'crash-execution' AND m.queue IN ('target', 'target-2')"
+    ).fetchone()[0]
 counts = {"ready": 0, "processing": 0, "acked": 0, "failed": 0}
 for status, count in rows:
     counts[{0: "ready", 1: "processing", 2: "acked", 3: "failed"}[status]] = count
@@ -213,7 +218,7 @@ elif CHECK_RECEIPT and counts["processing"]:
 else:
     recovery["processable_after_reopen"] = True
 queue.close()
-print(json.dumps({"integrity_check": integrity, "observed_counts": counts, "target_count": target_count, "resumable_delivery_count": resumable_delivery_count, "resumable_checkpoint_count": resumable_checkpoint_count, "recovery": recovery}))
+print(json.dumps({"integrity_check": integrity, "observed_counts": counts, "target_count": target_count, "resumable_delivery_count": resumable_delivery_count, "resumable_checkpoint_count": resumable_checkpoint_count, "fanout_membership_count": fanout_membership_count, "recovery": recovery}))
 """
 
 
@@ -239,7 +244,15 @@ def _prepare(path: Path, operation: str) -> None:
     queue = SimpleQueue(
         str(path), delivery=DeliveryPolicy(lease_seconds=60.0, max_retries=3)
     )
-    if operation not in {"enqueue", "resumable-ingest"}:
+    if operation == "ack-fanout":
+        queue._native._execution_create("crash-execution", "crash", "source", None)
+        queue._native._enqueue_batch_with_identity_and_checkpoint_and_execution(
+            [("default", b'{"scenario":"crash-harness"}', "crash-parent", None, None)],
+            None,
+            None,
+            "crash-execution",
+        )
+    elif operation not in {"enqueue", "resumable-ingest"}:
         queue.put({"scenario": "crash-harness"})
     queue.close()
 
@@ -381,6 +394,13 @@ def run(scenario: str, output: Path) -> int:
                     if definition["operation"] == "resumable-ingest"
                     else True,
                     "crashed resumable ingestion leaves neither delivery nor checkpoint",
+                ),
+                _invariant(
+                    "fanout_membership_is_atomic",
+                    validation["fanout_membership_count"] == 0
+                    if definition["operation"] == "ack-fanout"
+                    else True,
+                    "crashed ACK and fan-out leaves no child execution membership",
                 ),
                 _invariant(
                     "recovery_remains_processable",
