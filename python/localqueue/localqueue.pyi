@@ -148,7 +148,6 @@ class NativeQueue:
         source: str,
         checkpoint: str,
         fingerprint: str,
-        generation: Optional[str],
     ) -> tuple[str, bool]: ...
     def _execution_claim_source(self, id: str, receipt: str, lease_ms: int) -> bool: ...
     def _execution_extend_source_lease(

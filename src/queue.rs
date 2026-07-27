@@ -585,7 +585,6 @@ impl NativeQueue {
         source: String,
         checkpoint: String,
         fingerprint: String,
-        generation: Option<String>,
     ) -> PyResult<(String, bool)> {
         py.detach(move || {
             Ok(self.storage.execution_open(
@@ -594,7 +593,7 @@ impl NativeQueue {
                 &source,
                 &checkpoint,
                 &fingerprint,
-                generation.as_deref(),
+                &fingerprint,
             )?)
         })
     }

@@ -56,7 +56,7 @@ def test_execution_claim_is_exclusive_and_stale_receipt_is_fenced(tmp_path) -> N
     native = queue._get_native()
     try:
         execution_id, _ = native._execution_open(
-            "run", "bus", "source", "checkpoint", "v1", None
+            "run", "bus", "source", "checkpoint", "v1"
         )
         assert native._execution_claim_source(execution_id, "one", 60_000) is True
         assert native._execution_claim_source(execution_id, "two", 60_000) is False
@@ -151,6 +151,24 @@ def test_execution_rejects_changed_checkpoint_source_before_opening(tmp_path) ->
         bus.close()
 
 
+def test_execution_rejects_checkpoint_generation_without_runtime(tmp_path) -> None:
+    bus = EventBus(str(tmp_path), topology=BusTopology({"imports": [Imported]}))
+
+    @bus.source(SequenceSource(["one"], fingerprint="v1"), checkpoint="imports")
+    def imports(value: str) -> Imported:
+        return Imported(key=value)
+
+    async def run() -> None:
+        await imports.ingest()
+        with pytest.raises(_native.LocalQueueError, match="not owned"):
+            await bus._open_execution(imports)
+
+    try:
+        asyncio.run(run())
+    finally:
+        bus.close()
+
+
 def test_execution_timeout_validation_and_contended_source_claim(tmp_path) -> None:
     bus = EventBus(str(tmp_path), topology=BusTopology({"imports": [Imported]}))
 
@@ -182,7 +200,7 @@ def test_execution_heartbeat_renews_owned_source_claim(tmp_path, monkeypatch) ->
     bus = EventBus(str(tmp_path), topology=BusTopology({"imports": [Imported]}))
     native = bus._get_native()
     execution_id, _ = native._execution_open(
-        str(uuid4()), bus.name, "source", "checkpoint", "v1", None
+        str(uuid4()), bus.name, "source", "checkpoint", "v1"
     )
     assert native._execution_claim_source(execution_id, "owner", 60_000)
     handle = _ExecutionHandle(bus, None, UUID(execution_id), False)

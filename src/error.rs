@@ -91,6 +91,9 @@ pub enum QueueError {
     #[error("execution source lease was lost")]
     ExecutionLeaseLost,
 
+    #[error("checkpoint generation is not owned by a durable execution runtime")]
+    ExecutionRuntimeMissing,
+
     #[error("job not found")]
     NotFound,
 
@@ -142,6 +145,9 @@ impl From<QueueError> for PyErr {
             }
             QueueError::ExecutionLeaseLost => {
                 PyErr::new::<ExecutionLeaseLost, _>("execution source lease was lost")
+            }
+            QueueError::ExecutionRuntimeMissing => {
+                PyErr::new::<LocalQueueError, _>(err.to_string())
             }
             QueueError::NotFound => PyErr::new::<LocalQueueError, _>("job not found"),
             QueueError::Closed => PyErr::new::<LocalQueueError, _>("queue is closed"),

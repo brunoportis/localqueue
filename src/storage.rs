@@ -413,22 +413,27 @@ impl Storage {
         source: &str,
         checkpoint: &str,
         fingerprint: &str,
-        expected_generation: Option<&str>,
+        expected_fingerprint: &str,
     ) -> Result<(String, bool)> {
         let now = now_ms();
         let mut guard = self.connection();
         let conn = guard.as_mut().ok_or(QueueError::Closed)?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let actual: Option<String> = tx.query_row("SELECT generation FROM ingestion_checkpoints WHERE bus_name=?1 AND checkpoint_name=?2", params![bus, checkpoint], |r| r.get(0)).optional()?;
-        if actual.as_deref() != expected_generation {
-            return Err(QueueError::CheckpointConflict {
-                checkpoint_name: checkpoint.to_owned(),
-                expected_generation: expected_generation.map(str::to_owned),
-                expected_version: None,
-                actual_generation: actual,
-                actual_version: None,
-            });
+        let checkpoint_state: Option<(String, Option<String>)> = tx.query_row("SELECT generation, source_fingerprint FROM ingestion_checkpoints WHERE bus_name=?1 AND checkpoint_name=?2", params![bus, checkpoint], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+        if let Some((generation, source_fingerprint)) = &checkpoint_state {
+            if source_fingerprint.as_deref() != Some(expected_fingerprint) {
+                return Err(QueueError::CheckpointConflict {
+                    checkpoint_name: checkpoint.to_owned(),
+                    expected_generation: None,
+                    expected_version: None,
+                    actual_generation: Some(generation.clone()),
+                    actual_version: None,
+                });
+            }
         }
+        let expected_generation = checkpoint_state
+            .as_ref()
+            .map(|(generation, _)| generation.as_str());
         let existing: Option<String> = if let Some(generation) = expected_generation {
             tx.query_row("SELECT execution_id FROM event_bus_execution_runtime WHERE bus_name=?1 AND checkpoint_name=?2 AND checkpoint_generation=?3", params![bus, checkpoint, generation], |r| r.get(0)).optional()?
         } else {
@@ -448,6 +453,9 @@ impl Storage {
             }
             tx.commit()?;
             return Ok((id, false));
+        }
+        if expected_generation.is_some() {
+            return Err(QueueError::ExecutionRuntimeMissing);
         }
         tx.execute("INSERT INTO event_bus_executions (execution_id,bus_name,source_name,checkpoint_name,source_completed,created_at,updated_at) VALUES (?1,?2,?3,?4,0,?5,?5)", params![candidate,bus,source,checkpoint,now])?;
         tx.execute("INSERT INTO event_bus_execution_runtime (execution_id,bus_name,checkpoint_name,source_fingerprint,checkpoint_generation) VALUES (?1,?2,?3,?4,?5)", params![candidate,bus,checkpoint,fingerprint,expected_generation])?;

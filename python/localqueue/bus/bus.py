@@ -996,34 +996,20 @@ class EventBus(Generic[ContextT]):
         if not isinstance(fingerprint, str) or not fingerprint:
             raise ValueError("finite execution requires a non-empty source fingerprint")
         source.config._freeze()
-        while True:
-            stored = self.checkpoint(source.checkpoint).inspect()
-            if stored is not None and stored.source_fingerprint != fingerprint:
-                raise SourceChanged(
-                    f"checkpoint {source.checkpoint!r} was recorded for source fingerprint "
-                    f"{stored.source_fingerprint!r}, but the current source fingerprint is {fingerprint!r}"
-                )
-            try:
-                checkpoint_row = self._get_native()._checkpoint_inspect(
-                    self.name, source.checkpoint
-                )
-                observed_generation = (
-                    None if checkpoint_row is None else checkpoint_row[2]
-                )
-                execution_id, created = await asyncio.to_thread(
-                    self._get_native()._execution_open,
-                    str(UUID(int=uuid4().int)),
-                    self.name,
-                    source.name,
-                    source.checkpoint,
-                    fingerprint,
-                    observed_generation,
-                )
-                return _ExecutionHandle(
-                    self, source, UUID(execution_id), resumed=not created
-                )
-            except _native.CheckpointConflict:
-                continue
+        try:
+            execution_id, created = await asyncio.to_thread(
+                self._get_native()._execution_open,
+                str(UUID(int=uuid4().int)),
+                self.name,
+                source.name,
+                source.checkpoint,
+                fingerprint,
+            )
+        except _native.CheckpointConflict as error:
+            raise SourceChanged(
+                f"checkpoint {source.checkpoint!r} does not match source fingerprint {fingerprint!r}"
+            ) from error
+        return _ExecutionHandle(self, source, UUID(execution_id), resumed=not created)
 
     def _open_subscription_queue(self, subscription: str) -> SimpleQueue[object]:
         # EventBus is the only producer for subscription queues and always
