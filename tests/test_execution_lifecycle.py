@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import multiprocessing as mp
+import os
+import sqlite3
 from uuid import UUID, uuid4
 
 import pytest
@@ -26,6 +29,30 @@ class Imported(BaseEvent):
     event_name = "execution-lifecycle.imported"
 
     key: str
+
+
+def _commit_execution_batch_then_crash(path: str) -> None:
+    queue = SimpleQueue(path, name="q")
+    native = queue._get_native()
+    execution_id, _ = native._execution_open("crashed", "bus", "source", "checkpoint", "v1")
+    claimed, *_ = native._execution_claim_source(execution_id, "owner", 60_000)
+    assert claimed
+    native._enqueue_batch_with_claimed_execution(
+        [], None, ("bus", "checkpoint", None, None, "cursor-1", "v1", 1),
+        execution_id, "owner", 0, 1,
+    )
+    os._exit(0)
+
+
+def _concurrently_open_execution(path: str, result: object) -> None:
+    queue = SimpleQueue(path, name="q")
+    try:
+        execution_id, created = queue._get_native()._execution_open(
+            str(uuid4()), "bus", "source", "checkpoint", "v1"
+        )
+        result.put((execution_id, created))
+    finally:
+        queue.close()
 
 
 def test_pending_execution_is_shared_and_empty_source_finalizes(tmp_path) -> None:
@@ -119,6 +146,56 @@ def test_execution_claim_fences_reset_recreate_with_same_checkpoint_version(
             native._execution_claim_source(execution_id, "next-owner", 60_000)
     finally:
         queue.close()
+
+
+def test_execution_resumes_after_process_crashes_with_committed_batch(tmp_path) -> None:
+    context = mp.get_context("spawn")
+    child = context.Process(target=_commit_execution_batch_then_crash, args=(str(tmp_path),))
+    child.start()
+    child.join(timeout=10)
+    assert child.exitcode == 0
+
+    with sqlite3.connect(tmp_path / "localqueue.db") as connection:
+        connection.execute(
+            "UPDATE event_bus_execution_runtime SET source_lease_until=0 WHERE execution_id='crashed'"
+        )
+
+    queue = SimpleQueue(str(tmp_path), name="q")
+    native = queue._get_native()
+    try:
+        execution_id, created = native._execution_open(
+            "replacement", "bus", "source", "checkpoint", "v1"
+        )
+        assert (execution_id, created) == ("crashed", False)
+        claimed, cursor, fingerprint, generation, version = native._execution_claim_source(
+            execution_id, "replacement-owner", 60_000
+        )
+        assert claimed is True
+        assert (cursor, fingerprint, generation, version) == (
+            "cursor-1", "v1", native._checkpoint_inspect("bus", "checkpoint")[2], 1
+        )
+        assert native._execution_mark_source_completed_claimed(
+            execution_id, "replacement-owner"
+        )
+    finally:
+        queue.close()
+
+
+def test_execution_open_converges_across_bounded_spawn_processes(tmp_path) -> None:
+    context = mp.get_context("spawn")
+    result = context.Queue()
+    processes = [
+        context.Process(target=_concurrently_open_execution, args=(str(tmp_path), result))
+        for _ in range(2)
+    ]
+    for process in processes:
+        process.start()
+    opened = [result.get(timeout=10) for _ in processes]
+    for process in processes:
+        process.join(timeout=10)
+        assert process.exitcode == 0
+    assert len({execution_id for execution_id, _ in opened}) == 1
+    assert sum(created for _, created in opened) == 1
 
 
 def test_execution_ingests_and_waits_for_its_tracked_delivery(tmp_path) -> None:
