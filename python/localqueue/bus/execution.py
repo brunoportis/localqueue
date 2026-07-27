@@ -131,30 +131,43 @@ class _ExecutionHandle:
                 checkpoint_row = self._bus._get_native()._checkpoint_inspect(
                     self._bus.name, checkpoint_name
                 )
-                await _run_claimed_execution_ingestion(
-                    self._bus,
-                    source,
-                    _ClaimedExecutionIngestion(
-                        checkpoint=checkpoint_name,
-                        transform=definition.transform,
-                        batch_size=definition.config.batch_size,
-                        max_pending=definition.config.max_pending,
-                        execution_id=str(self._id),
-                        receipt=receipt,
-                        start_cursor=None if checkpoint is None else checkpoint.cursor,
-                        generation=None
-                        if checkpoint_row is None
-                        else checkpoint_row[2],
-                        version=None if checkpoint is None else checkpoint.version,
-                        fingerprint=source.fingerprint,
-                    ),
+                ingestion = asyncio.create_task(
+                    _run_claimed_execution_ingestion(
+                        self._bus,
+                        source,
+                        _ClaimedExecutionIngestion(
+                            checkpoint=checkpoint_name,
+                            transform=definition.transform,
+                            batch_size=definition.config.batch_size,
+                            max_pending=definition.config.max_pending,
+                            execution_id=str(self._id),
+                            receipt=receipt,
+                            start_cursor=None
+                            if checkpoint is None
+                            else checkpoint.cursor,
+                            generation=None
+                            if checkpoint_row is None
+                            else checkpoint_row[2],
+                            version=None if checkpoint is None else checkpoint.version,
+                            fingerprint=source.fingerprint,
+                        ),
+                    )
                 )
+                done, _ = await asyncio.wait(
+                    {ingestion, heartbeat}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if heartbeat in done:
+                    heartbeat.result()
+                await ingestion
                 await asyncio.to_thread(
                     self._bus._get_native()._execution_mark_source_completed_claimed,
                     str(self._id),
                     receipt,
                 )
             finally:
+                if "ingestion" in locals() and not ingestion.done():
+                    ingestion.cancel()
+                    await asyncio.gather(ingestion, return_exceptions=True)
                 heartbeat.cancel()
                 await asyncio.gather(heartbeat, return_exceptions=True)
                 await asyncio.shield(
@@ -184,5 +197,7 @@ class _ExecutionHandle:
                     self._bus._get_native()._execution_finalize_if_complete,
                     str(self._id),
                 )
-                return self.inspect()
+                snapshot = self.inspect()
+                if snapshot.completed and snapshot.ready == snapshot.processing == 0:
+                    return snapshot
             await asyncio.sleep(_POLL_SECONDS)

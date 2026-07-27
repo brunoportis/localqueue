@@ -360,20 +360,30 @@ impl Storage {
 
     pub fn execution_mark_source_completed(&self, execution_id: &str) -> Result<bool> {
         let now = now_ms();
-        let guard = self.connection();
-        let conn = guard.as_ref().ok_or(QueueError::Closed)?;
-        let changed = conn.execute(
+        let mut guard = self.connection();
+        let conn = guard.as_mut().ok_or(QueueError::Closed)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let has_runtime: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM event_bus_execution_runtime WHERE execution_id=?1)",
+            params![execution_id],
+            |row| row.get(0),
+        )?;
+        if has_runtime {
+            tx.execute(
+                "UPDATE event_bus_execution_runtime SET source_completed_at=COALESCE(source_completed_at,?2),source_receipt=NULL,source_lease_until=NULL WHERE execution_id=?1",
+                params![execution_id, now],
+            )?;
+        }
+        let changed = tx.execute(
             "UPDATE event_bus_executions SET source_completed = 1, updated_at = ?2
              WHERE execution_id = ?1 AND source_completed = 0",
             params![execution_id, now],
         )?;
-        if changed == 1 {
-            return Ok(true);
-        }
-        if !execution_exists(conn, execution_id)? {
+        if !execution_exists(&tx, execution_id)? {
             return Err(QueueError::NotFound);
         }
-        Ok(false)
+        tx.commit()?;
+        Ok(changed == 1)
     }
 
     pub fn execution_delivery_states(
