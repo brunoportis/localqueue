@@ -929,3 +929,8 @@ Deduplication of identified events shows up as `deliveries_deduplicated`
 instead of `deliveries_inserted`. Fan-out means delivery counts can exceed
 `events_dispatched`: one event routed to N subscriptions produces N
 deliveries.
+
+For an executable end-to-end walkthrough — checkpointed CSV ingestion,
+resume, durable-identity deduplication, retry/reject mapping, and
+backpressure — see the resumable bulk customer import example in the
+repository at `examples/resumable_customer_import/README.md`.
