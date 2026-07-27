@@ -340,6 +340,11 @@ async def _commit_group(
                         # Repeated cancellation requests must not reopen the
                         # same ambiguity while SQLite is still running.
                         continue
+                    except Exception:
+                        # The commit completed with an error while this task
+                        # was already cancelling. Retrieve it below, but keep
+                        # propagating the original cancellation.
+                        break
                 if not commit.cancelled():
                     commit.exception()
                 raise
@@ -592,6 +597,11 @@ async def _commit_resumable_group(
                         # Repeated cancellation requests must not reopen the
                         # same ambiguity while SQLite is still running.
                         continue
+                    except Exception:
+                        # The commit completed with an error while this task
+                        # was already cancelling. Retrieve it below, but keep
+                        # propagating the original cancellation.
+                        break
                 if not commit.cancelled():
                     commit.exception()
                 raise
