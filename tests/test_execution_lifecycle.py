@@ -4,6 +4,7 @@ import asyncio
 import multiprocessing as mp
 import os
 import sqlite3
+import time
 from uuid import UUID, uuid4
 
 import pytest
@@ -63,7 +64,12 @@ def _concurrently_open_execution(path: str, result: object) -> None:
 
 
 def _produce_lifecycle_source(
-    path: str, opened: object, done: object, result: object
+    path: str,
+    opened: object,
+    waiter_attempted: object,
+    source_completed: object,
+    finalized: object,
+    result: object,
 ) -> None:
     queue = SimpleQueue(path, name="q")
     native = queue._get_native()
@@ -74,8 +80,9 @@ def _produce_lifecycle_source(
         opened.set()
         claimed, *_ = native._execution_claim_source(execution_id, "producer", 60_000)
         assert claimed
+        assert waiter_attempted.wait(10)
         native._enqueue_batch_with_claimed_execution(
-            [("q", b"one", "one", None, None)],
+            [],
             None,
             ("bus", "checkpoint", None, None, "cursor-1", "v1", 1),
             execution_id,
@@ -84,14 +91,20 @@ def _produce_lifecycle_source(
             1,
         )
         native._execution_mark_source_completed_claimed(execution_id, "producer")
-        done.set()
+        source_completed.set()
+        assert finalized.wait(10)
         result.put(("producer", execution_id, native._execution_snapshot(execution_id)))
     finally:
         queue.close()
 
 
 def _wait_lifecycle_source(
-    path: str, opened: object, done: object, result: object
+    path: str,
+    opened: object,
+    waiter_attempted: object,
+    source_completed: object,
+    finalized: object,
+    result: object,
 ) -> None:
     assert opened.wait(10)
     queue = SimpleQueue(path, name="q")
@@ -101,9 +114,20 @@ def _wait_lifecycle_source(
             "waiter", "bus", "source", "checkpoint", "v1"
         )
         assert created is False
-        assert done.wait(10)
-        native._execution_finalize_if_complete(execution_id)
-        result.put(("waiter", execution_id, native._execution_snapshot(execution_id)))
+        claimed, *_ = native._execution_claim_source(execution_id, "waiter", 60_000)
+        assert claimed is False
+        waiter_attempted.set()
+        assert source_completed.wait(10)
+        deadline = time.monotonic() + 10
+        while True:
+            native._execution_finalize_if_complete(execution_id)
+            snapshot = native._execution_snapshot(execution_id)
+            if snapshot[0][7] is not None:
+                break
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        finalized.set()
+        result.put(("waiter", execution_id, snapshot))
     finally:
         queue.close()
 
@@ -268,13 +292,31 @@ def test_execution_open_converges_across_bounded_spawn_processes(tmp_path) -> No
 def test_execution_lifecycle_has_one_producer_and_one_process_waiter(tmp_path) -> None:
     context = mp.get_context("spawn")
     opened = context.Event()
-    done = context.Event()
+    waiter_attempted = context.Event()
+    source_completed = context.Event()
+    finalized = context.Event()
     result = context.Queue()
     producer = context.Process(
-        target=_produce_lifecycle_source, args=(str(tmp_path), opened, done, result)
+        target=_produce_lifecycle_source,
+        args=(
+            str(tmp_path),
+            opened,
+            waiter_attempted,
+            source_completed,
+            finalized,
+            result,
+        ),
     )
     waiter = context.Process(
-        target=_wait_lifecycle_source, args=(str(tmp_path), opened, done, result)
+        target=_wait_lifecycle_source,
+        args=(
+            str(tmp_path),
+            opened,
+            waiter_attempted,
+            source_completed,
+            finalized,
+            result,
+        ),
     )
     producer.start()
     waiter.start()
@@ -286,7 +328,10 @@ def test_execution_lifecycle_has_one_producer_and_one_process_waiter(tmp_path) -
     assert len({execution_id for _, execution_id, _ in observations}) == 1
     for _, _, snapshot in observations:
         assert snapshot[0][8:11] == (1, 0, 1)
-        assert snapshot[1][0:3] == (1, 0, 1)
+        assert snapshot[0][5] is True
+        assert snapshot[0][7] is not None
+        assert snapshot[1][2] == 1
+        assert snapshot[1][3:6] == (0, 0, 0)
 
 
 def test_execution_ingests_and_waits_for_its_tracked_delivery(tmp_path) -> None:
