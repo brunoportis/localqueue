@@ -380,16 +380,17 @@ async def _commit_group(
     counters.batches += 1
 
 
-def _validate_ingestion_args(
-    transform: Callable[[object], object] | None,
-    batch_size: int,
-    max_pending: int | None,
-) -> None:
-    """Validate shared ingestion arguments before any item is consumed."""
+def _validate_batch_size(batch_size: object) -> int:
+    """Validate and return an ingestion batch size."""
     if isinstance(batch_size, bool) or not isinstance(batch_size, int):
         raise TypeError("'batch_size' must be a positive integer")
     if not 1 <= batch_size <= _MAX_BATCH_SIZE:
         raise ValueError(f"'batch_size' must be between 1 and {_MAX_BATCH_SIZE}")
+    return batch_size
+
+
+def _validate_max_pending(max_pending: object) -> int | None:
+    """Validate and return an optional per-queue pending limit."""
     if max_pending is not None:
         if isinstance(max_pending, bool) or not isinstance(max_pending, int):
             raise TypeError("'max_pending' must be a positive integer or None")
@@ -397,6 +398,17 @@ def _validate_ingestion_args(
             raise ValueError(
                 f"'max_pending' must be between 1 and {_MAX_PENDING_BOUND}"
             )
+    return max_pending
+
+
+def _validate_ingestion_args(
+    transform: Callable[[object], object] | None,
+    batch_size: int,
+    max_pending: int | None,
+) -> None:
+    """Validate shared ingestion arguments before any item is consumed."""
+    _validate_batch_size(batch_size)
+    _validate_max_pending(max_pending)
     if transform is not None and not callable(transform):
         raise TypeError("'transform' must be callable or None")
 

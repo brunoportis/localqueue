@@ -22,6 +22,7 @@ from localqueue.bus.ingestion import (
 )
 from localqueue.bus.registry import EVENT_REGISTRY, EventRegistry
 from localqueue.bus.retry import RetryPolicy
+from localqueue.bus.source_definition import SourceConfig, SourceDefinition
 from localqueue.bus.sources import ResumableSource, SequenceSource, SourceRecord
 from localqueue.bus.subscription import Subscription
 from localqueue.bus.topology import BusTopology
@@ -55,6 +56,8 @@ __all__ = [
     "RetryPolicy",
     "RuntimeContext",
     "SequenceSource",
+    "SourceConfig",
+    "SourceDefinition",
     "SourceChanged",
     "SourceRecord",
     "Subscription",

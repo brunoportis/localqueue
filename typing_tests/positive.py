@@ -25,6 +25,9 @@ from localqueue.bus import (
     Retry,
     RetryPolicy,
     RuntimeContext,
+    SequenceSource,
+    SourceConfig,
+    SourceDefinition,
     event,
 )
 
@@ -340,3 +343,51 @@ async def run_ingestion() -> None:
         deliveries: int = result.deliveries_total
         batches: int = result.batches_committed
         print(deliveries, batches)
+
+
+declared_rows: list[Row] = [{"contact_id": "4"}]
+
+
+@ingestion_bus.source(declared_rows)
+def declared_iterable(row: Row) -> ContactCreated:
+    return ContactCreated(contact_id=row["contact_id"])
+
+
+async def declared_async_rows() -> AsyncIterator[Row]:
+    yield {"contact_id": "5"}
+
+
+@ingestion_bus.source(declared_async_rows())
+async def declared_async_iterable(row: Row) -> ContactCreated:
+    return ContactCreated(contact_id=row["contact_id"])
+
+
+@ingestion_bus.source(
+    SequenceSource(declared_rows, fingerprint="typing-v1"),
+    checkpoint="typing-rows",
+)
+def declared_resumable(row: Row) -> ContactCreated:
+    return ContactCreated(contact_id=row["contact_id"])
+
+
+declared_source: SourceDefinition[Row, ContactCreated] = declared_iterable
+declared_config: SourceConfig = declared_source.config
+declared_batch_size: int = declared_config.batch_size
+declared_max_pending: int | None = declared_config.max_pending
+declared_config.batch_size = 500
+declared_config.max_pending = 10_000
+
+
+async def run_declared_ingestion() -> None:
+    iterable_result: IngestionResult = await declared_iterable.ingest()
+    async_iterable_result: IngestionResult = await declared_async_iterable.ingest()
+    resumable_result: IngestionResult = await declared_resumable.ingest()
+    print(iterable_result, async_iterable_result, resumable_result)
+
+
+@typed_bus.source([{"contact_id": "7"}])
+def declared_with_custom_context(row: Row) -> ContactCreated:
+    return ContactCreated(contact_id=row["contact_id"])
+
+
+custom_context_bus: EventBus[AppContext] = declared_with_custom_context.bus

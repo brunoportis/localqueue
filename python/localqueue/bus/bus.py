@@ -9,6 +9,7 @@ from collections.abc import AsyncIterable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import (
+    Any,
     Awaitable,
     Callable,
     Generic,
@@ -33,6 +34,7 @@ from localqueue.bus.ingestion import (
 )
 from localqueue.bus.registry import EVENT_REGISTRY, EventRegistry
 from localqueue.bus.retry import RetryPolicy
+from localqueue.bus.source_definition import SourceConfig, SourceDefinition
 from localqueue.bus.sources import ResumableSource
 from localqueue.bus.subscription import Subscription
 from localqueue.bus.topology import (
@@ -797,6 +799,59 @@ class EventBus(Generic[ContextT]):
     async def dispatch_async(self, event: BaseEvent) -> DispatchReceipt:
         """Asynchronous variant of :meth:`dispatch`."""
         return await asyncio.to_thread(self.dispatch, event)
+
+    @overload
+    def source(
+        self,
+        source: ResumableSource[ItemT],
+        *,
+        checkpoint: str,
+        batch_size: int = 1_000,
+        max_pending: int | None = None,
+    ) -> Callable[
+        [Callable[[ItemT], EventT | Awaitable[EventT]]], SourceDefinition[ItemT, EventT]
+    ]: ...
+
+    @overload
+    def source(
+        self,
+        source: Iterable[ItemT] | AsyncIterable[ItemT],
+        *,
+        checkpoint: str | None = None,
+        batch_size: int = 1_000,
+        max_pending: int | None = None,
+    ) -> Callable[
+        [Callable[[ItemT], EventT | Awaitable[EventT]]], SourceDefinition[ItemT, EventT]
+    ]: ...
+
+    def source(
+        self,
+        source: object,
+        *,
+        checkpoint: str | None = None,
+        batch_size: int = 1_000,
+        max_pending: int | None = None,
+    ) -> object:
+        """Declare a typed source that delegates execution to :meth:`ingest`."""
+        # Validate declaration-time values before the source is consumed.
+        # Each decorated transform gets its own mutable configuration below.
+        SourceConfig(batch_size=batch_size, max_pending=max_pending)
+
+        def define(transform: object) -> object:
+            return SourceDefinition(
+                bus=cast("EventBus[Any]", self),
+                source=cast(
+                    "Iterable[object] | AsyncIterable[object] | ResumableSource[object]",
+                    source,
+                ),
+                transform=cast(
+                    "Callable[[object], BaseEvent | Awaitable[BaseEvent]]", transform
+                ),
+                checkpoint=checkpoint,
+                config=SourceConfig(batch_size=batch_size, max_pending=max_pending),
+            )
+
+        return define
 
     @overload
     async def ingest(
