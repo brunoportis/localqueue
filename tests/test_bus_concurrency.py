@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 
 import pytest
 from localqueue import DeliveryPolicy
@@ -18,7 +19,9 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def _concurrent_consumer_group_worker(path, processed, active, duplicates, peak, lock):
+def _concurrent_consumer_group_worker(
+    path, processed, active, duplicates, peak, lock, release
+):
     """Consume with a per-process bound while recording aggregate activity."""
     bus = EventBus(
         path,
@@ -34,9 +37,7 @@ def _concurrent_consumer_group_worker(path, processed, active, duplicates, peak,
                 duplicates.append(event_id)
             active[event_id] = True
             peak.value = max(peak.value, len(active))
-        import time
-
-        time.sleep(0.05)
+        release.wait(timeout=10)
         with lock:
             processed.append(event_id)
             active.pop(event_id, None)
@@ -649,20 +650,27 @@ class TestConcurrentConsumerGroup:
             duplicates = manager.list()
             peak = manager.Value("i", 0)
             lock = manager.Lock()
+            release = manager.Event()
             processes = [
                 context.Process(
                     target=_concurrent_consumer_group_worker,
-                    args=(path, processed, active, duplicates, peak, lock),
+                    args=(path, processed, active, duplicates, peak, lock, release),
                 )
                 for _ in range(2)
             ]
             try:
                 for process in processes:
                     process.start()
+                deadline = time.monotonic() + 10
+                while peak.value < 4 and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert peak.value == 4
+                release.set()
                 for process in processes:
                     process.join(timeout=30)
                 assert [process.exitcode for process in processes] == [0, 0]
             finally:
+                release.set()
                 for process in processes:
                     if process.is_alive():
                         process.terminate()

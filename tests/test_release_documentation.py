@@ -31,8 +31,8 @@ def test_release_notes_template_contains_required_scope_and_limits() -> None:
         "production-grade transactional core",
         "production-ready for documented single-host workloads",
         "validated for documented single-host workloads",
-        "changes since v1.2.0",
-        "Upgrade from v1.2.0",
+        "changes since v1.3.0",
+        "Upgrade from v1.3.0",
     )
     for phrase in required:
         assert phrase in text
@@ -61,6 +61,8 @@ def test_release_workflows_have_no_automatic_publication_trigger() -> None:
     assert "environment: pypi" in wheels
     assert "default: dry-run" in release
     assert "prepare-candidate" in release
+    assert "semantic-release version --print --minor" in release
+    assert "semantic-release version --minor --no-push --no-vcs-release" in release
     assert "HEAD:refs/heads/main" not in release
     assert '"uv==0.11.6"' in release
     assert "validate-uv-lock-update" in release
@@ -205,7 +207,7 @@ def test_release_gate_runbook_documents_go_no_go_and_recovery() -> None:
         "Recovery after a partial failure",
         "editable `localqueue` entry",
         "uv lock --check",
-        "publish v1.3.0",
+        "publish v1.4.0",
         "Only then close #66",
     ):
         assert phrase in text
