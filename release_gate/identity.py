@@ -107,7 +107,7 @@ def validate_candidate(
     parent = actual.get("parent")
     if expected_parent is not None and parent != expected_parent:
         raise IdentityError("candidate parent differs from the prepared main SHA")
-    if actual.get("main_sha") != parent:
+    if actual.get("main_sha") not in {parent, actual.get("sha")}:
         raise IdentityError("main advanced after candidate preparation")
     if actual.get("clean") != "true":
         raise IdentityError("candidate worktree is not clean")
