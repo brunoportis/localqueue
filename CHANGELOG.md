@@ -4,6 +4,384 @@ All notable changes to `localqueue` are documented here.
 
 <!-- version list -->
 
+## v1.4.0 (2026-07-28)
+
+### Bug Fixes
+
+- Bound ingestion backpressure test ([#84](https://github.com/brunoportis/localqueue/pull/84),
+  [`bd19ffb`](https://github.com/brunoportis/localqueue/commit/bd19ffb874def2416e54c0a033ae32b85e612ec2))
+
+- Context async calls ([#78](https://github.com/brunoportis/localqueue/pull/78),
+  [`30bcf99`](https://github.com/brunoportis/localqueue/commit/30bcf99b66209270a5f0e98944a03291d64e0aae))
+
+- Define ingestion operational guarantees ([#84](https://github.com/brunoportis/localqueue/pull/84),
+  [`bd19ffb`](https://github.com/brunoportis/localqueue/commit/bd19ffb874def2416e54c0a033ae32b85e612ec2))
+
+- Force minor release version ([#94](https://github.com/brunoportis/localqueue/pull/94),
+  [`b199699`](https://github.com/brunoportis/localqueue/commit/b1996993179b5831f67849b69116da1678e09a78))
+
+- Format synthetic contact generator ([#93](https://github.com/brunoportis/localqueue/pull/93),
+  [`f3fbb12`](https://github.com/brunoportis/localqueue/commit/f3fbb12c0039cd74e4a93923d32522ec69281344))
+
+- Include all crash scenarios in release evidence
+  ([#96](https://github.com/brunoportis/localqueue/pull/96),
+  [`215776a`](https://github.com/brunoportis/localqueue/commit/215776a257a6d36784e3c59e3e8c90502a56c1bf))
+
+- Retry SQLite lock errors in benchmark workers
+  ([#95](https://github.com/brunoportis/localqueue/pull/95),
+  [`4a16ebd`](https://github.com/brunoportis/localqueue/commit/4a16ebda86b59b95f2b2e36561e28e6adb836772))
+
+- Stabilize Windows ingestion checks ([#84](https://github.com/brunoportis/localqueue/pull/84),
+  [`bd19ffb`](https://github.com/brunoportis/localqueue/commit/bd19ffb874def2416e54c0a033ae32b85e612ec2))
+
+- Support ingestion benchmark on Windows ([#84](https://github.com/brunoportis/localqueue/pull/84),
+  [`bd19ffb`](https://github.com/brunoportis/localqueue/commit/bd19ffb874def2416e54c0a033ae32b85e612ec2))
+
+- **bus**: Bind executions to owned checkpoints
+  ([#90](https://github.com/brunoportis/localqueue/pull/90),
+  [`b771939`](https://github.com/brunoportis/localqueue/commit/b771939a29800ba203884c0e71f90b4476949eff))
+
+- **bus**: Bound persistent retry delays ([#79](https://github.com/brunoportis/localqueue/pull/79),
+  [`f1862ab`](https://github.com/brunoportis/localqueue/commit/f1862ab64bb212a8860923c774e673ad0a5fb08a))
+
+- **bus**: Claim coherent checkpoint snapshots
+  ([#90](https://github.com/brunoportis/localqueue/pull/90),
+  [`b771939`](https://github.com/brunoportis/localqueue/commit/b771939a29800ba203884c0e71f90b4476949eff))
+
+- **bus**: Close finite execution orchestration gaps
+  ([#92](https://github.com/brunoportis/localqueue/pull/92),
+  [`7184bff`](https://github.com/brunoportis/localqueue/commit/7184bfff1ee29777dc6900533a4b79a2fff1aa50))
+
+- **bus**: Enforce reduced retry budgets before claim
+  ([#83](https://github.com/brunoportis/localqueue/pull/83),
+  [`5e668ba`](https://github.com/brunoportis/localqueue/commit/5e668bab8edbb5b0d6af56289e743c97cf26e3a7))
+
+- **bus**: Freeze ergonomic registration lifecycle
+  ([#81](https://github.com/brunoportis/localqueue/pull/81),
+  [`f2a1fe4`](https://github.com/brunoportis/localqueue/commit/f2a1fe4326332959430b041bb92be2d2fff4a6c0))
+
+- **bus**: Harden CSV resume and iterator cleanup
+  ([#86](https://github.com/brunoportis/localqueue/pull/86),
+  [`04f5ce4`](https://github.com/brunoportis/localqueue/commit/04f5ce4ea480a9161d1c914a69528c846b80913f))
+
+- **bus**: Harden resumable checkpoint CAS
+  ([#85](https://github.com/brunoportis/localqueue/pull/85),
+  [`5d0c594`](https://github.com/brunoportis/localqueue/commit/5d0c59457d9bca18a4fe09e0a33e6fc057ced77e))
+
+- **bus**: Isolate declarative source definitions
+  ([#88](https://github.com/brunoportis/localqueue/pull/88),
+  [`5ea1732`](https://github.com/brunoportis/localqueue/commit/5ea1732748bb68e324bc3a8d804c1b89c02270a5))
+
+- **bus**: Keep CSV overrides compatible on Python 3.10
+  ([#86](https://github.com/brunoportis/localqueue/pull/86),
+  [`04f5ce4`](https://github.com/brunoportis/localqueue/commit/04f5ce4ea480a9161d1c914a69528c846b80913f))
+
+- **bus**: Keep emission preparation nonblocking
+  ([#80](https://github.com/brunoportis/localqueue/pull/80),
+  [`349f545`](https://github.com/brunoportis/localqueue/commit/349f5459d444dc11367b9499a02f0634c80a159d))
+
+- **bus**: Normalize close race during ingestion
+  ([#85](https://github.com/brunoportis/localqueue/pull/85),
+  [`5d0c594`](https://github.com/brunoportis/localqueue/commit/5d0c59457d9bca18a4fe09e0a33e6fc057ced77e))
+
+- **bus**: Preserve atomic handler registration
+  ([#92](https://github.com/brunoportis/localqueue/pull/92),
+  [`7184bff`](https://github.com/brunoportis/localqueue/commit/7184bfff1ee29777dc6900533a4b79a2fff1aa50))
+
+- **bus**: Preserve cancellation during full retry
+  ([#91](https://github.com/brunoportis/localqueue/pull/91),
+  [`9dbc64f`](https://github.com/brunoportis/localqueue/commit/9dbc64fa084cb5806078b9af668b3c8d3ac33d77))
+
+- **bus**: Preserve durable execution membership
+  ([#89](https://github.com/brunoportis/localqueue/pull/89),
+  [`204ce12`](https://github.com/brunoportis/localqueue/commit/204ce124805f85ed8e062bcc8bbf74edbecd1394))
+
+- **bus**: Preserve execution lifecycle invariants
+  ([#90](https://github.com/brunoportis/localqueue/pull/90),
+  [`b771939`](https://github.com/brunoportis/localqueue/commit/b771939a29800ba203884c0e71f90b4476949eff))
+
+- **bus**: Preserve handler and delivery semantics
+  ([#78](https://github.com/brunoportis/localqueue/pull/78),
+  [`30bcf99`](https://github.com/brunoportis/localqueue/commit/30bcf99b66209270a5f0e98944a03291d64e0aae))
+
+- **bus**: Preserve optional event handlers
+  ([#78](https://github.com/brunoportis/localqueue/pull/78),
+  [`30bcf99`](https://github.com/brunoportis/localqueue/commit/30bcf99b66209270a5f0e98944a03291d64e0aae))
+
+- **bus**: Reject unpersistable event identities
+  ([#82](https://github.com/brunoportis/localqueue/pull/82),
+  [`e07d175`](https://github.com/brunoportis/localqueue/commit/e07d1759485eb1e4d4f19ce4fa621f2dd854939d))
+
+- **bus**: Satisfy execution ingestion lint
+  ([#90](https://github.com/brunoportis/localqueue/pull/90),
+  [`b771939`](https://github.com/brunoportis/localqueue/commit/b771939a29800ba203884c0e71f90b4476949eff))
+
+- **bus**: Support CSV source on Python 3.10
+  ([#86](https://github.com/brunoportis/localqueue/pull/86),
+  [`04f5ce4`](https://github.com/brunoportis/localqueue/commit/04f5ce4ea480a9161d1c914a69528c846b80913f))
+
+- **ci**: Isolate resumable ingestion fixtures
+  ([#85](https://github.com/brunoportis/localqueue/pull/85),
+  [`5d0c594`](https://github.com/brunoportis/localqueue/commit/5d0c59457d9bca18a4fe09e0a33e6fc057ced77e))
+
+- **queue**: Keep nonblocking gets off SQLite busy timeout
+  ([#86](https://github.com/brunoportis/localqueue/pull/86),
+  [`04f5ce4`](https://github.com/brunoportis/localqueue/commit/04f5ce4ea480a9161d1c914a69528c846b80913f))
+
+- **storage**: Avoid checkpoint migration writer lock
+  ([#85](https://github.com/brunoportis/localqueue/pull/85),
+  [`5d0c594`](https://github.com/brunoportis/localqueue/commit/5d0c59457d9bca18a4fe09e0a33e6fc057ced77e))
+
+- **stress**: Make exhausted consumer exits explicit
+  ([#86](https://github.com/brunoportis/localqueue/pull/86),
+  [`04f5ce4`](https://github.com/brunoportis/localqueue/commit/04f5ce4ea480a9161d1c914a69528c846b80913f))
+
+- **test**: Give execution event a unique name
+  ([#90](https://github.com/brunoportis/localqueue/pull/90),
+  [`b771939`](https://github.com/brunoportis/localqueue/commit/b771939a29800ba203884c0e71f90b4476949eff))
+
+### Chores
+
+- Prepare v1.4 release campaign ([#94](https://github.com/brunoportis/localqueue/pull/94),
+  [`b199699`](https://github.com/brunoportis/localqueue/commit/b1996993179b5831f67849b69116da1678e09a78))
+
+- Prepare v2 release campaign ([#94](https://github.com/brunoportis/localqueue/pull/94),
+  [`b199699`](https://github.com/brunoportis/localqueue/commit/b1996993179b5831f67849b69116da1678e09a78))
+
+- **compat**: Update schema fingerprint ([#89](https://github.com/brunoportis/localqueue/pull/89),
+  [`204ce12`](https://github.com/brunoportis/localqueue/commit/204ce124805f85ed8e062bcc8bbf74edbecd1394))
+
+### Code Style
+
+- Format README event example ([#92](https://github.com/brunoportis/localqueue/pull/92),
+  [`7184bff`](https://github.com/brunoportis/localqueue/commit/7184bfff1ee29777dc6900533a4b79a2fff1aa50))
+
+- Format resumable ingestion tests ([#85](https://github.com/brunoportis/localqueue/pull/85),
+  [`5d0c594`](https://github.com/brunoportis/localqueue/commit/5d0c59457d9bca18a4fe09e0a33e6fc057ced77e))
+
+- **docs**: Format EventBus example ([#81](https://github.com/brunoportis/localqueue/pull/81),
+  [`f2a1fe4`](https://github.com/brunoportis/localqueue/commit/f2a1fe4326332959430b041bb92be2d2fff4a6c0))
+
+- **test**: Sort execution lifecycle imports
+  ([#90](https://github.com/brunoportis/localqueue/pull/90),
+  [`b771939`](https://github.com/brunoportis/localqueue/commit/b771939a29800ba203884c0e71f90b4476949eff))
+
+### Continuous Integration
+
+- Diagnose hanging pytest runs ([#91](https://github.com/brunoportis/localqueue/pull/91),
+  [`9dbc64f`](https://github.com/brunoportis/localqueue/commit/9dbc64fa084cb5806078b9af668b3c8d3ac33d77))
+
+- Log Windows test progress ([#84](https://github.com/brunoportis/localqueue/pull/84),
+  [`bd19ffb`](https://github.com/brunoportis/localqueue/commit/bd19ffb874def2416e54c0a033ae32b85e612ec2))
+
+- Update wheel typing diagnostics ([#79](https://github.com/brunoportis/localqueue/pull/79),
+  [`f1862ab`](https://github.com/brunoportis/localqueue/commit/f1862ab64bb212a8860923c774e673ad0a5fb08a))
+
+### Documentation
+
+- Make ingestion scale follow-up nonblocking
+  ([#84](https://github.com/brunoportis/localqueue/pull/84),
+  [`bd19ffb`](https://github.com/brunoportis/localqueue/commit/bd19ffb874def2416e54c0a033ae32b85e612ec2))
+
+- Plan ingestion capacity validation ([#84](https://github.com/brunoportis/localqueue/pull/84),
+  [`bd19ffb`](https://github.com/brunoportis/localqueue/commit/bd19ffb874def2416e54c0a033ae32b85e612ec2))
+
+- **bus**: Explain declarative retry semantics
+  ([#83](https://github.com/brunoportis/localqueue/pull/83),
+  [`5e668ba`](https://github.com/brunoportis/localqueue/commit/5e668bab8edbb5b0d6af56289e743c97cf26e3a7))
+
+- **bus**: Explain ergonomic and explicit registration paths
+  ([#81](https://github.com/brunoportis/localqueue/pull/81),
+  [`f2a1fe4`](https://github.com/brunoportis/localqueue/commit/f2a1fe4326332959430b041bb92be2d2fff4a6c0))
+
+- **example**: Add resumable bulk customer import
+  ([#87](https://github.com/brunoportis/localqueue/pull/87),
+  [`639d3a0`](https://github.com/brunoportis/localqueue/commit/639d3a06659c5818f6cd3db25c1900021c7fabb9))
+
+- **example**: Address review — CLI import identity, creator concurrency, smoke test
+  ([#87](https://github.com/brunoportis/localqueue/pull/87),
+  [`639d3a0`](https://github.com/brunoportis/localqueue/commit/639d3a06659c5818f6cd3db25c1900021c7fabb9))
+
+### Features
+
+- Add resumable contact import example ([#93](https://github.com/brunoportis/localqueue/pull/93),
+  [`f3fbb12`](https://github.com/brunoportis/localqueue/commit/f3fbb12c0039cd74e4a93923d32522ec69281344))
+
+- Implement generic event ingestion ([#84](https://github.com/brunoportis/localqueue/pull/84),
+  [`bd19ffb`](https://github.com/brunoportis/localqueue/commit/bd19ffb874def2416e54c0a033ae32b85e612ec2))
+
+- Require Python 3.11 or newer ([#86](https://github.com/brunoportis/localqueue/pull/86),
+  [`04f5ce4`](https://github.com/brunoportis/localqueue/commit/04f5ce4ea480a9161d1c914a69528c846b80913f))
+
+- **bus**: Add declarative retry policies ([#83](https://github.com/brunoportis/localqueue/pull/83),
+  [`5e668ba`](https://github.com/brunoportis/localqueue/commit/5e668bab8edbb5b0d6af56289e743c97cf26e3a7))
+
+- **bus**: Add declarative source definitions
+  ([#88](https://github.com/brunoportis/localqueue/pull/88),
+  [`5ea1732`](https://github.com/brunoportis/localqueue/commit/5ea1732748bb68e324bc3a8d804c1b89c02270a5))
+
+- **bus**: Add durable event identity ([#82](https://github.com/brunoportis/localqueue/pull/82),
+  [`e07d175`](https://github.com/brunoportis/localqueue/commit/e07d1759485eb1e4d4f19ce4fa621f2dd854939d))
+
+- **bus**: Add durable finite execution lifecycle
+  ([#90](https://github.com/brunoportis/localqueue/pull/90),
+  [`b771939`](https://github.com/brunoportis/localqueue/commit/b771939a29800ba203884c0e71f90b4476949eff))
+
+- **bus**: Add durable resumable ingestion
+  ([#85](https://github.com/brunoportis/localqueue/pull/85),
+  [`5d0c594`](https://github.com/brunoportis/localqueue/commit/5d0c59457d9bca18a4fe09e0a33e6fc057ced77e))
+
+- **bus**: Add ergonomic handler registration
+  ([#81](https://github.com/brunoportis/localqueue/pull/81),
+  [`f2a1fe4`](https://github.com/brunoportis/localqueue/commit/f2a1fe4326332959430b041bb92be2d2fff4a6c0))
+
+- **bus**: Add ergonomic handler registration core
+  ([#81](https://github.com/brunoportis/localqueue/pull/81),
+  [`f2a1fe4`](https://github.com/brunoportis/localqueue/commit/f2a1fe4326332959430b041bb92be2d2fff4a6c0))
+
+- **bus**: Add explicit handler control flow
+  ([#79](https://github.com/brunoportis/localqueue/pull/79),
+  [`f1862ab`](https://github.com/brunoportis/localqueue/commit/f1862ab64bb212a8860923c774e673ad0a5fb08a))
+
+- **bus**: Add public finite execution API
+  ([#92](https://github.com/brunoportis/localqueue/pull/92),
+  [`7184bff`](https://github.com/brunoportis/localqueue/commit/7184bfff1ee29777dc6900533a4b79a2fff1aa50))
+
+- **bus**: Add resumable CSV source ([#86](https://github.com/brunoportis/localqueue/pull/86),
+  [`04f5ce4`](https://github.com/brunoportis/localqueue/commit/04f5ce4ea480a9161d1c914a69528c846b80913f))
+
+- **bus**: Add retry policy value object ([#83](https://github.com/brunoportis/localqueue/pull/83),
+  [`5e668ba`](https://github.com/brunoportis/localqueue/commit/5e668bab8edbb5b0d6af56289e743c97cf26e3a7))
+
+- **bus**: Add transactional handler emissions
+  ([#80](https://github.com/brunoportis/localqueue/pull/80),
+  [`349f545`](https://github.com/brunoportis/localqueue/commit/349f5459d444dc11367b9499a02f0634c80a159d))
+
+- **bus**: Add typed handler contexts ([#78](https://github.com/brunoportis/localqueue/pull/78),
+  [`30bcf99`](https://github.com/brunoportis/localqueue/commit/30bcf99b66209270a5f0e98944a03291d64e0aae))
+
+- **bus**: Apply retry policies to subscriptions
+  ([#83](https://github.com/brunoportis/localqueue/pull/83),
+  [`5e668ba`](https://github.com/brunoportis/localqueue/commit/5e668bab8edbb5b0d6af56289e743c97cf26e3a7))
+
+- **bus**: Track durable execution membership
+  ([#89](https://github.com/brunoportis/localqueue/pull/89),
+  [`204ce12`](https://github.com/brunoportis/localqueue/commit/204ce124805f85ed8e062bcc8bbf74edbecd1394))
+
+### Performance Improvements
+
+- **bus**: Batch exhausted budget transitions
+  ([#83](https://github.com/brunoportis/localqueue/pull/83),
+  [`5e668ba`](https://github.com/brunoportis/localqueue/commit/5e668bab8edbb5b0d6af56289e743c97cf26e3a7))
+
+### Refactoring
+
+- **bus**: Require named retry policy factories
+  ([#83](https://github.com/brunoportis/localqueue/pull/83),
+  [`5e668ba`](https://github.com/brunoportis/localqueue/commit/5e668bab8edbb5b0d6af56289e743c97cf26e3a7))
+
+- **bus**: Share cancelled commit cleanup ([#91](https://github.com/brunoportis/localqueue/pull/91),
+  [`9dbc64f`](https://github.com/brunoportis/localqueue/commit/9dbc64fa084cb5806078b9af668b3c8d3ac33d77))
+
+- **bus**: Split resumable ingestion consumption
+  ([#86](https://github.com/brunoportis/localqueue/pull/86),
+  [`04f5ce4`](https://github.com/brunoportis/localqueue/commit/04f5ce4ea480a9161d1c914a69528c846b80913f))
+
+### Testing
+
+- Avoid native thread boundary in split fixture
+  ([#85](https://github.com/brunoportis/localqueue/pull/85),
+  [`5d0c594`](https://github.com/brunoportis/localqueue/commit/5d0c59457d9bca18a4fe09e0a33e6fc057ced77e))
+
+- Relax contended SQLite timeout margin ([#85](https://github.com/brunoportis/localqueue/pull/85),
+  [`5d0c594`](https://github.com/brunoportis/localqueue/commit/5d0c59457d9bca18a4fe09e0a33e6fc057ced77e))
+
+- Stabilize timeout failure classification
+  ([#85](https://github.com/brunoportis/localqueue/pull/85),
+  [`5d0c594`](https://github.com/brunoportis/localqueue/commit/5d0c59457d9bca18a4fe09e0a33e6fc057ced77e))
+
+- **bus**: Avoid blocking close during backpressure
+  ([#88](https://github.com/brunoportis/localqueue/pull/88),
+  [`5ea1732`](https://github.com/brunoportis/localqueue/commit/5ea1732748bb68e324bc3a8d804c1b89c02270a5))
+
+- **bus**: Clarify identity invariants ([#82](https://github.com/brunoportis/localqueue/pull/82),
+  [`e07d175`](https://github.com/brunoportis/localqueue/commit/e07d1759485eb1e4d4f19ce4fa621f2dd854939d))
+
+- **bus**: Complete lifecycle process coverage
+  ([#90](https://github.com/brunoportis/localqueue/pull/90),
+  [`b771939`](https://github.com/brunoportis/localqueue/commit/b771939a29800ba203884c0e71f90b4476949eff))
+
+- **bus**: Coordinate multiprocess lifecycle waiter
+  ([#90](https://github.com/brunoportis/localqueue/pull/90),
+  [`b771939`](https://github.com/brunoportis/localqueue/commit/b771939a29800ba203884c0e71f90b4476949eff))
+
+- **bus**: Cover claimed batch splitting ([#90](https://github.com/brunoportis/localqueue/pull/90),
+  [`b771939`](https://github.com/brunoportis/localqueue/commit/b771939a29800ba203884c0e71f90b4476949eff))
+
+- **bus**: Cover durable execution lifecycle
+  ([#90](https://github.com/brunoportis/localqueue/pull/90),
+  [`b771939`](https://github.com/brunoportis/localqueue/commit/b771939a29800ba203884c0e71f90b4476949eff))
+
+- **bus**: Cover ergonomic handler behavior and typing
+  ([#81](https://github.com/brunoportis/localqueue/pull/81),
+  [`f2a1fe4`](https://github.com/brunoportis/localqueue/commit/f2a1fe4326332959430b041bb92be2d2fff4a6c0))
+
+- **bus**: Cover execution lease edge cases
+  ([#90](https://github.com/brunoportis/localqueue/pull/90),
+  [`b771939`](https://github.com/brunoportis/localqueue/commit/b771939a29800ba203884c0e71f90b4476949eff))
+
+- **bus**: Cover execution lifecycle races
+  ([#90](https://github.com/brunoportis/localqueue/pull/90),
+  [`b771939`](https://github.com/brunoportis/localqueue/commit/b771939a29800ba203884c0e71f90b4476949eff))
+
+- **bus**: Cover execution restart and process convergence
+  ([#90](https://github.com/brunoportis/localqueue/pull/90),
+  [`b771939`](https://github.com/brunoportis/localqueue/commit/b771939a29800ba203884c0e71f90b4476949eff))
+
+- **bus**: Cover retry and dedup emission paths
+  ([#80](https://github.com/brunoportis/localqueue/pull/80),
+  [`349f545`](https://github.com/brunoportis/localqueue/commit/349f5459d444dc11367b9499a02f0634c80a159d))
+
+- **bus**: Keep CSV streaming coverage practical
+  ([#86](https://github.com/brunoportis/localqueue/pull/86),
+  [`04f5ce4`](https://github.com/brunoportis/localqueue/commit/04f5ce4ea480a9161d1c914a69528c846b80913f))
+
+- **bus**: Order lifecycle producer lease handshake
+  ([#90](https://github.com/brunoportis/localqueue/pull/90),
+  [`b771939`](https://github.com/brunoportis/localqueue/commit/b771939a29800ba203884c0e71f90b4476949eff))
+
+- **bus**: Prove handler emission crash safety
+  ([#80](https://github.com/brunoportis/localqueue/pull/80),
+  [`349f545`](https://github.com/brunoportis/localqueue/commit/349f5459d444dc11367b9499a02f0634c80a159d))
+
+- **bus**: Satisfy repository CSV test lint
+  ([#86](https://github.com/brunoportis/localqueue/pull/86),
+  [`04f5ce4`](https://github.com/brunoportis/localqueue/commit/04f5ce4ea480a9161d1c914a69528c846b80913f))
+
+- **bus**: Update crash fanout targets ([#82](https://github.com/brunoportis/localqueue/pull/82),
+  [`e07d175`](https://github.com/brunoportis/localqueue/commit/e07d1759485eb1e4d4f19ce4fa621f2dd854939d))
+
+- **csv**: Avoid blocking close during backpressure
+  ([#88](https://github.com/brunoportis/localqueue/pull/88),
+  [`5ea1732`](https://github.com/brunoportis/localqueue/commit/5ea1732748bb68e324bc3a8d804c1b89c02270a5))
+
+- **csv**: Avoid leaking close worker threads
+  ([#88](https://github.com/brunoportis/localqueue/pull/88),
+  [`5ea1732`](https://github.com/brunoportis/localqueue/commit/5ea1732748bb68e324bc3a8d804c1b89c02270a5))
+
+- **csv**: Synchronize backpressure shutdown
+  ([#88](https://github.com/brunoportis/localqueue/pull/88),
+  [`5ea1732`](https://github.com/brunoportis/localqueue/commit/5ea1732748bb68e324bc3a8d804c1b89c02270a5))
+
+- **soak**: Bound cross-platform spawn workload
+  ([#90](https://github.com/brunoportis/localqueue/pull/90),
+  [`b771939`](https://github.com/brunoportis/localqueue/commit/b771939a29800ba203884c0e71f90b4476949eff))
+
+- **soak**: Keep spawn counter check within deadline
+  ([#91](https://github.com/brunoportis/localqueue/pull/91),
+  [`9dbc64f`](https://github.com/brunoportis/localqueue/commit/9dbc64fa084cb5806078b9af668b3c8d3ac33d77))
+
+
 ## v1.3.0 (2026-07-24)
 
 ### Bug Fixes
