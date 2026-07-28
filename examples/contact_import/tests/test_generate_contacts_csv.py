@@ -1,16 +1,10 @@
-"""Tests for the synthetic CSV generator used by the contact-import example."""
-
-from __future__ import annotations
-
 import csv
 from pathlib import Path
 
-from examples import generate_contacts_csv
+import generate_contacts_csv
 
 
 class FakeFaker:
-    """Minimal deterministic Faker replacement for the generator unit test."""
-
     def __init__(self) -> None:
         self.index = 0
 

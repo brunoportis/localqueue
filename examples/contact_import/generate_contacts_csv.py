@@ -1,13 +1,4 @@
-"""Generate deterministic synthetic input for ``contact_import.py``.
-
-Install the optional generator dependency first:
-
-    uv add faker
-
-For example, generate five thousand contacts with:
-
-    uv run python -m examples.generate_contacts_csv --count 5000
-"""
+"""Generate deterministic synthetic CSV input for ``import_contacts.py``."""
 
 from __future__ import annotations
 
@@ -30,19 +21,13 @@ DEFAULT_SEED = 20_260_727
 
 
 class ContactFaker(Protocol):
-    """Subset of Faker used to create contact identity and display data."""
-
     def cnpj(self) -> str: ...
 
     def name(self) -> str: ...
 
 
 def write_contacts_csv(
-    output: Path,
-    *,
-    count: int,
-    faker: ContactFaker,
-    seed: int,
+    output: Path, *, count: int, faker: ContactFaker, seed: int
 ) -> None:
     """Write synthetic contacts in the exact schema consumed by the importer."""
     if count < 0:
@@ -65,13 +50,7 @@ def write_contacts_csv(
 
 
 def generate_contacts_csv(output: Path, *, count: int, seed: int) -> None:
-    """Create a seeded Brazilian Faker provider and write the CSV file."""
-    try:
-        from faker import Faker
-    except ImportError as error:
-        raise ImportError(
-            "Install the generator dependency with:\n\n    uv add faker"
-        ) from error
+    from faker import Faker
 
     faker = Faker("pt_BR")
     faker.seed_instance(seed)
@@ -79,10 +58,8 @@ def generate_contacts_csv(output: Path, *, count: int, seed: int) -> None:
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    """Parse command-line options for the synthetic CSV generator."""
     parser = argparse.ArgumentParser(
-        prog="python -m examples.generate_contacts_csv",
-        description="Generate synthetic contacts.csv data using Faker.",
+        description="Generate synthetic contacts.csv data."
     )
     parser.add_argument("--output", type=Path, default=Path("contacts.csv"))
     parser.add_argument("--count", type=int, default=DEFAULT_COUNT)
@@ -91,7 +68,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Generate the requested CSV and print its location."""
     args = parse_args(argv)
     generate_contacts_csv(args.output, count=args.count, seed=args.seed)
     print(f"generated {args.count} contacts at {args.output}")

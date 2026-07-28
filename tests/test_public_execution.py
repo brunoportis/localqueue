@@ -68,7 +68,8 @@ class ControlledHandle:
     def __init__(self, done: asyncio.Event | None = None) -> None:
         self.done = done
 
-    async def run(self) -> _ExecutionSnapshot:
+    async def run(self, *, operation_id: str | None = None) -> _ExecutionSnapshot:
+        del operation_id
         if self.done is not None:
             await self.done.wait()
         return terminal_snapshot()
@@ -97,6 +98,24 @@ def test_execute_empty_source_returns_public_terminal_result(tmp_path) -> None:
         assert bus._native_queue is not None
     finally:
         bus.close()
+
+
+def test_execute_timeout_starts_after_opening_the_execution(
+    tmp_path, monkeypatch
+) -> None:
+    bus = EventBus(str(tmp_path))
+
+    async def delayed_open(_source, _operation_id=None) -> ControlledHandle:
+        await asyncio.sleep(0.05)
+        return ControlledHandle()
+
+    monkeypatch.setattr(bus, "_open_execution", delayed_open)
+    try:
+        result = asyncio.run(bus.execute(object(), timeout=0.01))  # type: ignore[arg-type]
+    finally:
+        bus.close()
+
+    assert result.completed
 
 
 def test_execute_starts_local_handlers_and_waits_for_descendants(tmp_path) -> None:
@@ -331,7 +350,7 @@ def test_concurrent_execute_calls_share_and_reference_count_managed_runner(
     first_done, second_done = asyncio.Event(), asyncio.Event()
     handles = iter((ControlledHandle(first_done), ControlledHandle(second_done)))
 
-    async def fake_open(_source):
+    async def fake_open(_source, _operation_id=None):
         return next(handles)
 
     monkeypatch.setattr(bus, "run", fake_run)
@@ -342,6 +361,7 @@ def test_concurrent_execute_calls_share_and_reference_count_managed_runner(
         second = asyncio.create_task(bus.execute(object()))  # type: ignore[arg-type]
         await runner_started.wait()
         assert run_calls == 1
+        await wait_until(lambda: bus._execute_runner_users == 2)
         assert bus._execute_runner_users == 2
 
         first_done.set()
@@ -432,7 +452,7 @@ def test_managed_runner_failure_reaches_all_concurrent_execute_callers(
             await fail.wait()
             raise error
 
-        async def fake_open(_source) -> ControlledHandle:
+        async def fake_open(_source, _operation_id=None) -> ControlledHandle:
             return ControlledHandle(asyncio.Event())
 
         monkeypatch.setattr(bus, "run", failing_run)
@@ -476,7 +496,7 @@ def test_cancelling_one_execute_keeps_shared_runner_for_other_user(
         first_done, second_done = asyncio.Event(), asyncio.Event()
         handles = iter((ControlledHandle(first_done), ControlledHandle(second_done)))
 
-        async def fake_open(_source) -> ControlledHandle:
+        async def fake_open(_source, _operation_id=None) -> ControlledHandle:
             return next(handles)
 
         monkeypatch.setattr(bus, "run", controlled_run)

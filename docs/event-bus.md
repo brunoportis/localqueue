@@ -1041,18 +1041,20 @@ caller must still use `try/finally` and call `bus.close()`.
 
 For a complete CSV-to-HTTP application using an asynchronous handler context,
 idempotency keys, `422` rejection, and `429` retry delays, see
-[`examples/contact_import.py`](../examples/contact_import.py). It requires the
-separate HTTP client dependency:
+[`examples/contact_import/`](../examples/contact_import/). It includes a small
+FastAPI + LMDB API that can be run locally:
 
 ```bash
-uv add "localqueue[bus]" httpx
+cd examples/contact_import
+uv sync --group dev
+uv run uvicorn api:app
 ```
 
 Generate matching synthetic input with Faker when developing locally:
 
 ```bash
-uv add faker
-uv run python -m examples.generate_contacts_csv --count 5000
+cd examples/contact_import
+uv run python generate_contacts_csv.py --count 5000
 ```
 
 ### Resume identity and completion

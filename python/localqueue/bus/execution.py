@@ -195,9 +195,11 @@ class _ExecutionHandle:
         self._validate_timeout(timeout)
         return await self._with_timeout(self._wait(), timeout)
 
-    async def run(self, *, timeout: float | None = None) -> _ExecutionSnapshot:
+    async def run(
+        self, *, timeout: float | None = None, operation_id: str | None = None
+    ) -> _ExecutionSnapshot:
         self._validate_timeout(timeout)
-        return await self._with_timeout(self._run(), timeout)
+        return await self._with_timeout(self._run(operation_id), timeout)
 
     @staticmethod
     def _validate_timeout(timeout: float | None) -> None:
@@ -216,7 +218,7 @@ class _ExecutionHandle:
             await asyncio.wait_for(coro, timeout) if timeout is not None else await coro
         )
 
-    async def _run(self) -> _ExecutionSnapshot:
+    async def _run(self, operation_id: str | None) -> _ExecutionSnapshot:
         while not self.inspect().source_completed:
             receipt = secrets.token_urlsafe(24)
             (
@@ -230,11 +232,16 @@ class _ExecutionHandle:
                 str(self._id),
                 receipt,
                 _LEASE_MS,
+                *((operation_id,) if operation_id is not None else ()),
             )
             if not claimed:
                 await asyncio.sleep(_POLL_SECONDS)
                 continue
-            heartbeat = asyncio.create_task(self._heartbeat(receipt))
+            heartbeat = asyncio.create_task(
+                self._heartbeat(receipt, operation_id)
+                if operation_id is not None
+                else self._heartbeat(receipt)
+            )
             try:
                 definition = cast(Any, self._source)
                 checkpoint_name = cast(str, definition.checkpoint)
@@ -258,6 +265,7 @@ class _ExecutionHandle:
                                 if checkpoint_fingerprint is None
                                 else checkpoint_fingerprint
                             ),
+                            operation_id=operation_id,
                         ),
                     )
                 )
@@ -271,6 +279,7 @@ class _ExecutionHandle:
                     self._bus._get_native()._execution_mark_source_completed_claimed,
                     str(self._id),
                     receipt,
+                    *((operation_id,) if operation_id is not None else ()),
                 )
             finally:
                 if "ingestion" in locals() and not ingestion.done():
@@ -285,9 +294,9 @@ class _ExecutionHandle:
                         receipt,
                     )
                 )
-        return await self._wait()
+        return await self._wait(operation_id)
 
-    async def _heartbeat(self, receipt: str) -> None:
+    async def _heartbeat(self, receipt: str, operation_id: str | None = None) -> None:
         while True:
             await asyncio.sleep(_LEASE_MS / 3000)
             await asyncio.to_thread(
@@ -295,15 +304,17 @@ class _ExecutionHandle:
                 str(self._id),
                 receipt,
                 _LEASE_MS,
+                *((operation_id,) if operation_id is not None else ()),
             )
 
-    async def _wait(self) -> _ExecutionSnapshot:
+    async def _wait(self, operation_id: str | None = None) -> _ExecutionSnapshot:
         while True:
             snapshot = self.inspect()
             if snapshot.source_completed and snapshot.ready == snapshot.processing == 0:
                 await asyncio.to_thread(
                     self._bus._get_native()._execution_finalize_if_complete,
                     str(self._id),
+                    *((operation_id,) if operation_id is not None else ()),
                 )
                 snapshot = self.inspect()
                 if snapshot.completed and snapshot.ready == snapshot.processing == 0:
