@@ -11,8 +11,10 @@ class ReportError(ValueError):
 CRASH_SCENARIOS = {
     "enqueue-after-begin",
     "enqueue-before-commit",
+    "resumable-ingest-before-commit",
     "claim-before-commit",
     "ack-before-commit",
+    "ack-fanout-before-commit",
     "nack-before-commit",
     "fail-before-commit",
     "control-enqueue",
