@@ -2,7 +2,9 @@
 
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from typing import AsyncIterator, Awaitable, Callable, Iterator, TypedDict
+from uuid import UUID
 
 from localqueue import (
     EnqueueItem,
@@ -18,6 +20,7 @@ from localqueue.bus import (
     BaseEvent,
     BusTopology,
     EventBus,
+    ExecutionResult,
     FailedDelivery,
     HandlerContext,
     IngestionResult,
@@ -383,6 +386,14 @@ async def run_declared_ingestion() -> None:
     async_iterable_result: IngestionResult = await declared_async_iterable.ingest()
     resumable_result: IngestionResult = await declared_resumable.ingest()
     print(iterable_result, async_iterable_result, resumable_result)
+
+
+async def run_declared_execution() -> None:
+    result: ExecutionResult = await ingestion_bus.execute(declared_resumable)
+    execution_id: UUID = result.execution_id
+    completed_at: datetime = result.completed_at
+    result.raise_for_failures()
+    print(execution_id, completed_at)
 
 
 @typed_bus.source([{"contact_id": "7"}])

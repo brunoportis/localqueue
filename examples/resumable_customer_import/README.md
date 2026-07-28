@@ -8,7 +8,7 @@ here.
 Pipeline:
 
 ```
-customers.csv ──CsvSource──▶ EventBus.ingest(checkpoint=...) ──▶ customer-creator
+customers.csv ──CsvSource──▶ EventBus.execute(source) ──▶ customer-creator
                                                                    │ returns
                                                                    ▼
                                           CustomerCreated ──▶ customer-audit
@@ -19,8 +19,14 @@ customers.csv ──CsvSource──▶ EventBus.ingest(checkpoint=...) ──▶
   intentionally without identity: no duplicate scenario requires it).
 - `topology.py` — shared `BusTopology` imported by both sides; the producer
   never imports worker handlers.
-- `producer.py` — argparse CLI: `CsvSource` + `bus.ingest(..., checkpoint=...,
-  transform=..., batch_size=..., max_pending=...)`. The CSV schema is
+- `run.py` — primary one-process operation: declares `CsvSource`, registers
+  both handlers, configures concurrency/retry, awaits `bus.execute(source)`,
+  prints the durable `ExecutionResult`, and calls `raise_for_failures()`.
+- `producer.py` and `worker.py` — advanced separate producer/worker
+  deployment using the same database and finite execution. The producer
+  registers no handlers and awaits `bus.execute(source)`; the worker runs
+  those handlers with `bus.run()`.
+  The CSV schema is
   `external_id,name,email,phone` — there is no `import_id` column; the
   `--import-id` CLI value is the logical import identity and is injected
   into every `CustomerCreationRequested` by the transform.
@@ -41,69 +47,73 @@ customers.csv ──CsvSource──▶ EventBus.ingest(checkpoint=...) ──▶
 uv sync --extra bus
 ```
 
-## 2. Terminal 1 — start the worker
+## 2. Run the complete operation
 
 ```bash
-uv run python -m examples.resumable_customer_import.worker
+uv run python -m examples.resumable_customer_import.run
 ```
 
-The worker consumes until interrupted (Ctrl+C). State lives in
-`examples/resumable_customer_import/data/` by default; `--data-dir` overrides
-it. Defaults are stable relative to the example directory, not your cwd.
-The creator subscription handles up to 20 deliveries concurrently per
-process (`bus.subscription(CUSTOMER_CREATOR, concurrency=20)`), so the
-flaky and throttled rows retry in parallel with normal creations instead of
-blocking them.
+`execute()` auto-starts the registered creator and audit handlers. The
+`CustomerCreated` returned by the creator is a durable descendant, so the
+operation does not complete until its audit delivery is terminal too. State
+lives in `examples/resumable_customer_import/data/` by default.
 
-## 3. Terminal 2 — run the producer
-
-```bash
-uv run python -m examples.resumable_customer_import.producer
-```
-
-First-run output (6 data rows, one an identical duplicate of EXT-001):
+The report includes:
 
 ```
-items read:               6
-events dispatched:        6
-events unrouted:          0
-deliveries inserted:      5
-deliveries deduplicated:  1
-batches committed:        1
-checkpoint name:          customer-import:demo-v1
-checkpoint start cursor:  None
-checkpoint end cursor:    {"version":1,"cookie":...,"record":6,"line":7}
-resumed:                  False
-elapsed:                  0.0XXs
+execution ID:              ...
+resumed:                   False
+source items committed:    6
+events dispatched:         6
+events unrouted:           0
+deliveries inserted:       5
+deliveries deduplicated:   1
+deliveries total:          9
+acknowledged:              8
+failed:                    1
+completed timestamp:       ...+00:00
 ```
 
 The duplicate row collapses onto the same durable identity
 `(import_id, external_id)` and payload after normalization, so it is
 deduplicated instead of delivered twice. The worker logs one
 `audit import=demo-v1 external_id=... customer_id=...` line per created
-customer; `invalid@example.com` is rejected (validation), `flaky@example.com`
+customer; `invalid@example.com` is rejected (validation), so the demo command
+reports the terminal result and `raise_for_failures()` exits nonzero.
+`flaky@example.com`
 retries twice then succeeds, `throttled@example.com` waits out one
 rate-limit delay then succeeds.
 
-## 4. Rerun the producer — resume, no duplicate delivery
+## 3. Separate producer and worker processes
+
+The original deployment remains available without introducing a network
+service. In terminal 1:
+
+```bash
+uv run python -m examples.resumable_customer_import.worker
+```
+
+In terminal 2:
 
 ```bash
 uv run python -m examples.resumable_customer_import.producer
 ```
 
-```
-items read:               0
-deliveries inserted:      0
-deliveries deduplicated:  0
-batches committed:        0
-checkpoint start cursor:  {"version":1,...}
-checkpoint end cursor:    {"version":1,...}   (unchanged)
-resumed:                  True
+Both processes share the same SQLite database, topology, checkpoint, and
+durable execution. The producer has no local handlers, so `execute()` ingests
+and waits; the worker consumes the roots and descendants. Stopping either
+process and rerunning it resumes the same operation without a network service.
+
+## 4. Rerun — resume the durable operation
+
+```bash
+uv run python -m examples.resumable_customer_import.run
 ```
 
 The checkpoint stored the cursor of the last committed batch; the rerun
 opens the CSV at that cursor (a single O(1) `seek`, earlier records are
-never replayed), finds nothing new, and inserts nothing.
+never replayed), resumes the same execution, and reports cumulative durable
+counters rather than only work performed by this Python invocation.
 
 ## 5. Inspect the checkpoint
 
@@ -219,6 +229,5 @@ uv run python -m examples.resumable_customer_import.producer \
     --csv /tmp/big_customers.csv --import-id bulk-v1 --batch-size 500
 ```
 
-The rerun prints `resumed: True`, a non-`None` start cursor, and only the
-remaining rows in `items read` — no row already committed is re-read or
-re-delivered.
+The rerun prints `resumed: True` and cumulative durable execution counters.
+No row from an already committed checkpoint batch is re-read or re-delivered.

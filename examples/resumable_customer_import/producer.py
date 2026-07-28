@@ -1,19 +1,24 @@
-"""Producer: resumable ingestion of a customer CSV into the event bus.
+"""Producer/waiter for the durable finite customer-import execution.
 
 Reads ``customers.csv`` with ``CsvSource``, transforms each row exactly once
-into ``CustomerCreationRequested``, and ingests with a durable checkpoint so
-the run can be interrupted and resumed without duplicate deliveries.
+into ``CustomerCreationRequested``, and waits for workers sharing the database
+to make every execution-owned delivery terminal.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import functools
 from pathlib import Path
 from typing import Sequence
 
-from localqueue.bus import CsvRow, CsvSource, EventBus, IngestionResult
+from localqueue.bus import (
+    CsvRow,
+    CsvSource,
+    EventBus,
+    ExecutionResult,
+    SourceDefinition,
+)
 
 from examples.resumable_customer_import.events import CustomerCreationRequested
 from examples.resumable_customer_import.topology import BUS_NAME, TOPOLOGY
@@ -51,6 +56,26 @@ def to_customer_creation_requested(
     )
 
 
+def build_customer_source(
+    bus: EventBus,
+    csv_path: Path,
+    *,
+    import_id: str,
+    batch_size: int,
+    max_pending: int,
+    checkpoint_name: str,
+) -> SourceDefinition[CsvRow, CustomerCreationRequested]:
+    """Declare the finite CSV source shared by both example entry points."""
+
+    @bus.source(CsvSource(csv_path), checkpoint=checkpoint_name)
+    def customer_source(row: CsvRow) -> CustomerCreationRequested:
+        return to_customer_creation_requested(row, import_id=import_id)
+
+    customer_source.config.batch_size = batch_size
+    customer_source.config.max_pending = max_pending
+    return customer_source
+
+
 async def run_import(
     csv_path: Path,
     data_dir: Path,
@@ -59,37 +84,36 @@ async def run_import(
     batch_size: int,
     max_pending: int,
     checkpoint_name: str,
-) -> IngestionResult:
-    """Run one resumable ingestion, always closing the bus."""
+) -> ExecutionResult:
+    """Execute and await one import using workers in another process."""
     bus = EventBus(str(data_dir), name=BUS_NAME, topology=TOPOLOGY)
     try:
-        return await bus.ingest(
-            CsvSource(csv_path),
-            checkpoint=checkpoint_name,
-            transform=functools.partial(
-                to_customer_creation_requested, import_id=import_id
-            ),
+        source = build_customer_source(
+            bus,
+            csv_path,
+            import_id=import_id,
             batch_size=batch_size,
             max_pending=max_pending,
+            checkpoint_name=checkpoint_name,
         )
+        return await bus.execute(source)
     finally:
         bus.close()
 
 
-def print_report(result: IngestionResult) -> None:
-    """Print the ingestion counters and checkpoint progress."""
-    print(f"items read:               {result.items_read}")
+def print_report(result: ExecutionResult) -> None:
+    """Print cumulative durable execution state."""
+    print(f"execution ID:             {result.execution_id}")
+    print(f"resumed:                  {result.resumed}")
+    print(f"source items committed:   {result.items_committed}")
     print(f"events dispatched:        {result.events_dispatched}")
     print(f"events unrouted:          {result.events_unrouted}")
     print(f"deliveries inserted:      {result.deliveries_inserted}")
     print(f"deliveries deduplicated:  {result.deliveries_deduplicated}")
-    print(f"batches committed:        {result.batches_committed}")
-    if result.checkpoint is not None:
-        print(f"checkpoint name:          {result.checkpoint.name}")
-        print(f"checkpoint start cursor:  {result.checkpoint.start_cursor}")
-        print(f"checkpoint end cursor:    {result.checkpoint.end_cursor}")
-        print(f"resumed:                  {result.checkpoint.resumed}")
-    print(f"elapsed:                  {result.elapsed_seconds:.3f}s")
+    print(f"deliveries total:         {result.deliveries_total}")
+    print(f"acknowledged:             {result.deliveries_acknowledged}")
+    print(f"failed:                   {result.deliveries_failed}")
+    print(f"completed timestamp:      {result.completed_at.isoformat()}")
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -157,6 +181,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     )
     print_report(result)
+    result.raise_for_failures()
     return 0
 
 

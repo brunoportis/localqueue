@@ -560,11 +560,19 @@ async def index_user(event): ...
 
 email = bus.subscription("email", concurrency=8)
 billing = bus.subscription("billing", concurrency=1)
+
+email.config.concurrency = 8
+email.config.retry = RetryPolicy.exponential(max_attempts=8)
 ```
 
 `concurrency` is a positive integer and defaults to `1`. The EventBus value is
 the fallback for every subscription; a handler or binder value is that
-subscription's override. It is process-local, in-memory configuration: it is
+subscription's override. `Subscription.config` is the mutable facade over
+that same canonical state; `retry=None` selects the existing
+`DeliveryPolicy`-derived behavior, and `config.frozen` reports whether
+consumption has started. Handler `concurrency=`/`retry=` arguments and
+`subscription(..., concurrency=...)` remain supported and share this state.
+It is process-local, in-memory configuration: it is
 not stored in the topology or SQLite. Reusing a subscription keeps its
 configured value; assigning a conflicting value in the same process raises
 `ValueError`. Configure handlers and overrides before the first `run()` or
@@ -981,10 +989,9 @@ repository at `examples/resumable_customer_import/README.md`.
 
 ## Internal durable execution membership
 
-The storage layer has internal support for associating deliveries with a
-finite EventBus execution. This is deliberately not a public workload API:
-there is no `EventBus.execute()`, completion waiting, source lifecycle control,
-or resume semantics yet.
+`EventBus.execute()` is supported by durable associations between deliveries
+and a finite execution. These tables and joins are implementation details; the
+public boundary is `SourceDefinition` in and `ExecutionResult` out.
 
 Membership is many-to-many rather than an `execution_id` column on
 `messages`. Durable identity deduplication can return a delivery that already
@@ -1009,12 +1016,30 @@ message status at query time. They do not use mutable counters on executions,
 so retries, lease recovery, failures, and acknowledgements cannot make a
 secondary count drift from the message source of truth.
 
-## Private finite execution lifecycle
+## Finite execution
 
-The next ergonomic API will build on a private finite-execution handle; this
-release does not expose `EventBus.execute()`, start workers, or stop workers.
-It accepts only a declared `SourceDefinition` backed by a `ResumableSource`
-with a non-empty checkpoint name and stable non-empty fingerprint.
+`await bus.execute(source, timeout=None)` opens or resumes one durable finite
+operation, ingests its source, runs registered local handlers when needed, and
+waits until all execution-owned deliveries are terminal. It accepts a
+`SourceDefinition` backed by a `ResumableSource` with a non-empty checkpoint
+name and stable non-empty fingerprint:
+
+```python
+@bus.source(CsvSource("contacts.csv"), checkpoint="contacts:2026-07")
+def contacts(row: CsvRow) -> ContactCreationRequested:
+    return ContactCreationRequested(...)
+
+
+result = await bus.execute(contacts)
+result.raise_for_failures()
+```
+
+`SourceDefinition.ingest()` remains ingestion-only: it does not run or wait
+for handlers. `EventBus.execute()` is the full finite lifecycle. Both freeze
+the existing `SourceConfig` when they start. Neither closes the bus; the
+caller must still use `try/finally` and call `bus.close()`.
+
+### Resume identity and completion
 
 An execution is identified by bus/checkpoint/generation once a checkpoint has
 committed. Before the first batch creates that checkpoint, callers share a
@@ -1030,8 +1055,62 @@ checkpoint or commit a batch. Source completion is also a fenced transaction.
 
 Completion is operation-scoped: the source must be complete and that
 execution's READY and PROCESSING deliveries must both be zero. Failed
-deliveries are terminal. Timeout and cancellation release a held lease but do
-not erase committed progress, so a later caller can resume. This lifecycle
-does not use queue-idle detection and does not move synchronous blocking source
-or transform work to threads; use async source/transform code for blocking
-work.
+deliveries are terminal. Delayed retries remain READY. Handler-returned events
+inherit execution membership, so descendants delay completion until they too
+are acknowledged or failed. Unrelated READY work elsewhere on the bus does not
+block the result; there is no global drain or quiet-period heuristic.
+
+Manual `retry_failed()` reopens a tracked failed delivery and clears the
+execution's completion marker. Executing the same logical source then resumes
+the same execution and waits for the replay to become terminal.
+
+### Local and multiprocess workers
+
+When handlers are registered on this `EventBus` and `run()` is not active,
+`execute()` starts one process-local runner. Concurrent execute calls share
+that runner; the first completion does not stop it while another execute user
+remains, and the final user cancels and awaits it. This cancellation is normal
+owned-worker shutdown and does not replace a completed result.
+
+If `EventBus.run()` is already active, execute uses it without starting,
+cancelling, or stopping it. With no locally registered handlers, execute does
+not start a runner at all: it ingests and waits while standalone worker
+processes sharing the same database consume normally. A managed runner
+infrastructure exception cancels the finite source task and propagates to
+active execute callers. Modeled `Retry`, `Reject`, NACK, and terminal delivery
+failure remain durable delivery outcomes rather than runner failures.
+
+### Timeout, cancellation, and result
+
+Opening/resuming the execution happens before the process-local timeout begins.
+The timeout then covers source ownership and ingestion, delivery/descendant
+processing, durable finalization, and local runner coordination. Timeout raises
+`TimeoutError`; caller cancellation propagates `CancelledError`. Both cancel
+and await the private lifecycle, allow any in-flight native batch to settle,
+release a source lease held by this caller, stop an owned runner only after its
+last execute user leaves, and preserve committed resumable progress. There is
+no persistent timeout or business-cancellation state.
+
+`ExecutionResult` is an immutable terminal snapshot with UTC-aware
+`datetime` timestamps:
+
+- identity: `execution_id`, `resumed`, `source_name`, `checkpoint_name`,
+  `source_fingerprint`, and `checkpoint_generation`;
+- lifecycle: `source_completed`, `source_completed_at`, `completed_at`,
+  `created_at`, and `updated_at`;
+- cumulative ingestion: `items_committed`, `events_dispatched`,
+  `events_unrouted`, `deliveries_inserted`, `deliveries_deduplicated`, and
+  `batches_committed`;
+- durable delivery state: `deliveries_total`, `deliveries_ready`,
+  `deliveries_processing`, `deliveries_acknowledged`, and
+  `deliveries_failed`.
+
+The counters are cumulative across crashes and resumptions. `completed` means
+durable completion, while `succeeded` additionally requires zero failed
+deliveries. `execute()` deliberately returns terminal failures. Call
+`result.raise_for_failures()` to raise `ExecutionFailed`; its `.result` is the
+exact same snapshot. Source, transform, serialization, storage,
+configuration, and worker-infrastructure errors propagate directly.
+
+The lifecycle does not move synchronous blocking source or transform work to
+threads; use async source/transform code or explicit offloading when needed.
