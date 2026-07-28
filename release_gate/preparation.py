@@ -8,7 +8,7 @@ RELEASE_CANDIDATE_FILES = frozenset(
         "Cargo.toml",
         "CHANGELOG.md",
         "pyproject.toml",
-        "release-notes/v1.3.0.md",
+        "release-notes/v2.0.0.md",
         "uv.lock",
     }
 )
@@ -18,7 +18,7 @@ class PreparationError(ValueError):
     pass
 
 
-def require_campaign_version(calculated: str, expected: str = "1.3.0") -> None:
+def require_campaign_version(calculated: str, expected: str = "2.0.0") -> None:
     if calculated != expected:
         raise PreparationError(
             f"calculated version {calculated!r} differs from campaign version {expected!r}"

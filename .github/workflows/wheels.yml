@@ -28,7 +28,7 @@ on:
         required: true
         type: boolean
       confirmation:
-        description: Must be exactly 'publish v1.3.0'
+        description: Must be exactly 'publish v2.0.0'
         required: true
         type: string
 
@@ -38,7 +38,7 @@ permissions:
   issues: read
 
 concurrency:
-  group: promote-v1.3.0
+  group: promote-v2.0.0
   cancel-in-progress: false
 
 env:
@@ -77,11 +77,11 @@ jobs:
         run: |
           test "$GITHUB_REF" = "refs/heads/main"
           test "$GITHUB_WORKFLOW_REF" = "$GITHUB_REPOSITORY/.github/workflows/wheels.yml@refs/heads/main"
-          test "$CANDIDATE_VERSION" = "1.3.0"
-          test "$CANDIDATE_REF" = "release-candidate/v1.3.0"
+          test "$CANDIDATE_VERSION" = "2.0.0"
+          test "$CANDIDATE_REF" = "release-candidate/v2.0.0"
           [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$CANDIDATE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
-          test "$PROMOTION_CONFIRMATION" = "publish v1.3.0"
+          test "$PROMOTION_CONFIRMATION" = "publish v2.0.0"
 
       - name: Confirm evidence workflow identity and successful conclusion
         env:
@@ -192,7 +192,7 @@ jobs:
             --confirmation "$PROMOTION_CONFIRMATION" \
             --version "$CANDIDATE_VERSION" \
             "${confirmation_flag[@]}"
-          notes=release-notes/v1.3.0.md
+          notes=release-notes/v2.0.0.md
           for phrase in "NFS" "SMB" "multi-host" "exactly-once" "physical ARM64" "physical power-loss"; do
             grep -Fqi "$phrase" "$notes"
           done

@@ -1,26 +1,26 @@
 # localqueue v{{ version }}
 
-This candidate consolidates the changes since v1.2.0. The final public claim is
+This candidate consolidates the changes since v1.3.0. The final public claim is
 deliberately left to the human promotion gate and must not exceed the collected
 evidence.
 
 ## Breaking Python API changes
 
-- `fsync`, `lease_seconds`, and `max_retries` were replaced by
-  `DurabilityMode` and `DeliveryPolicy`; no compatibility shims are provided.
+- Python 3.10 is no longer supported; localqueue now requires Python 3.11 or newer.
 
 ## New public APIs
 
-- Typed queue and subscription dead-letter inspection and replay.
+- Durable event identity, resumable source ingestion, and finite
+  `EventBus.execute()` operations.
+- Typed handler contexts, explicit retry/reject control flow, and CSV sources.
 
 ## Typing improvements
 
-- Generic `SimpleQueue`, `Job`, `Worker`, serializers, and typed EventBus
-  handlers.
+- Typed EventBus sources, handler contexts, and execution results.
 
 ## Dead-letter inspection and replay
 
-- `FailedMessage`, `FailedDelivery`, and stable `FailureReason` classifications.
+- Subscription-scoped `FailedDelivery` inspection and replay.
 
 ## Persisted database compatibility
 
@@ -39,7 +39,7 @@ See the [operational envelope](../docs/operational-envelope.md) and
 
 ## Replay guarantees and limitations
 
-Upgrade from v1.2.0 using the wheel matching the supported Python and platform
+Upgrade from v1.3.0 using the wheel matching the supported Python and platform
 matrix. Back up queue databases before upgrading and follow the documented
 compatibility procedure. Replay is at-least-once; handlers must remain idempotent
 when duplicate external effects matter.
