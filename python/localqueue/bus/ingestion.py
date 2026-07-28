@@ -808,6 +808,7 @@ class _ClaimedExecutionIngestion:
     generation: str | None
     version: int | None
     fingerprint: str
+    operation_id: str | None = None
 
 
 async def _run_claimed_execution_ingestion(
@@ -857,6 +858,11 @@ async def _run_claimed_execution_ingestion(
                         claimed.receipt,
                         dispatched,
                         unrouted,
+                        *(
+                            (claimed.operation_id,)
+                            if claimed.operation_id is not None
+                            else ()
+                        ),
                     )
                 )
                 try:

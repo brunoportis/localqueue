@@ -97,6 +97,34 @@ jobs:
           pyrefly check --progress-bar no
           python scripts/check_negative_typing.py
 
+  contact-import-example:
+    name: Contact-import ASGI end-to-end example
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+
+      - name: Build localqueue and run the contact-import tests
+        shell: bash
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          python -m pip install --upgrade \
+            "maturin>=1.14,<2" \
+            "pytest>=8,<10" \
+            "fastapi>=0.115,<1" \
+            "httpx>=0.28,<1" \
+            "lmdb>=1.7,<2"
+          maturin develop --locked
+          pytest -q examples/contact_import/tests
+
   explicit-cpython-paths:
     name: Explicit CPython paths (${{ matrix.os }})
     strategy:

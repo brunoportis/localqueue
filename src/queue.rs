@@ -1,12 +1,17 @@
 use pyo3::prelude::*;
 use rusqlite::{params, Connection, TransactionBehavior};
-use std::sync::MutexGuard;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::backup::{create as create_backup, BackupSnapshot};
 use crate::diagnostics::{collect as collect_diagnostics, DiagnosticsSnapshot};
 use crate::error::QueueError;
 use crate::integrity::{check as check_integrity, IntegrityCheckSnapshot};
-use crate::storage::{now_ms, CapacityPolicy, CheckpointUpdate, EnqueueEntry, Storage};
+use crate::storage::{
+    now_ms, retry_transient_write, retry_transient_write_until, CapacityPolicy, CheckpointUpdate,
+    EnqueueEntry, Storage,
+};
 
 pub const STATUS_READY: i64 = 0;
 pub const STATUS_LEASED: i64 = 1;
@@ -124,6 +129,8 @@ pub struct NativeQueue {
     queue: String,
     max_attempts: i64,
     max_pending_jobs: Option<i64>,
+    closing: Arc<AtomicBool>,
+    execution_operations: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
 #[pymethods]
@@ -148,6 +155,8 @@ impl NativeQueue {
             queue: queue.to_string(),
             max_attempts,
             max_pending_jobs,
+            closing: Arc::new(AtomicBool::new(false)),
+            execution_operations: Mutex::new(HashMap::new()),
         })
     }
 
@@ -408,13 +417,15 @@ impl NativeQueue {
                     items_committed,
                 },
             );
-            let (outcomes, commit) = self.storage.enqueue_batch_outcomes_with_checkpoint(
-                &entries,
-                self.max_attempts,
-                &policies,
-                None,
-                update.as_ref(),
-            )?;
+            let (outcomes, commit) = retry_transient_write(|| {
+                self.storage.enqueue_batch_outcomes_with_checkpoint(
+                    &entries,
+                    self.max_attempts,
+                    &policies,
+                    None,
+                    update.as_ref(),
+                )
+            })?;
             Ok((
                 outcomes
                     .into_iter()
@@ -487,16 +498,17 @@ impl NativeQueue {
                     items_committed,
                 },
             );
-            let (outcomes, commit) = self
-                .storage
-                .enqueue_batch_outcomes_with_checkpoint_and_execution(
-                    &entries,
-                    self.max_attempts,
-                    &policies,
-                    None,
-                    update.as_ref(),
-                    execution_id.as_deref(),
-                )?;
+            let (outcomes, commit) = retry_transient_write(|| {
+                self.storage
+                    .enqueue_batch_outcomes_with_checkpoint_and_execution(
+                        &entries,
+                        self.max_attempts,
+                        &policies,
+                        None,
+                        update.as_ref(),
+                        execution_id.as_deref(),
+                    )
+            })?;
             Ok((
                 outcomes
                     .into_iter()
@@ -506,6 +518,37 @@ impl NativeQueue {
                 commit.map(|commit| commit.version),
             ))
         })
+    }
+
+    /// Register one finite-execution cancellation handle.  This is separate
+    /// from queue closure: cancelling one EventBus.execute must not affect
+    /// other executions using this NativeQueue.
+    #[pyo3(name = "_execution_operation_open")]
+    pub fn execution_operation_open(&self, operation_id: String) -> PyResult<()> {
+        let mut operations = self
+            .execution_operations
+            .lock()
+            .map_err(|_| QueueError::Closed)?;
+        operations.insert(operation_id, Arc::new(AtomicBool::new(false)));
+        Ok(())
+    }
+
+    #[pyo3(name = "_execution_operation_cancel")]
+    pub fn execution_operation_cancel(&self, operation_id: String) -> PyResult<()> {
+        if let Some(cancelled) = self.execution_operation(&operation_id)? {
+            cancelled.store(true, Ordering::Release);
+        }
+        Ok(())
+    }
+
+    #[pyo3(name = "_execution_operation_close")]
+    pub fn execution_operation_close(&self, operation_id: String) -> PyResult<()> {
+        let mut operations = self
+            .execution_operations
+            .lock()
+            .map_err(|_| QueueError::Closed)?;
+        operations.remove(&operation_id);
+        Ok(())
     }
 
     #[pyo3(name = "_execution_create")]
@@ -518,12 +561,14 @@ impl NativeQueue {
         checkpoint_name: Option<String>,
     ) -> PyResult<()> {
         py.detach(move || {
-            Ok(self.storage.execution_create(
-                &execution_id,
-                &bus_name,
-                &source_name,
-                checkpoint_name.as_deref(),
-            )?)
+            Ok(retry_transient_write(|| {
+                self.storage.execution_create(
+                    &execution_id,
+                    &bus_name,
+                    &source_name,
+                    checkpoint_name.as_deref(),
+                )
+            })?)
         })
     }
 
@@ -558,9 +603,9 @@ impl NativeQueue {
         execution_id: String,
     ) -> PyResult<bool> {
         py.detach(move || {
-            Ok(self
-                .storage
-                .execution_mark_source_completed(&execution_id)?)
+            Ok(retry_transient_write(|| {
+                self.storage.execution_mark_source_completed(&execution_id)
+            })?)
         })
     }
 
@@ -582,7 +627,7 @@ impl NativeQueue {
         })
     }
 
-    #[pyo3(name = "_execution_open")]
+    #[pyo3(name = "_execution_open", signature = (candidate, bus, source, checkpoint, fingerprint, operation_id = None))]
     #[allow(clippy::too_many_arguments)]
     pub fn execution_open(
         &self,
@@ -592,30 +637,48 @@ impl NativeQueue {
         source: String,
         checkpoint: String,
         fingerprint: String,
+        operation_id: Option<String>,
     ) -> PyResult<(String, bool)> {
+        let cancelled = self.optional_execution_operation(operation_id.as_deref())?;
         py.detach(move || {
-            Ok(self.storage.execution_open(
-                &candidate,
-                &bus,
-                &source,
-                &checkpoint,
-                &fingerprint,
-                &fingerprint,
+            Ok(retry_transient_write_until(
+                || {
+                    self.storage.execution_open(
+                        &candidate,
+                        &bus,
+                        &source,
+                        &checkpoint,
+                        &fingerprint,
+                        &fingerprint,
+                    )
+                },
+                || {
+                    cancelled
+                        .as_ref()
+                        .is_some_and(|flag| flag.load(Ordering::Acquire))
+                },
             )?)
         })
     }
-    #[pyo3(name = "_execution_claim_source")]
+    #[pyo3(name = "_execution_claim_source", signature = (id, receipt, lease_ms, operation_id = None))]
     pub fn execution_claim_source(
         &self,
         py: Python<'_>,
         id: String,
         receipt: String,
         lease_ms: i64,
+        operation_id: Option<String>,
     ) -> PyResult<ExecutionSourceClaimTuple> {
+        let cancelled = self.optional_execution_operation(operation_id.as_deref())?;
         py.detach(move || {
-            let claim = self
-                .storage
-                .execution_claim_source(&id, &receipt, lease_ms)?;
+            let claim = retry_transient_write_until(
+                || self.storage.execution_claim_source(&id, &receipt, lease_ms),
+                || {
+                    cancelled
+                        .as_ref()
+                        .is_some_and(|flag| flag.load(Ordering::Acquire))
+                },
+            )?;
             Ok((
                 claim.claimed,
                 claim.cursor,
@@ -625,40 +688,71 @@ impl NativeQueue {
             ))
         })
     }
-    #[pyo3(name = "_execution_extend_source_lease")]
+    #[pyo3(name = "_execution_extend_source_lease", signature = (id, receipt, lease_ms, operation_id = None))]
     pub fn execution_extend_source_lease(
         &self,
         py: Python<'_>,
         id: String,
         receipt: String,
         lease_ms: i64,
+        operation_id: Option<String>,
     ) -> PyResult<i64> {
+        let cancelled = self.optional_execution_operation(operation_id.as_deref())?;
         py.detach(move || {
-            Ok(self
-                .storage
-                .execution_extend_source_lease(&id, &receipt, lease_ms)?)
+            Ok(retry_transient_write_until(
+                || {
+                    self.storage
+                        .execution_extend_source_lease(&id, &receipt, lease_ms)
+                },
+                || {
+                    cancelled
+                        .as_ref()
+                        .is_some_and(|flag| flag.load(Ordering::Acquire))
+                },
+            )?)
         })
     }
-    #[pyo3(name = "_execution_release_source_lease")]
+    #[pyo3(name = "_execution_release_source_lease", signature = (id, receipt, operation_id = None))]
     pub fn execution_release_source_lease(
         &self,
         py: Python<'_>,
         id: String,
         receipt: String,
+        operation_id: Option<String>,
     ) -> PyResult<bool> {
-        py.detach(move || Ok(self.storage.execution_release_source_lease(&id, &receipt)?))
+        let cancelled = self.optional_execution_operation(operation_id.as_deref())?;
+        py.detach(move || {
+            Ok(retry_transient_write_until(
+                || self.storage.execution_release_source_lease(&id, &receipt),
+                || {
+                    cancelled
+                        .as_ref()
+                        .is_some_and(|flag| flag.load(Ordering::Acquire))
+                },
+            )?)
+        })
     }
-    #[pyo3(name = "_execution_mark_source_completed_claimed")]
+    #[pyo3(name = "_execution_mark_source_completed_claimed", signature = (id, receipt, operation_id = None))]
     pub fn execution_mark_source_completed_claimed(
         &self,
         py: Python<'_>,
         id: String,
         receipt: String,
+        operation_id: Option<String>,
     ) -> PyResult<bool> {
+        let cancelled = self.optional_execution_operation(operation_id.as_deref())?;
         py.detach(move || {
-            Ok(self
-                .storage
-                .execution_mark_source_completed_claimed(&id, &receipt)?)
+            Ok(retry_transient_write_until(
+                || {
+                    self.storage
+                        .execution_mark_source_completed_claimed(&id, &receipt)
+                },
+                || {
+                    cancelled
+                        .as_ref()
+                        .is_some_and(|flag| flag.load(Ordering::Acquire))
+                },
+            )?)
         })
     }
     #[pyo3(name = "_execution_snapshot")]
@@ -700,11 +794,27 @@ impl NativeQueue {
         })
     }
     #[pyo3(name = "_execution_finalize_if_complete")]
-    pub fn execution_finalize_if_complete(&self, py: Python<'_>, id: String) -> PyResult<bool> {
-        py.detach(move || Ok(self.storage.execution_finalize_if_complete(&id)?))
+    #[pyo3(signature = (id, operation_id = None))]
+    pub fn execution_finalize_if_complete(
+        &self,
+        py: Python<'_>,
+        id: String,
+        operation_id: Option<String>,
+    ) -> PyResult<bool> {
+        let cancelled = self.optional_execution_operation(operation_id.as_deref())?;
+        py.detach(move || {
+            Ok(retry_transient_write_until(
+                || self.storage.execution_finalize_if_complete(&id),
+                || {
+                    cancelled
+                        .as_ref()
+                        .is_some_and(|flag| flag.load(Ordering::Acquire))
+                },
+            )?)
+        })
     }
 
-    #[pyo3(name = "_enqueue_batch_with_claimed_execution")]
+    #[pyo3(name = "_enqueue_batch_with_claimed_execution", signature = (entries, capacity, checkpoint, execution_id, receipt, dispatched, unrouted, operation_id = None))]
     #[allow(clippy::too_many_arguments)]
     pub fn enqueue_batch_with_claimed_execution(
         &self,
@@ -716,7 +826,9 @@ impl NativeQueue {
         receipt: String,
         dispatched: i64,
         unrouted: i64,
+        operation_id: Option<String>,
     ) -> PyResult<(EnqueueOutcomes, String, i64)> {
+        let cancelled = self.optional_execution_operation(operation_id.as_deref())?;
         py.detach(move || {
             let entries: Vec<EnqueueEntry<'_>> = entries
                 .iter()
@@ -749,16 +861,25 @@ impl NativeQueue {
             };
             let mut guard = self.storage.connection();
             let conn = guard.as_mut().ok_or(QueueError::Closed)?;
-            let (outcomes, commit) = crate::storage::enqueue_batch_claimed_execution(
-                conn,
-                &entries,
-                self.max_attempts,
-                &policies,
-                &update,
-                &execution_id,
-                &receipt,
-                dispatched,
-                unrouted,
+            let (outcomes, commit) = retry_transient_write_until(
+                || {
+                    crate::storage::enqueue_batch_claimed_execution(
+                        conn,
+                        &entries,
+                        self.max_attempts,
+                        &policies,
+                        &update,
+                        &execution_id,
+                        &receipt,
+                        dispatched,
+                        unrouted,
+                    )
+                },
+                || {
+                    cancelled
+                        .as_ref()
+                        .is_some_and(|flag| flag.load(Ordering::Acquire))
+                },
             )?;
             Ok((
                 outcomes.into_iter().map(|o| (o.id, o.inserted)).collect(),
@@ -832,13 +953,19 @@ impl NativeQueue {
                     dedup_fingerprint: None,
                 })
                 .collect();
-            Ok(self.storage.ack_and_fanout(
-                &self.queue,
-                id,
-                &receipt,
-                &entries,
-                self.max_attempts,
-            )?)
+            Ok(self
+                .storage
+                .ack_and_fanout_outcomes_until(
+                    &self.queue,
+                    id,
+                    &receipt,
+                    &entries,
+                    self.max_attempts,
+                    || self.closing.load(Ordering::Acquire),
+                )?
+                .into_iter()
+                .map(|outcome| outcome.id)
+                .collect())
         })
     }
 
@@ -867,7 +994,14 @@ impl NativeQueue {
                 .collect();
             Ok(self
                 .storage
-                .ack_and_fanout_outcomes(&self.queue, id, &receipt, &entries, self.max_attempts)?
+                .ack_and_fanout_outcomes_until(
+                    &self.queue,
+                    id,
+                    &receipt,
+                    &entries,
+                    self.max_attempts,
+                    || self.closing.load(Ordering::Acquire),
+                )?
                 .into_iter()
                 .map(|outcome| (outcome.id, outcome.inserted))
                 .collect())
@@ -1057,39 +1191,45 @@ impl NativeQueue {
     pub fn ack(&self, py: Python<'_>, id: i64, receipt: &str) -> PyResult<()> {
         let receipt = receipt.to_owned();
         py.detach(move || {
-            let now = now_ms();
-            let mut guard = self.conn()?;
-            let conn = guard.as_mut().unwrap();
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(QueueError::from)?;
-            let changed = tx
-                .execute(
-                    "UPDATE messages SET
+            let mut guard = self.storage.connection();
+            let conn = guard.as_mut().ok_or(QueueError::Closed)?;
+            retry_transient_write_until(
+                || {
+                    let now = now_ms();
+                    let tx = conn
+                        .transaction_with_behavior(TransactionBehavior::Immediate)
+                        .map_err(QueueError::from)?;
+                    let changed = tx
+                        .execute(
+                            "UPDATE messages SET
                     status = ?1,
                     receipt = NULL,
                     lease_until = NULL,
                     updated_at = ?2
                  WHERE id = ?3 AND queue = ?4 AND status = ?5
                     AND receipt = ?6 AND lease_until > ?7",
-                    params![
-                        STATUS_ACKED,
-                        now,
-                        id,
-                        self.queue,
-                        STATUS_LEASED,
-                        receipt,
-                        now
-                    ],
-                )
-                .map_err(QueueError::from)?;
-            if changed == 0 {
-                return Err(QueueError::LeaseExpired.into());
-            }
-            #[cfg(feature = "__crash_test")]
-            crate::failpoints::hit(crate::failpoints::Failpoint::AckBeforeCommit);
-            tx.commit().map_err(QueueError::from)?;
-            Ok(())
+                            params![
+                                STATUS_ACKED,
+                                now,
+                                id,
+                                self.queue,
+                                STATUS_LEASED,
+                                receipt,
+                                now
+                            ],
+                        )
+                        .map_err(QueueError::from)?;
+                    if changed == 0 {
+                        return Err(QueueError::LeaseExpired);
+                    }
+                    #[cfg(feature = "__crash_test")]
+                    crate::failpoints::hit(crate::failpoints::Failpoint::AckBeforeCommit);
+                    tx.commit().map_err(QueueError::from)?;
+                    Ok(())
+                },
+                || self.closing.load(Ordering::Acquire),
+            )
+            .map_err(Into::into)
         })
     }
 
@@ -1107,47 +1247,49 @@ impl NativeQueue {
         let last_error = last_error.map(str::to_owned);
         let failure_reason = failure_reason.map(str::to_owned);
         py.detach(move || {
-            let now = now_ms();
-            let mut guard = self.conn()?;
-            let conn = guard.as_mut().unwrap();
+            let mut guard = self.storage.connection();
+            let conn = guard.as_mut().ok_or(QueueError::Closed)?;
+            retry_transient_write_until(
+                || {
+                    let now = now_ms();
 
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(QueueError::from)?;
-            let attempt_limits: Option<(i64, i64)> = tx
-                .query_row(
-                    "SELECT attempts, max_attempts FROM messages
+                    let tx = conn
+                        .transaction_with_behavior(TransactionBehavior::Immediate)
+                        .map_err(QueueError::from)?;
+                    let attempt_limits: Option<(i64, i64)> = tx
+                        .query_row(
+                            "SELECT attempts, max_attempts FROM messages
                  WHERE id = ?1 AND queue = ?2 AND status = ?3
                     AND receipt = ?4 AND lease_until > ?5",
-                    params![id, self.queue, STATUS_LEASED, receipt, now],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()
-                .map_err(QueueError::from)?;
-            let (attempts, max_attempts) = match attempt_limits {
-                Some(limits) => limits,
-                None => return Err(QueueError::LeaseExpired.into()),
-            };
+                            params![id, self.queue, STATUS_LEASED, receipt, now],
+                            |row| Ok((row.get(0)?, row.get(1)?)),
+                        )
+                        .optional()
+                        .map_err(QueueError::from)?;
+                    let (attempts, max_attempts) = match attempt_limits {
+                        Some(limits) => limits,
+                        None => return Err(QueueError::LeaseExpired),
+                    };
 
-            let new_status = if attempts >= max_attempts {
-                STATUS_FAILED
-            } else {
-                STATUS_READY
-            };
-            let available_at = if new_status == STATUS_READY {
-                checked_available_at(now, delay_ms)?
-            } else {
-                now
-            };
-            let terminal_reason = if new_status == STATUS_FAILED {
-                Some(failure_reason.as_deref().unwrap_or("retries_exhausted"))
-            } else {
-                None
-            };
+                    let new_status = if attempts >= max_attempts {
+                        STATUS_FAILED
+                    } else {
+                        STATUS_READY
+                    };
+                    let available_at = if new_status == STATUS_READY {
+                        checked_available_at(now, delay_ms)?
+                    } else {
+                        now
+                    };
+                    let terminal_reason = if new_status == STATUS_FAILED {
+                        Some(failure_reason.as_deref().unwrap_or("retries_exhausted"))
+                    } else {
+                        None
+                    };
 
-            let changed = tx
-                .execute(
-                    "UPDATE messages SET
+                    let changed = tx
+                        .execute(
+                            "UPDATE messages SET
                     status = ?1,
                     available_at = ?2,
                     receipt = NULL,
@@ -1158,28 +1300,32 @@ impl NativeQueue {
                     updated_at = ?5
                  WHERE id = ?6 AND queue = ?7 AND status = ?8
                     AND receipt = ?9 AND lease_until > ?10",
-                    params![
-                        new_status,
-                        available_at,
-                        last_error,
-                        terminal_reason,
-                        now,
-                        id,
-                        self.queue,
-                        STATUS_LEASED,
-                        receipt,
-                        now,
-                    ],
-                )
-                .map_err(QueueError::from)?;
+                            params![
+                                new_status,
+                                available_at,
+                                last_error,
+                                terminal_reason,
+                                now,
+                                id,
+                                self.queue,
+                                STATUS_LEASED,
+                                receipt,
+                                now,
+                            ],
+                        )
+                        .map_err(QueueError::from)?;
 
-            #[cfg(feature = "__crash_test")]
-            crate::failpoints::hit(crate::failpoints::Failpoint::NackBeforeCommit);
-            tx.commit().map_err(QueueError::from)?;
-            if changed == 0 {
-                return Err(QueueError::LeaseExpired.into());
-            }
-            Ok(())
+                    #[cfg(feature = "__crash_test")]
+                    crate::failpoints::hit(crate::failpoints::Failpoint::NackBeforeCommit);
+                    tx.commit().map_err(QueueError::from)?;
+                    if changed == 0 {
+                        return Err(QueueError::LeaseExpired);
+                    }
+                    Ok(())
+                },
+                || self.closing.load(Ordering::Acquire),
+            )
+            .map_err(Into::into)
         })
     }
 
@@ -1198,15 +1344,17 @@ impl NativeQueue {
         let failure_reason = failure_reason.map(str::to_owned);
         let failure_category = failure_category.map(str::to_owned);
         py.detach(move || {
-            let now = now_ms();
-            let mut guard = self.conn()?;
-            let conn = guard.as_mut().unwrap();
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(QueueError::from)?;
-            let changed = tx
-                .execute(
-                    "UPDATE messages SET
+            let mut guard = self.storage.connection();
+            let conn = guard.as_mut().ok_or(QueueError::Closed)?;
+            retry_transient_write_until(
+                || {
+                    let now = now_ms();
+                    let tx = conn
+                        .transaction_with_behavior(TransactionBehavior::Immediate)
+                        .map_err(QueueError::from)?;
+                    let changed = tx
+                        .execute(
+                            "UPDATE messages SET
                     status = ?1,
                     receipt = NULL,
                     lease_until = NULL,
@@ -1216,27 +1364,31 @@ impl NativeQueue {
                     updated_at = ?5
                  WHERE id = ?6 AND queue = ?7 AND status = ?8
                     AND receipt = ?9 AND lease_until > ?10",
-                    params![
-                        STATUS_FAILED,
-                        last_error,
-                        failure_reason,
-                        failure_category,
-                        now,
-                        id,
-                        self.queue,
-                        STATUS_LEASED,
-                        receipt,
-                        now
-                    ],
-                )
-                .map_err(QueueError::from)?;
-            if changed == 0 {
-                return Err(QueueError::LeaseExpired.into());
-            }
-            #[cfg(feature = "__crash_test")]
-            crate::failpoints::hit(crate::failpoints::Failpoint::FailBeforeCommit);
-            tx.commit().map_err(QueueError::from)?;
-            Ok(())
+                            params![
+                                STATUS_FAILED,
+                                last_error,
+                                failure_reason,
+                                failure_category,
+                                now,
+                                id,
+                                self.queue,
+                                STATUS_LEASED,
+                                receipt,
+                                now
+                            ],
+                        )
+                        .map_err(QueueError::from)?;
+                    if changed == 0 {
+                        return Err(QueueError::LeaseExpired);
+                    }
+                    #[cfg(feature = "__crash_test")]
+                    crate::failpoints::hit(crate::failpoints::Failpoint::FailBeforeCommit);
+                    tx.commit().map_err(QueueError::from)?;
+                    Ok(())
+                },
+                || self.closing.load(Ordering::Acquire),
+            )
+            .map_err(Into::into)
         })
     }
 
@@ -1249,32 +1401,38 @@ impl NativeQueue {
     ) -> PyResult<i64> {
         let receipt = receipt.to_owned();
         py.detach(move || {
-            let now = now_ms();
-            let new_lease_until = now + extend_ms;
-            let mut guard = self.conn()?;
-            let conn = guard.as_mut().unwrap();
-            let changed = conn
-                .execute(
-                    "UPDATE messages SET
+            let mut guard = self.storage.connection();
+            let conn = guard.as_mut().ok_or(QueueError::Closed)?;
+            retry_transient_write_until(
+                || {
+                    let now = now_ms();
+                    let new_lease_until = now + extend_ms;
+                    let changed = conn
+                        .execute(
+                            "UPDATE messages SET
                     lease_until = ?1,
                     updated_at = ?2
                  WHERE id = ?3 AND queue = ?4 AND status = ?5
                     AND receipt = ?6 AND lease_until > ?7",
-                    params![
-                        new_lease_until,
-                        now,
-                        id,
-                        self.queue,
-                        STATUS_LEASED,
-                        receipt,
-                        now
-                    ],
-                )
-                .map_err(QueueError::from)?;
-            if changed == 0 {
-                return Err(QueueError::LeaseExpired.into());
-            }
-            Ok(new_lease_until)
+                            params![
+                                new_lease_until,
+                                now,
+                                id,
+                                self.queue,
+                                STATUS_LEASED,
+                                receipt,
+                                now
+                            ],
+                        )
+                        .map_err(QueueError::from)?;
+                    if changed == 0 {
+                        return Err(QueueError::LeaseExpired);
+                    }
+                    Ok(new_lease_until)
+                },
+                || self.closing.load(Ordering::Acquire),
+            )
+            .map_err(Into::into)
         })
     }
 
@@ -1483,6 +1641,7 @@ impl NativeQueue {
     }
 
     pub fn close(&self, py: Python<'_>) -> PyResult<()> {
+        self.closing.store(true, Ordering::Release);
         py.detach(|| {
             self.storage.close()?;
             Ok(())
@@ -1491,6 +1650,34 @@ impl NativeQueue {
 }
 
 impl NativeQueue {
+    fn execution_operation(
+        &self,
+        operation_id: &str,
+    ) -> Result<Option<Arc<AtomicBool>>, QueueError> {
+        let operations = self
+            .execution_operations
+            .lock()
+            .map_err(|_| QueueError::Closed)?;
+        Ok(operations.get(operation_id).cloned())
+    }
+
+    fn required_execution_operation(
+        &self,
+        operation_id: &str,
+    ) -> Result<Arc<AtomicBool>, QueueError> {
+        self.execution_operation(operation_id)?
+            .ok_or(QueueError::Closed)
+    }
+
+    fn optional_execution_operation(
+        &self,
+        operation_id: Option<&str>,
+    ) -> Result<Option<Arc<AtomicBool>>, QueueError> {
+        operation_id
+            .map(|id| self.required_execution_operation(id))
+            .transpose()
+    }
+
     fn capacity_policy(&self) -> Option<CapacityPolicy<'_>> {
         self.max_pending_jobs
             .map(|max_pending_jobs| CapacityPolicy {

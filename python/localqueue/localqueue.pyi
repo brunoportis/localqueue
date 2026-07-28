@@ -141,6 +141,9 @@ class NativeQueue:
     def _execution_delivery_states(
         self, execution_id: str
     ) -> tuple[int, int, int, int, int]: ...
+    def _execution_operation_open(self, operation_id: str) -> None: ...
+    def _execution_operation_cancel(self, operation_id: str) -> None: ...
+    def _execution_operation_close(self, operation_id: str) -> None: ...
     def _execution_open(
         self,
         candidate: str,
@@ -148,18 +151,23 @@ class NativeQueue:
         source: str,
         checkpoint: str,
         fingerprint: str,
+        operation_id: Optional[str] = None,
     ) -> tuple[str, bool]: ...
     def _execution_claim_source(
-        self, id: str, receipt: str, lease_ms: int
+        self, id: str, receipt: str, lease_ms: int, operation_id: Optional[str] = None
     ) -> tuple[bool, Optional[str], Optional[str], Optional[str], Optional[int]]: ...
     def _execution_extend_source_lease(
-        self, id: str, receipt: str, lease_ms: int
+        self, id: str, receipt: str, lease_ms: int, operation_id: Optional[str] = None
     ) -> int: ...
-    def _execution_release_source_lease(self, id: str, receipt: str) -> bool: ...
-    def _execution_mark_source_completed_claimed(
-        self, id: str, receipt: str
+    def _execution_release_source_lease(
+        self, id: str, receipt: str, operation_id: Optional[str] = None
     ) -> bool: ...
-    def _execution_finalize_if_complete(self, id: str) -> bool: ...
+    def _execution_mark_source_completed_claimed(
+        self, id: str, receipt: str, operation_id: Optional[str] = None
+    ) -> bool: ...
+    def _execution_finalize_if_complete(
+        self, id: str, operation_id: Optional[str] = None
+    ) -> bool: ...
     def _execution_snapshot(self, id: str) -> tuple[object, ...]: ...
     def _enqueue_batch_with_claimed_execution(
         self,
@@ -172,6 +180,7 @@ class NativeQueue:
         receipt: str,
         dispatched: int,
         unrouted: int,
+        operation_id: Optional[str] = None,
     ) -> tuple[list[tuple[int, bool]], str, int]: ...
     def _checkpoint_inspect(
         self,

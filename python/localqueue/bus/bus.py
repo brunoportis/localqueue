@@ -1055,7 +1055,7 @@ class EventBus(Generic[ContextT]):
         return IngestionCheckpoint(self, name)
 
     async def _open_execution(
-        self, source: SourceDefinition[ItemT, EventT]
+        self, source: SourceDefinition[ItemT, EventT], operation_id: str | None = None
     ) -> _ExecutionHandle:
         """Open the private durable finite execution for a declared source."""
         from localqueue.bus.execution import _ExecutionHandle
@@ -1071,14 +1071,18 @@ class EventBus(Generic[ContextT]):
         if not isinstance(fingerprint, str) or not fingerprint:
             raise ValueError("finite execution requires a non-empty source fingerprint")
         source.config._freeze()
+        args = (
+            str(UUID(int=uuid4().int)),
+            self.name,
+            source.name,
+            source.checkpoint,
+            fingerprint,
+        )
+        if operation_id is not None:
+            args = (*args, operation_id)
         try:
             execution_id, created = await asyncio.to_thread(
-                self._get_native()._execution_open,
-                str(UUID(int=uuid4().int)),
-                self.name,
-                source.name,
-                source.checkpoint,
-                fingerprint,
+                self._get_native()._execution_open, *args
             )
         except _native.CheckpointConflict as error:
             raise SourceChanged(
@@ -1102,21 +1106,37 @@ class EventBus(Generic[ContextT]):
         from localqueue.bus.execution import _to_execution_result
 
         validated_timeout = self._validate_execution_timeout(timeout)
-        handle = await self._open_execution(source)
         runner: asyncio.Task[None] | None = None
         execution: asyncio.Task[_ExecutionSnapshot] | None = None
+        operation_id = str(uuid4())
+        completed = False
+        await asyncio.to_thread(
+            self._get_native()._execution_operation_open, operation_id
+        )
+
         try:
-            if validated_timeout is None:
+            # Opening/resuming is durable setup, not part of the finite
+            # execution timeout.  It still observes the operation token.
+            handle = await self._open_execution(source, operation_id)
+
+            async def invoke() -> "ExecutionResult":
+                nonlocal runner, execution
                 runner = await self._acquire_execute_runner()
-                execution = asyncio.create_task(handle.run())
+                execution = asyncio.create_task(handle.run(operation_id=operation_id))
                 snapshot = await self._wait_for_execution(execution, runner)
+                return _to_execution_result(snapshot, resumed=handle.resumed)
+
+            if validated_timeout is None:
+                result = await invoke()
             else:
-                async with asyncio.timeout(validated_timeout):
-                    runner = await self._acquire_execute_runner()
-                    execution = asyncio.create_task(handle.run())
-                    snapshot = await self._wait_for_execution(execution, runner)
-            return _to_execution_result(snapshot, resumed=handle.resumed)
+                result = await asyncio.wait_for(invoke(), validated_timeout)
+            completed = True
+            return result
         finally:
+            if not completed:
+                await asyncio.to_thread(
+                    self._get_native()._execution_operation_cancel, operation_id
+                )
             if execution is not None and not execution.done():
                 execution.cancel()
                 try:
@@ -1124,6 +1144,9 @@ class EventBus(Generic[ContextT]):
                 except BaseException:
                     pass
             await self._release_execute_runner(runner)
+            await asyncio.to_thread(
+                self._get_native()._execution_operation_close, operation_id
+            )
 
     @staticmethod
     def _validate_execution_timeout(timeout: object) -> float | None:

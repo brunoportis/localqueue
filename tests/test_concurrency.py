@@ -48,6 +48,48 @@ def producer_process(path, name, num_jobs, result_queue):
 
 
 class TestConcurrency:
+    @pytest.mark.parametrize("transition", ["ack", "nack", "fail"])
+    def test_delivery_transition_retries_external_writer_lock(
+        self, tmp_path, transition
+    ):
+        path = tmp_path / transition
+        queue = SimpleQueue(str(path), delivery=DeliveryPolicy(lease_seconds=15.0))
+        queue.put({"id": 1})
+        job = queue.get(block=False)
+        blocker = sqlite3.connect(path / "localqueue.db", timeout=5.0)
+        blocker.execute("BEGIN IMMEDIATE")
+        error = []
+
+        def apply_transition():
+            try:
+                getattr(queue, transition)(job)
+            except BaseException as exc:  # pragma: no cover - assertion below
+                error.append(exc)
+
+        thread = threading.Thread(target=apply_transition)
+        thread.start()
+        try:
+            time.sleep(5.2)
+            blocker.rollback()
+        finally:
+            blocker.close()
+        thread.join(timeout=10)
+
+        assert error == []
+        assert not thread.is_alive()
+        stats = queue.stats()
+        assert (
+            stats[
+                "acked"
+                if transition == "ack"
+                else "failed"
+                if transition == "fail"
+                else "ready"
+            ]
+            == 1
+        )
+        queue.close()
+
     def test_empty_get_does_not_wait_for_native_writer(self, tmp_path):
         path = tmp_path / "idle-reader"
         writer = SimpleQueue(str(path), name="writer")

@@ -15,6 +15,9 @@ use crate::schema::{
 };
 
 pub(crate) const BUSY_TIMEOUT_MS: u64 = 5_000;
+const WRITE_RETRY_BUDGET: Duration = Duration::from_secs(30);
+const WRITE_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(5);
+const WRITE_RETRY_MAX_DELAY: Duration = Duration::from_millis(100);
 
 /// An item in a batch insertion. The payload is borrowed to avoid copying data
 /// across the PyO3 boundary.
@@ -627,23 +630,34 @@ impl Storage {
         Ok(changed == 1)
     }
 
-    pub fn ack_and_fanout(
+    pub fn ack_and_fanout_outcomes_until(
         &self,
         queue_name: &str,
         id: i64,
         receipt: &str,
         entries: &[EnqueueEntry<'_>],
         max_attempts: i64,
-    ) -> Result<Vec<i64>> {
-        Ok(self
-            .ack_and_fanout_outcomes(queue_name, id, receipt, entries, max_attempts)?
-            .into_iter()
-            .map(|outcome| outcome.id)
-            .collect())
+        cancelled: impl Fn() -> bool,
+    ) -> Result<Vec<EnqueueOutcome>> {
+        let mut guard = self.connection();
+        let conn = guard.as_mut().ok_or(QueueError::Closed)?;
+        retry_transient_write_until(
+            || {
+                Self::ack_and_fanout_on_connection(
+                    conn,
+                    queue_name,
+                    id,
+                    receipt,
+                    entries,
+                    max_attempts,
+                )
+            },
+            cancelled,
+        )
     }
 
-    pub fn ack_and_fanout_outcomes(
-        &self,
+    fn ack_and_fanout_on_connection(
+        conn: &mut Connection,
         queue_name: &str,
         id: i64,
         receipt: &str,
@@ -651,8 +665,6 @@ impl Storage {
         max_attempts: i64,
     ) -> Result<Vec<EnqueueOutcome>> {
         let now = now_ms();
-        let mut guard = self.connection();
-        let conn = guard.as_mut().ok_or(QueueError::Closed)?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let parent_executions = execution_memberships_for_message(&tx, id)?;
         let changed = tx.execute(
@@ -1492,6 +1504,49 @@ fn enable_wal(conn: &Connection) -> Result<()> {
     }
 }
 
+/// Retry a complete write transaction when another SQLite writer temporarily
+/// owns the database. The closure must create and commit its own transaction;
+/// a failed attempt is dropped before the next attempt starts.
+pub(crate) fn retry_transient_write<T>(mut operation: impl FnMut() -> Result<T>) -> Result<T> {
+    retry_transient_write_until(&mut operation, || false)
+}
+
+pub(crate) fn retry_transient_write_until<T>(
+    mut operation: impl FnMut() -> Result<T>,
+    cancelled: impl Fn() -> bool,
+) -> Result<T> {
+    let deadline = Instant::now() + WRITE_RETRY_BUDGET;
+    let mut delay = WRITE_RETRY_INITIAL_DELAY;
+
+    loop {
+        if cancelled() {
+            return Err(QueueError::Closed);
+        }
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(error) if is_transient_writer_contention(&error) && Instant::now() < deadline => {
+                let sleep_until = Instant::now() + delay;
+                while Instant::now() < sleep_until {
+                    if cancelled() {
+                        return Err(QueueError::Closed);
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                }
+                delay = (delay * 2).min(WRITE_RETRY_MAX_DELAY);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn is_transient_writer_contention(error: &QueueError) -> bool {
+    matches!(
+        error,
+        QueueError::Sqlite(rusqlite::Error::SqliteFailure(failure, _))
+            if matches!(failure.code, ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+    )
+}
+
 pub fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1509,6 +1564,63 @@ mod tests {
         let path = dir.path().join("test.db");
         let storage = Storage::new(path.to_str().unwrap(), false).unwrap();
         (dir, storage)
+    }
+
+    #[test]
+    fn retries_transient_writer_contention() {
+        let mut attempts = 0;
+
+        retry_transient_write(|| {
+            attempts += 1;
+            if attempts < 3 {
+                return Err(QueueError::Sqlite(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                    None,
+                )));
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(attempts, 3);
+    }
+
+    #[test]
+    fn enqueue_retries_a_writer_lock_until_the_batch_commits() {
+        let (directory, storage) = open_storage();
+        let path = directory.path().join("test.db");
+        let blocker = Connection::open(&path).unwrap();
+        blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+        {
+            let mut guard = storage.connection();
+            guard
+                .as_mut()
+                .unwrap()
+                .pragma_update(None, "busy_timeout", 1)
+                .unwrap();
+        }
+
+        let release = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            blocker.execute_batch("ROLLBACK").unwrap();
+        });
+        let entry = EnqueueEntry {
+            queue_name: "jobs",
+            payload: b"payload",
+            job_id: None,
+            dedup_key: None,
+            dedup_fingerprint: None,
+        };
+
+        let outcomes = retry_transient_write(|| {
+            storage.enqueue_batch_outcomes(std::slice::from_ref(&entry), 3, &[], None)
+        })
+        .unwrap();
+        release.join().unwrap();
+
+        assert_eq!(outcomes.len(), 1);
+        assert!(outcomes[0].inserted);
     }
 
     #[test]
@@ -1699,9 +1811,12 @@ mod tests {
             },
         ];
 
-        let ids = storage
-            .ack_and_fanout("origin", origin_id, "receipt", &targets, 4)
-            .unwrap();
+        let ids: Vec<i64> = storage
+            .ack_and_fanout_outcomes_until("origin", origin_id, "receipt", &targets, 4, || false)
+            .unwrap()
+            .into_iter()
+            .map(|outcome| outcome.id)
+            .collect();
 
         assert_eq!(ids.len(), 2);
         let mut guard = storage.connection();
@@ -1765,7 +1880,14 @@ mod tests {
         ];
 
         assert!(matches!(
-            storage.ack_and_fanout("origin", origin_id, "wrong", &targets, 3),
+            storage.ack_and_fanout_outcomes_until(
+                "origin",
+                origin_id,
+                "wrong",
+                &targets,
+                3,
+                || false
+            ),
             Err(QueueError::LeaseExpired)
         ));
 
@@ -1781,10 +1903,10 @@ mod tests {
         assert_eq!(new_count, 0);
         drop(guard);
 
-        let ids = storage
-            .ack_and_fanout("origin", origin_id, "valid", &targets, 3)
+        let outcomes = storage
+            .ack_and_fanout_outcomes_until("origin", origin_id, "valid", &targets, 3, || false)
             .unwrap();
-        assert_eq!(ids[0], existing_id);
+        assert_eq!(outcomes[0].id, existing_id);
     }
 
     #[test]
@@ -1830,7 +1952,7 @@ mod tests {
         ];
 
         assert!(storage
-            .ack_and_fanout("origin", origin_id, "receipt", &targets, 3)
+            .ack_and_fanout_outcomes_until("origin", origin_id, "receipt", &targets, 3, || false)
             .is_err());
 
         let mut guard = storage.connection();
