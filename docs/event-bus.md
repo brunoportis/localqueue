@@ -1039,6 +1039,22 @@ for handlers. `EventBus.execute()` is the full finite lifecycle. Both freeze
 the existing `SourceConfig` when they start. Neither closes the bus; the
 caller must still use `try/finally` and call `bus.close()`.
 
+For a complete CSV-to-HTTP application using an asynchronous handler context,
+idempotency keys, `422` rejection, and `429` retry delays, see
+[`examples/contact_import.py`](../examples/contact_import.py). It requires the
+separate HTTP client dependency:
+
+```bash
+uv add "localqueue[bus]" httpx
+```
+
+Generate matching synthetic input with Faker when developing locally:
+
+```bash
+uv add faker
+uv run python -m examples.generate_contacts_csv --count 5000
+```
+
 ### Resume identity and completion
 
 An execution is identified by bus/checkpoint/generation once a checkpoint has
