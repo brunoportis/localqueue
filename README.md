@@ -183,8 +183,8 @@ from localqueue.bus import (
 
 
 @event(identity=("import_id", "external_id"))
-class UserCreated(BaseEvent):
-    event_name = "user.created"
+class UserCreationRequested(BaseEvent):
+    event_name = "user.creation-requested"
 
     import_id: str
     external_id: str
@@ -194,8 +194,8 @@ class UserCreated(BaseEvent):
 bus = EventBus("./data")
 
 
-@bus.handler(UserCreated)
-async def create_user(event: UserCreated, ctx) -> None:
+@bus.handler(UserCreationRequested)
+async def create_user(event: UserCreationRequested, ctx) -> None:
     await api.create_user(
         external_id=event.external_id,
         name=event.name,
@@ -203,14 +203,14 @@ async def create_user(event: UserCreated, ctx) -> None:
     )
 
 
-creator = bus.subscription(UserCreated.event_name)
+creator = bus.subscription(UserCreationRequested.event_name)
 creator.config.concurrency = 50
 creator.config.retry = RetryPolicy.exponential(max_attempts=8)
 
 
 @bus.source(CsvSource("users.csv"), checkpoint="users:2026-07")
-def users(row: CsvRow) -> UserCreated:
-    return UserCreated(
+def users(row: CsvRow) -> UserCreationRequested:
+    return UserCreationRequested(
         import_id="2026-07",
         external_id=row["external_id"],
         name=row["name"],

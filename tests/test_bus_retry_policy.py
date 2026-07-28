@@ -263,6 +263,54 @@ def test_conflicting_policy_fails_without_partial_registration(tmp_path) -> None
         bus.close()
 
 
+def test_registry_conflict_does_not_commit_subscription_configuration(
+    tmp_path,
+) -> None:
+    class EventClassA(BaseEvent):
+        event_name = "shared.event-type"
+
+    class EventClassB(BaseEvent):
+        event_name = "shared.event-type"
+
+    class ValidEvent(BaseEvent):
+        event_name = "valid.event-type"
+
+    registry = EventRegistry()
+    registry.register(EventClassA)
+    bus = EventBus(str(tmp_path), concurrency=2, registry=registry)
+    original_topology = bus.topology
+    failed_retry = RetryPolicy.fixed(max_attempts=3, delay=1)
+
+    try:
+        with pytest.raises(ValueError, match="already registered"):
+            bus.handler(
+                EventClassB,
+                lambda event: None,
+                subscription="workers",
+                concurrency=7,
+                retry=failed_retry,
+            )
+
+        assert bus.topology is original_topology
+        assert bus._handlers == {}
+        assert bus._concurrency_for("workers") == 2
+        assert bus._retry_for("workers") is None
+
+        valid_retry = RetryPolicy.exponential(max_attempts=4)
+        bus.handler(
+            ValidEvent,
+            lambda event: None,
+            subscription="workers",
+            concurrency=5,
+            retry=valid_retry,
+        )
+        assert bus.subscription("workers").concurrency == 5
+        assert bus.subscription("workers").config.retry == valid_retry
+        assert registry.resolve(ValidEvent.event_name) is ValidEvent
+    finally:
+        bus.close()
+
+
 def test_retry_parameter_rejects_invalid_values_without_mutation(tmp_path) -> None:
     bus = EventBus(str(tmp_path))
     try:

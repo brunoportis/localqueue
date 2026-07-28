@@ -510,7 +510,30 @@ class EventBus(Generic[ContextT]):
         retry: object = None,
         set_retry: bool = False,
     ) -> tuple[int | None, RetryPolicy | None]:
-        """Validate and atomically update canonical local subscription settings."""
+        """Resolve and commit canonical local subscription settings."""
+        resolved = self._resolve_subscription_settings(
+            subscription,
+            concurrency=concurrency,
+            retry=retry,
+            set_retry=set_retry,
+        )
+        self._commit_subscription_settings(
+            subscription,
+            concurrency=resolved[0],
+            retry=resolved[1],
+            set_retry=set_retry,
+        )
+        return resolved
+
+    def _resolve_subscription_settings(
+        self,
+        subscription: str,
+        *,
+        concurrency: object | None = None,
+        retry: object = None,
+        set_retry: bool = False,
+    ) -> tuple[int | None, RetryPolicy | None]:
+        """Validate proposed settings without mutating canonical state."""
         self._ensure_subscription_config_open(subscription)
         validated_concurrency = (
             _validate_concurrency(concurrency) if concurrency is not None else None
@@ -534,11 +557,21 @@ class EventBus(Generic[ContextT]):
                 f"subscription {subscription!r} is already configured with "
                 f"concurrency={configured_concurrency}"
             )
-        if set_retry and validated_retry is not None:
-            self._subscription_retry[subscription] = validated_retry
-        if validated_concurrency is not None:
-            self._subscription_concurrency[subscription] = validated_concurrency
         return validated_concurrency, validated_retry
+
+    def _commit_subscription_settings(
+        self,
+        subscription: str,
+        *,
+        concurrency: int | None,
+        retry: RetryPolicy | None,
+        set_retry: bool,
+    ) -> None:
+        """Commit settings already resolved against current process-local state."""
+        if set_retry and retry is not None:
+            self._subscription_retry[subscription] = retry
+        if concurrency is not None:
+            self._subscription_concurrency[subscription] = concurrency
 
     def _concurrency_for(self, subscription: str) -> int:
         """Return this process's configured bound for ``subscription``."""
@@ -735,7 +768,7 @@ class EventBus(Generic[ContextT]):
                 handler_name=getattr(fn, "__name__", type(fn).__name__),
                 accepts_context=accepts_context,
             )
-            self._configure_subscription_settings(
+            resolved_concurrency, resolved_retry = self._resolve_subscription_settings(
                 subscription,
                 concurrency=concurrency,
                 retry=retry,
@@ -743,6 +776,12 @@ class EventBus(Generic[ContextT]):
             )
             if isinstance(pattern, type) and issubclass(pattern, BaseEvent):
                 self.registry.register(pattern)
+            self._commit_subscription_settings(
+                subscription,
+                concurrency=resolved_concurrency,
+                retry=resolved_retry,
+                set_retry=retry is not None,
+            )
             self.topology = new_topology
             self._handlers[combo] = registration
             return fn
