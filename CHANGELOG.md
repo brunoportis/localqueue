@@ -4,6 +4,19 @@ All notable changes to `localqueue` are documented here.
 
 <!-- version list -->
 
+## v1.4.1 (2026-07-28)
+
+### Bug Fixes
+
+- Harden contact import contention ([#101](https://github.com/brunoportis/localqueue/pull/101),
+  [`d99a3ff`](https://github.com/brunoportis/localqueue/commit/d99a3ff6f01fe907770a62b09f84880ef9e5a06d))
+
+### Chores
+
+- **release**: Prepare v1.4.1 campaign ([#102](https://github.com/brunoportis/localqueue/pull/102),
+  [`a25be58`](https://github.com/brunoportis/localqueue/commit/a25be5816ba402d9d5d83f403fe1f254af25c2dd))
+
+
 ## v1.4.0 (2026-07-28)
 
 ### Bug Fixes
