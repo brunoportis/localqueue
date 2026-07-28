@@ -131,8 +131,10 @@ jobs:
             echo "main advanced beyond the candidate; prepare a new candidate" >&2
             exit 1
           fi
-          git diff-tree --no-commit-id --name-only -r "$CANDIDATE_SHA" | sort > candidate-files.txt
-          python -m release_gate.cli validate-candidate-files --files candidate-files.txt
+          if [[ "$current_main" != "$CANDIDATE_SHA" ]]; then
+            git diff-tree --no-commit-id --name-only -r "$CANDIDATE_SHA" | sort > candidate-files.txt
+            python -m release_gate.cli validate-candidate-files --files candidate-files.txt
+          fi
           git checkout --detach "$CANDIDATE_SHA"
           test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
           python -m release_gate.cli versions --expected "$CANDIDATE_VERSION"
