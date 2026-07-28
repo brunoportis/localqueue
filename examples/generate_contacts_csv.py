@@ -70,7 +70,7 @@ def generate_contacts_csv(output: Path, *, count: int, seed: int) -> None:
         from faker import Faker
     except ImportError as error:
         raise ImportError(
-            'Install the generator dependency with:\n\n    uv add faker'
+            "Install the generator dependency with:\n\n    uv add faker"
         ) from error
 
     faker = Faker("pt_BR")
