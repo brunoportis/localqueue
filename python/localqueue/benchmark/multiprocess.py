@@ -12,7 +12,7 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 from localqueue import (
     DurabilityMode,
@@ -30,6 +30,7 @@ from localqueue.benchmark.profiles import multiprocess_matrix
 from localqueue.benchmark.runner import _atomic_write
 
 _JSON_SERIALIZER: JsonSerializer[object] = JsonSerializer()
+_Result = TypeVar("_Result")
 
 try:  # resource is unavailable on Windows
     import resource as _resource
@@ -52,6 +53,17 @@ def rss_method() -> str | None:
 
 def _durability_mode(full: bool) -> DurabilityMode:
     return DurabilityMode.DURABLE if full else DurabilityMode.RELAXED
+
+
+def _retry_locked(operation: Callable[[], _Result]) -> _Result:
+    """Retry SQLite's transient writer-lock errors for benchmark workers."""
+    while True:
+        try:
+            return operation()
+        except LocalQueueError as exc:
+            if str(exc).lower() not in {"database is busy", "database is locked"}:
+                raise
+            time.sleep(0.002)
 
 
 def make_payload(
@@ -101,20 +113,13 @@ def producer_target(
         ready.wait()
         for identifier in range(start, start + count):
             value, actual = make_payload(identifier, index, requested)
-            while True:
-                before = time.monotonic_ns()
-                if first_put_started_ns is None:
-                    first_put_started_ns = before
-                value["created_ns"] = before
-                actual = len(JsonSerializer().dumps(value))
-                try:
-                    queue.put(value, job_id=value["id"])
-                    last_put_completed_ns = time.monotonic_ns()
-                    break
-                except LocalQueueError as exc:
-                    if "database is locked" not in str(exc).lower():
-                        raise
-                    time.sleep(0.002)
+            before = time.monotonic_ns()
+            if first_put_started_ns is None:
+                first_put_started_ns = before
+            value["created_ns"] = before
+            actual = len(JsonSerializer().dumps(value))
+            _retry_locked(lambda: queue.put(value, job_id=value["id"]))
+            last_put_completed_ns = time.monotonic_ns()
             if identifier % sample_stride == 0:
                 puts.append((identifier, time.monotonic_ns() - before))
             produced += 1
@@ -181,19 +186,15 @@ def consumer_target(
         while time.monotonic() < deadline:
             before = time.monotonic_ns()
             try:
-                job = queue.get(timeout=0.05)
+                job = _retry_locked(lambda: queue.get(timeout=0.05))
             except Empty:
+                stats = _retry_locked(queue.stats)
                 if (
                     producers_done.is_set()
-                    and queue.stats().get("ready", 0) == 0
-                    and queue.stats().get("processing", 0) == 0
+                    and stats.get("ready", 0) == 0
+                    and stats.get("processing", 0) == 0
                 ):
                     break
-                continue
-            except LocalQueueError as exc:
-                if "database is locked" not in str(exc).lower():
-                    raise
-                time.sleep(0.002)
                 continue
             claim_done = time.monotonic_ns()
             message_id = int(job.data["id"]) if isinstance(job.data, dict) else -1
@@ -213,7 +214,7 @@ def consumer_target(
             if message_id % sample_stride == 0:
                 claims.append((message_id, claim_done - before))
             claimed += 1
-            queue.ack(job)
+            _retry_locked(lambda: queue.ack(job))
             last_ack_completed_ns = time.monotonic_ns()
             acked += 1
             created_ns = (

@@ -1,14 +1,16 @@
 from pathlib import Path
 from threading import BrokenBarrierError
+from types import SimpleNamespace
 from typing import Any
 
 import localqueue.benchmark.multiprocess as multiprocess
 import pytest
-from localqueue import DurabilityMode
+from localqueue import DurabilityMode, Empty, LocalQueueError
 from localqueue.benchmark.errors import BenchmarkExecutionError
 from localqueue.benchmark.multiprocess import (
     _cleanup_children,
     _durability_mode,
+    _retry_locked,
     _sanitize_worker_results,
     _throughput_intervals,
     _unavailable_series,
@@ -125,6 +127,141 @@ def test_payload_has_deterministic_identity_and_size_metadata() -> None:
     assert value["producer_index"] == 2
     assert isinstance(value["created_ns"], int)
     assert actual >= 100
+
+
+def test_retry_locked_retries_busy_and_locked_sqlite_operations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = iter(
+        [
+            LocalQueueError("database is busy"),
+            LocalQueueError("database is locked"),
+            "acknowledged",
+        ]
+    )
+    sleeps: list[float] = []
+    monkeypatch.setattr(multiprocess.time, "sleep", sleeps.append)
+
+    def operation() -> str:
+        result = next(attempts)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    assert _retry_locked(operation) == "acknowledged"
+    assert sleeps == [0.002, 0.002]
+
+
+def test_retry_locked_propagates_non_transient_queue_errors() -> None:
+    def operation() -> None:
+        raise LocalQueueError("queue is closed")
+
+    with pytest.raises(LocalQueueError, match="queue is closed"):
+        _retry_locked(operation)
+
+
+class _WorkerOutput:
+    def __init__(self) -> None:
+        self.results: list[dict[str, Any]] = []
+
+    def put(self, result: dict[str, Any]) -> None:
+        self.results.append(result)
+
+
+class _ReadyWorker:
+    def wait(self) -> None:
+        pass
+
+
+def test_producer_retries_a_transient_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Queue:
+        def __init__(self) -> None:
+            self.puts = 0
+            self.closed = False
+
+        def put(self, value: dict[str, Any], *, job_id: str) -> None:
+            del value, job_id
+            self.puts += 1
+            if self.puts == 1:
+                raise LocalQueueError("database is locked")
+
+        def close(self) -> None:
+            self.closed = True
+
+    queue = Queue()
+    output = _WorkerOutput()
+    monkeypatch.setattr(multiprocess, "SimpleQueue", lambda *args, **kwargs: queue)
+    monkeypatch.setattr(multiprocess.time, "sleep", lambda _seconds: None)
+
+    multiprocess.producer_target(
+        str(tmp_path), "benchmark", 0, 0, 1, 100, True, _ReadyWorker(), None, output, 1
+    )
+
+    assert queue.puts == 2
+    assert queue.closed is True
+    assert output.results[0]["status"] == "passed"
+
+
+def test_consumer_retries_ack_and_post_drain_stats(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class ProducersDone:
+        def is_set(self) -> bool:
+            return True
+
+    class Queue:
+        def __init__(self) -> None:
+            self.gets = 0
+            self.acks = 0
+            self.stats_calls = 0
+            self.closed = False
+
+        def get(self, *, timeout: float) -> SimpleNamespace:
+            del timeout
+            self.gets += 1
+            if self.gets == 1:
+                return SimpleNamespace(data={"id": "000000000000", "created_ns": 1})
+            raise Empty("empty")
+
+        def ack(self, _job: SimpleNamespace) -> None:
+            self.acks += 1
+            if self.acks == 1:
+                raise LocalQueueError("database is locked")
+
+        def stats(self) -> dict[str, int]:
+            self.stats_calls += 1
+            if self.stats_calls == 1:
+                raise LocalQueueError("database is busy")
+            return {"ready": 0, "processing": 0}
+
+        def close(self) -> None:
+            self.closed = True
+
+    queue = Queue()
+    output = _WorkerOutput()
+    monkeypatch.setattr(multiprocess, "SimpleQueue", lambda *args, **kwargs: queue)
+    monkeypatch.setattr(multiprocess.time, "sleep", lambda _seconds: None)
+
+    multiprocess.consumer_target(
+        str(tmp_path),
+        "benchmark",
+        0,
+        1,
+        ProducersDone(),
+        _ReadyWorker(),
+        output,
+        True,
+        30,
+        1,
+        True,
+    )
+
+    assert queue.acks == 2
+    assert queue.stats_calls == 2
+    assert queue.closed is True
+    assert output.results[0]["status"] == "passed"
 
 
 def test_spawn_scenario_isolated_and_drained(tmp_path: Path) -> None:
