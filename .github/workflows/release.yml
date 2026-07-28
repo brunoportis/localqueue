@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: prepare-release-candidate-v2.0.0
+  group: prepare-release-candidate-v1.4.0
   cancel-in-progress: false
 
 jobs:
@@ -77,7 +77,7 @@ jobs:
         id: version
         shell: bash
         run: |
-          version=$(semantic-release version --print)
+          version=$(semantic-release version --print --minor)
           python -m release_gate.cli require-version --calculated "$version"
           echo "base_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -87,7 +87,7 @@ jobs:
         if: inputs.action == 'dry-run'
         run: |
           {
-            echo "## v2.0.0 preparation dry run"
+            echo "## v1.4.0 preparation dry run"
             echo ""
             echo "- Base main SHA: \`${{ steps.version.outputs.base_sha }}\`"
             echo "- Calculated next version: \`${{ steps.version.outputs.version }}\`"
@@ -115,7 +115,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "${{ needs.calculate.outputs.base_sha }}"
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
           test -z "$(git status --porcelain --untracked-files=normal)"
-          test "${{ needs.calculate.outputs.version }}" = "2.0.0"
+          test "${{ needs.calculate.outputs.version }}" = "1.4.0"
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -142,8 +142,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          semantic-release version --no-push --no-vcs-release
-          test "$(git log -1 --format=%s)" = "chore(release): v2.0.0"
+          semantic-release version --minor --no-push --no-vcs-release
+          test "$(git log -1 --format=%s)" = "chore(release): v1.4.0"
 
       - name: Update only the editable local uv.lock entry
         shell: bash
@@ -188,7 +188,7 @@ jobs:
       - name: Push only the immutable candidate branch
         id: push
         env:
-          CANDIDATE_BRANCH: release-candidate/v2.0.0
+          CANDIDATE_BRANCH: release-candidate/v1.4.0
         shell: bash
         run: |
           existing_sha=$(git ls-remote --heads origin "refs/heads/$CANDIDATE_BRANCH" | awk '{print $1}')
@@ -235,13 +235,13 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## Prepared v2.0.0 candidate"
+            echo "## Prepared v1.4.0 candidate"
             echo ""
             echo "- Base main SHA: \`${{ needs.calculate.outputs.base_sha }}\`"
             echo "- Candidate SHA: \`${{ steps.candidate.outputs.candidate_sha }}\`"
             echo "- Candidate version: \`${{ needs.calculate.outputs.version }}\`"
             echo "- Candidate branch: \`${{ steps.push.outputs.branch }}\`"
-            echo "- Release notes: \`release-notes/v2.0.0.md\`"
+            echo "- Release notes: \`release-notes/v1.4.0.md\`"
             echo "- Evidence run: ${{ steps.evidence.outputs.run_url }}"
             echo ""
             echo "### Changelog section"

@@ -1,4 +1,4 @@
-"""Tooling for the staged v2.0.0 release evidence and promotion gate."""
+"""Tooling for the staged v1.4.0 release evidence and promotion gate."""
 
-CAMPAIGN_VERSION = "2.0.0"
+CAMPAIGN_VERSION = "1.4.0"
 REPOSITORY = "brunoportis/localqueue"

@@ -60,13 +60,13 @@ from scripts import validate_cpython_paths
 
 SHA = "a" * 40
 PARENT = "b" * 40
-REF = "release-candidate/v2.0.0"
-VERSION = "2.0.0"
+REF = "release-candidate/v1.4.0"
+VERSION = "1.4.0"
 
 
 def test_campaign_fixture_identity_and_lock_transition() -> None:
-    assert VERSION == "2.0.0"
-    assert REF == "release-candidate/v2.0.0"
+    assert VERSION == "1.4.0"
+    assert REF == "release-candidate/v1.4.0"
 
 
 def write_versions(
@@ -122,7 +122,7 @@ def test_uv_lock_update_rejects_third_party_resolution_changes(tmp_path: Path) -
     )
     after.write_text(
         '[[package]]\nname = "dependency"\nversion = "1.0"\n\n'
-        '[[package]]\nname = "localqueue"\nversion = "2.0.0"\nsource = { editable = "." }\n',
+        '[[package]]\nname = "localqueue"\nversion = "1.4.0"\nsource = { editable = "." }\n',
         encoding="utf-8",
     )
     validate_uv_lock_update(before, after, VERSION)
@@ -267,10 +267,10 @@ def test_explicit_cpython_path_validator_rejects_nonportable_interpreters(
 
 
 REAL_ARM64_WHEEL_FILENAMES = (
-    "localqueue-2.0.0-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
-    "localqueue-2.0.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
-    "localqueue-2.0.0-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
-    "localqueue-2.0.0-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+    "localqueue-1.4.0-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+    "localqueue-1.4.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+    "localqueue-1.4.0-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+    "localqueue-1.4.0-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
 )
 
 
@@ -328,15 +328,15 @@ def test_wheel_job_diagnostics_append_to_summary_and_log(
     [
         (None, "expected one cp314 linux-aarch64 wheel, found 0"),
         (
-            "localqueue-2.0.0-cp312-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+            "localqueue-1.4.0-cp312-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
             "ABI does not match",
         ),
         (
-            "localqueue-2.0.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+            "localqueue-1.4.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
             "platform does not match linux-aarch64",
         ),
         (
-            "localqueue-2.0.0-cp312-cp312-macosx_11_0_arm64.whl",
+            "localqueue-1.4.0-cp312-cp312-macosx_11_0_arm64.whl",
             "platform does not match linux-aarch64",
         ),
     ],
@@ -368,7 +368,7 @@ def test_arm64_build_job_duplicate_error_names_the_tag_and_all_observed_files(
     tmp_path: Path,
 ) -> None:
     inventory = arm64_inventory(tmp_path)
-    duplicate = tmp_path / "localqueue-2.0.0-cp312-cp312-manylinux_2_28_aarch64.whl"
+    duplicate = tmp_path / "localqueue-1.4.0-cp312-cp312-manylinux_2_28_aarch64.whl"
     duplicate.write_bytes(b"duplicate")
     inventory.extend(
         build_inventory(
@@ -388,7 +388,7 @@ def test_arm64_build_job_duplicate_error_names_the_tag_and_all_observed_files(
 @pytest.mark.parametrize(
     "filename",
     [
-        "otherqueue-2.0.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "otherqueue-1.4.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
         "localqueue-1.2.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
     ],
 )
@@ -408,7 +408,7 @@ def test_arm64_build_job_rejects_wrong_distribution_or_version(
 
 
 def test_inventory_rejects_duplicate_missing_and_wrong_version(tmp_path: Path) -> None:
-    valid = "localqueue-2.0.0-cp313-cp313-manylinux_2_17_x86_64.whl"
+    valid = "localqueue-1.4.0-cp313-cp313-manylinux_2_17_x86_64.whl"
     (tmp_path / valid).write_bytes(b"one")
     inventory = build_inventory(
         [tmp_path / valid],
@@ -430,8 +430,8 @@ def test_inventory_rejects_duplicate_missing_and_wrong_version(tmp_path: Path) -
 
 def test_inventory_rejects_hash_change_and_is_deterministic(tmp_path: Path) -> None:
     names = [
-        "localqueue-2.0.0-cp314-cp314-manylinux_2_17_x86_64.whl",
-        "localqueue-2.0.0-cp311-cp311-manylinux_2_17_x86_64.whl",
+        "localqueue-1.4.0-cp314-cp314-manylinux_2_17_x86_64.whl",
+        "localqueue-1.4.0-cp311-cp311-manylinux_2_17_x86_64.whl",
     ]
     for name in names:
         (tmp_path / name).write_bytes(name.encode())
@@ -455,11 +455,11 @@ def test_inventory_parses_real_compressed_linux_and_platform_tags(
     tmp_path: Path,
 ) -> None:
     names = {
-        "linux-x86_64": "localqueue-2.0.0-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
-        "linux-aarch64": "localqueue-2.0.0-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
-        "macos-x86_64": "localqueue-2.0.0-cp314-cp314-macosx_11_0_x86_64.whl",
-        "macos-arm64": "localqueue-2.0.0-cp314-cp314-macosx_11_0_arm64.whl",
-        "windows-x86_64": "localqueue-2.0.0-cp314-cp314-win_amd64.whl",
+        "linux-x86_64": "localqueue-1.4.0-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "linux-aarch64": "localqueue-1.4.0-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "macos-x86_64": "localqueue-1.4.0-cp314-cp314-macosx_11_0_x86_64.whl",
+        "macos-arm64": "localqueue-1.4.0-cp314-cp314-macosx_11_0_arm64.whl",
+        "windows-x86_64": "localqueue-1.4.0-cp314-cp314-win_amd64.whl",
     }
     for job, name in names.items():
         path = tmp_path / name
@@ -473,7 +473,7 @@ def test_inventory_parses_real_compressed_linux_and_platform_tags(
 
 
 def test_inventory_rejects_wheel_from_another_distribution(tmp_path: Path) -> None:
-    path = tmp_path / "otherqueue-2.0.0-cp314-cp314-manylinux_2_17_x86_64.whl"
+    path = tmp_path / "otherqueue-1.4.0-cp314-cp314-manylinux_2_17_x86_64.whl"
     path.write_bytes(b"wheel")
     with pytest.raises(ArtifactError, match="not localqueue"):
         build_inventory([path], SHA, VERSION, "linux-x86_64", "built-not-smoke-tested")
@@ -523,9 +523,9 @@ def test_distribution_matrix_requires_truthful_per_wheel_smoke_status(
 @pytest.mark.parametrize(
     ("replacement", "message"),
     [
-        ("localqueue-2.0.0-cp311-cp311-macosx_12_0_x86_64.whl", "platform"),
-        ("localqueue-2.0.0-cp311-cp311-manylinux_2_28_aarch64.whl", "platform"),
-        ("localqueue-2.0.0-cp311-abi3-manylinux_2_17_x86_64.whl", "ABI"),
+        ("localqueue-1.4.0-cp311-cp311-macosx_12_0_x86_64.whl", "platform"),
+        ("localqueue-1.4.0-cp311-cp311-manylinux_2_28_aarch64.whl", "platform"),
+        ("localqueue-1.4.0-cp311-abi3-manylinux_2_17_x86_64.whl", "ABI"),
     ],
 )
 def test_distribution_matrix_rejects_wrong_wheel_family(
@@ -589,7 +589,7 @@ def test_public_release_notes_renderer_is_deterministic_and_final() -> None:
     assert "are attached to this GitHub Release" in first
     assert "../docs/" not in first
     assert (
-        "https://github.com/brunoportis/localqueue/blob/v2.0.0/docs/operational-envelope.md"
+        "https://github.com/brunoportis/localqueue/blob/v1.4.0/docs/operational-envelope.md"
         in first
     )
     validate_reusable_draft_body(first, first)

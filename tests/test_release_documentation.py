@@ -61,6 +61,8 @@ def test_release_workflows_have_no_automatic_publication_trigger() -> None:
     assert "environment: pypi" in wheels
     assert "default: dry-run" in release
     assert "prepare-candidate" in release
+    assert "semantic-release version --print --minor" in release
+    assert "semantic-release version --minor --no-push --no-vcs-release" in release
     assert "HEAD:refs/heads/main" not in release
     assert '"uv==0.11.6"' in release
     assert "validate-uv-lock-update" in release
@@ -205,7 +207,7 @@ def test_release_gate_runbook_documents_go_no_go_and_recovery() -> None:
         "Recovery after a partial failure",
         "editable `localqueue` entry",
         "uv lock --check",
-        "publish v2.0.0",
+        "publish v1.4.0",
         "Only then close #66",
     ):
         assert phrase in text

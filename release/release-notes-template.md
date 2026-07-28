@@ -4,9 +4,13 @@ This candidate consolidates the changes since v1.3.0. The final public claim is
 deliberately left to the human promotion gate and must not exceed the collected
 evidence.
 
-## Breaking Python API changes
+## Python API compatibility
 
-- Python 3.10 is no longer supported; localqueue now requires Python 3.11 or newer.
+- No breaking Python API changes are introduced in this release.
+
+## Runtime requirement
+
+- localqueue requires Python 3.11 or newer.
 
 ## New public APIs
 
