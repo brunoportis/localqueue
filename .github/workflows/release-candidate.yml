@@ -70,7 +70,10 @@ jobs:
           test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
           test "$(git rev-parse "origin/$CANDIDATE_REF")" = "$CANDIDATE_SHA"
           parent_sha=$(git rev-parse HEAD^)
-          test "$parent_sha" = "$(git rev-parse origin/main)"
+          main_sha=$(git rev-parse origin/main)
+          if [[ "$CANDIDATE_SHA" != "$main_sha" ]]; then
+            test "$parent_sha" = "$main_sha"
+          fi
           python -m release_gate.cli validate-candidate \
             --candidate-ref "$CANDIDATE_REF" \
             --expected-sha "$CANDIDATE_SHA" \
