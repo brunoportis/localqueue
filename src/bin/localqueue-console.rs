@@ -301,7 +301,13 @@ impl eframe::App for ConsoleApp {
 fn top_bar(ui: &mut egui::Ui, app: &mut ConsoleApp) {
     panel_frame().show(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("PATH").size(12.0).color(MUTED));
+            ui.allocate_ui_with_layout(
+                egui::vec2(40.0, 32.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.label(RichText::new("PATH").size(12.0).color(MUTED));
+                },
+            );
             let (choose_path, open_path) = egui::Frame::new()
                 .fill(SURFACE)
                 .stroke(egui::Stroke::new(1.0, BORDER))
