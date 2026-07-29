@@ -394,14 +394,15 @@ fn overview(
                     .color(TEXT),
                 );
                 ui.add_space(10.0);
-                ui.label(status_badge(
+                status_pill(
+                    ui,
                     if counts.processing > 0 {
                         "ACTIVE"
                     } else {
                         "IDLE"
                     },
                     if counts.processing > 0 { GREEN } else { MUTED },
-                ));
+                );
             });
             ui.label(
                 RichText::new("Subscription  •  Last refreshed just now")
@@ -663,10 +664,11 @@ fn card() -> egui::Frame {
         .inner_margin(egui::Margin::same(18))
 }
 fn subscription_title(queue: &str) -> String {
-    queue
-        .strip_prefix("__bus__default:")
-        .unwrap_or(queue)
-        .replace('-', ".")
+    let queue = queue
+        .split_once(':')
+        .filter(|(prefix, _)| prefix.starts_with("__bus__") || prefix.starts_with("_bus__"))
+        .map_or(queue, |(_, name)| name);
+    queue.replace('-', ".")
 }
 fn format_count(value: i64) -> String {
     let negative = value < 0;
@@ -699,6 +701,20 @@ fn status_badge(label: &str, color: Color32) -> RichText {
             color.b(),
             32,
         ))
+}
+fn status_pill(ui: &mut egui::Ui, label: &str, color: Color32) {
+    egui::Frame::new()
+        .fill(Color32::from_rgba_unmultiplied(
+            color.r(),
+            color.g(),
+            color.b(),
+            32,
+        ))
+        .corner_radius(8.0)
+        .inner_margin(egui::Margin::symmetric(7, 3))
+        .show(ui, |ui| {
+            ui.label(RichText::new(label).size(11.0).strong().color(color));
+        });
 }
 
 fn throughput_card(ui: &mut egui::Ui, values: &[f64]) {
@@ -1068,6 +1084,10 @@ mod tests {
     fn subscription_title_hides_the_default_bus_prefix() {
         assert_eq!(
             subscription_title("__bus__default:contact.creation-requested"),
+            "contact.creation.requested"
+        );
+        assert_eq!(
+            subscription_title("_bus__default:contact.creation-requested"),
             "contact.creation.requested"
         );
     }
