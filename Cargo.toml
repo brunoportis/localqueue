@@ -13,7 +13,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
-console = ["dep:eframe"]
+console = ["dep:eframe", "dep:egui-phosphor"]
 # Internal-only crash harness support. Never enable this for a published wheel.
 __crash_test = []
 
@@ -22,6 +22,7 @@ pyo3 = { version = "0.29", features = ["extension-module"] }
 rusqlite = { version = "0.32", features = ["backup", "bundled"] }
 thiserror = "1.0"
 eframe = { version = "0.31", default-features = true, optional = true }
+egui-phosphor = { version = "0.9", optional = true }
 
 [[bin]]
 name = "localqueue-console"

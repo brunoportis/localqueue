@@ -1,4 +1,5 @@
 use eframe::egui::{self, Color32, RichText};
+use egui_phosphor::regular;
 use localqueue::admin::{
     AdminStore, DatabaseInfo, DeliveryCounts, ExecutionSummary, FailedDelivery, FailureDetail,
     Page, SubscriptionConfig, SubscriptionSummary,
@@ -188,6 +189,7 @@ struct ConsoleApp {
     refresh: u64,
     page: usize,
     path_input: String,
+    icon_font_loaded: bool,
 }
 impl ConsoleApp {
     fn counts(snapshot: &ConsoleSnapshot) -> DeliveryCounts {
@@ -206,6 +208,12 @@ impl ConsoleApp {
 }
 impl eframe::App for ConsoleApp {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+        if !self.icon_font_loaded {
+            let mut fonts = egui::FontDefinitions::default();
+            egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+            ctx.set_fonts(fonts);
+            self.icon_font_loaded = true;
+        }
         apply_console_theme(ctx);
         ctx.request_repaint_after(Duration::from_millis(100));
         let snapshot = self.snapshot.lock().unwrap().clone();
@@ -233,8 +241,8 @@ impl eframe::App for ConsoleApp {
                             }),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new("Settings").color(MUTED));
-                        ui.label(RichText::new("Theme").color(MUTED));
+                        ui.label(RichText::new(regular::GEAR).size(20.0).color(MUTED));
+                        ui.label(RichText::new(regular::SUN).size(21.0).color(MUTED));
                         egui::ComboBox::from_id_salt("refresh")
                             .width(128.0)
                             .selected_text(format!("Refresh: {} s", self.refresh / 1_000))
@@ -445,75 +453,21 @@ fn metric(ui: &mut egui::Ui, label: &str, value: i64, detail: &str, color: Color
 }
 
 fn draw_metric_icon(painter: egui::Painter, label: &str, rect: egui::Rect, color: Color32) {
-    let stroke = egui::Stroke::new(2.4, color);
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        metric_icon(label),
+        egui::FontId::proportional(30.0),
+        color,
+    );
+}
+
+fn metric_icon(label: &str) -> &'static str {
     match label {
-        "READY" => {
-            painter.rect_stroke(rect.shrink(3.0), 2.5, stroke, egui::StrokeKind::Inside);
-            painter.line_segment(
-                [
-                    rect.left_top() + egui::vec2(9.0, 3.0),
-                    rect.left_top() + egui::vec2(9.0, 8.0),
-                ],
-                stroke,
-            );
-            painter.line_segment(
-                [
-                    rect.right_top() - egui::vec2(9.0, -3.0),
-                    rect.right_top() - egui::vec2(9.0, -8.0),
-                ],
-                stroke,
-            );
-        }
-        "PROCESSING" => {
-            painter.circle_stroke(rect.center(), 11.0, stroke);
-            painter.line_segment(
-                [
-                    rect.center_top() + egui::vec2(0.0, 1.0),
-                    rect.center_top() + egui::vec2(0.0, 7.0),
-                ],
-                stroke,
-            );
-            painter.line_segment(
-                [
-                    rect.center_bottom() - egui::vec2(0.0, 1.0),
-                    rect.center_bottom() - egui::vec2(0.0, 7.0),
-                ],
-                stroke,
-            );
-        }
-        "ACKNOWLEDGED" => {
-            painter.circle_stroke(rect.center(), 12.0, stroke);
-            painter.line_segment(
-                [
-                    rect.min + egui::vec2(8.0, 16.0),
-                    rect.min + egui::vec2(13.0, 21.0),
-                ],
-                stroke,
-            );
-            painter.line_segment(
-                [
-                    rect.min + egui::vec2(13.0, 21.0),
-                    rect.min + egui::vec2(23.0, 10.0),
-                ],
-                stroke,
-            );
-        }
-        _ => {
-            let points = vec![
-                rect.center_top() + egui::vec2(0.0, 2.0),
-                rect.right_bottom() - egui::vec2(2.0, 3.0),
-                rect.left_bottom() + egui::vec2(2.0, -3.0),
-            ];
-            painter.add(egui::Shape::closed_line(points, stroke));
-            painter.line_segment(
-                [
-                    rect.center_top() + egui::vec2(0.0, 10.0),
-                    rect.center_bottom() - egui::vec2(0.0, 7.0),
-                ],
-                stroke,
-            );
-            painter.circle_filled(rect.center_bottom() - egui::vec2(0.0, 4.0), 1.5, color);
-        }
+        "READY" => regular::ARCHIVE_BOX,
+        "PROCESSING" => regular::CIRCLE_NOTCH,
+        "ACKNOWLEDGED" => regular::CHECK_CIRCLE,
+        _ => regular::WARNING,
     }
 }
 
@@ -521,26 +475,12 @@ fn sidebar_logo(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(40.0, 40.0), egui::Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 8.0, Color32::from_rgb(17, 57, 120));
-    let stroke = egui::Stroke::new(1.5, Color32::from_rgb(115, 173, 255));
-    let center = rect.center();
-    painter.rect_stroke(
-        egui::Rect::from_center_size(center - egui::vec2(5.0, 4.0), egui::vec2(8.0, 8.0)),
-        1.5,
-        stroke,
-        egui::StrokeKind::Inside,
-    );
-    painter.rect_stroke(
-        egui::Rect::from_center_size(center + egui::vec2(5.0, 4.0), egui::vec2(8.0, 8.0)),
-        1.5,
-        stroke,
-        egui::StrokeKind::Inside,
-    );
-    painter.line_segment(
-        [
-            center + egui::vec2(-1.0, 5.0),
-            center + egui::vec2(6.0, -5.0),
-        ],
-        stroke,
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        regular::QUEUE,
+        egui::FontId::proportional(23.0),
+        Color32::from_rgb(115, 173, 255),
     );
 }
 
@@ -553,10 +493,11 @@ fn sidebar_item(ui: &mut egui::Ui, index: usize, label: &str, selected: bool) ->
     } else if response.hovered() {
         painter.rect_filled(rect, 8.0, Color32::from_rgb(9, 33, 59));
     }
-    draw_sidebar_icon(
-        &painter,
-        index,
-        egui::Rect::from_min_size(rect.min + egui::vec2(12.0, 9.0), egui::vec2(20.0, 20.0)),
+    painter.text(
+        rect.min + egui::vec2(22.0, 19.0),
+        egui::Align2::CENTER_CENTER,
+        sidebar_icon(index),
+        egui::FontId::proportional(21.0),
         if selected { TEXT } else { MUTED },
     );
     painter.text(
@@ -569,6 +510,7 @@ fn sidebar_item(ui: &mut egui::Ui, index: usize, label: &str, selected: bool) ->
     response
 }
 
+#[allow(dead_code)]
 fn draw_sidebar_icon(painter: &egui::Painter, index: usize, rect: egui::Rect, color: Color32) {
     let stroke = egui::Stroke::new(1.8, color);
     match index {
@@ -630,6 +572,15 @@ fn draw_sidebar_icon(painter: &egui::Painter, index: usize, rect: egui::Rect, co
             );
             painter.circle_filled(rect.center_bottom() + egui::vec2(0.0, -4.0), 1.2, color);
         }
+    }
+}
+
+fn sidebar_icon(index: usize) -> &'static str {
+    match index {
+        0 => regular::HOUSE,
+        1 => regular::LIST_BULLETS,
+        2 => regular::PLAY_CIRCLE,
+        _ => regular::WARNING,
     }
 }
 
@@ -1021,6 +972,7 @@ fn main() -> eframe::Result<()> {
                 refresh: 1_000,
                 page: 0,
                 path_input: path.display().to_string(),
+                icon_font_loaded: false,
             }))
         }),
     )
