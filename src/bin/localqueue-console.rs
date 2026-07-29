@@ -228,13 +228,13 @@ impl eframe::App for ConsoleApp {
                         snapshot
                             .database
                             .as_ref()
-                            .map_or("Opening database…".to_owned(), |info| {
+                            .map_or("Opening database...".to_owned(), |info| {
                                 info.path.display().to_string()
                             }),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new("⚙").size(20.0).color(MUTED));
-                        ui.label(RichText::new("☼").size(21.0).color(MUTED));
+                        ui.label(RichText::new("Settings").color(MUTED));
+                        ui.label(RichText::new("Theme").color(MUTED));
                         egui::ComboBox::from_id_salt("refresh")
                             .width(128.0)
                             .selected_text(format!("Refresh: {} s", self.refresh / 1_000))
@@ -252,8 +252,7 @@ impl eframe::App for ConsoleApp {
                                     }
                                 }
                             });
-                        ui.label(RichText::new("●").color(GREEN));
-                        ui.label("Live");
+                        ui.label(RichText::new("LIVE").color(GREEN));
                     });
                 });
             });
@@ -269,7 +268,7 @@ impl eframe::App for ConsoleApp {
                         .corner_radius(8.0)
                         .inner_margin(egui::Margin::same(10))
                         .show(ui, |ui| {
-                            ui.label(RichText::new("⌘").size(22.0).color(BLUE));
+                            ui.label(RichText::new("LQ").size(16.0).color(BLUE));
                         });
                     ui.vertical(|ui| {
                         ui.label(RichText::new("LOCALQUEUE").strong().size(16.0));
@@ -277,20 +276,14 @@ impl eframe::App for ConsoleApp {
                     });
                 });
                 ui.add_space(28.0);
-                for (index, (icon, label)) in [
-                    ("⌂", "Overview"),
-                    ("☷", "Subscriptions"),
-                    ("▣", "Executions"),
-                    ("⚠", "Failures"),
-                ]
-                .iter()
-                .enumerate()
+                for (index, label) in ["Overview", "Subscriptions", "Executions", "Failures"]
+                    .iter()
+                    .enumerate()
                 {
                     if ui
                         .add_sized(
                             [218.0, 42.0],
-                            egui::Button::new(format!("{icon}    {label}"))
-                                .selected(self.page == index),
+                            egui::Button::new(*label).selected(self.page == index),
                         )
                         .clicked()
                     {
@@ -312,7 +305,7 @@ impl eframe::App for ConsoleApp {
                         ui.add_space(6.0);
                         ui.label(
                             RichText::new(format!(
-                                "◉ SQLite ({})",
+                                "SQLite ({})",
                                 database.journal_mode.to_uppercase()
                             ))
                             .color(MUTED),
@@ -362,13 +355,13 @@ fn overview(
                     .as_deref()
                     .unwrap_or("No subscription"),
             );
-            ui.label(RichText::new("Subscription  •  Last refreshed just now").color(MUTED));
+            ui.label(RichText::new("Subscription | Last refreshed just now").color(MUTED));
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             view_failures = ui
-                .add_sized([152.0, 36.0], egui::Button::new("☷  View failures"))
+                .add_sized([152.0, 36.0], egui::Button::new("View failures"))
                 .clicked();
-            ui.add_enabled(false, egui::Button::new("⚙  Inspect config"));
+            ui.add_enabled(false, egui::Button::new("Inspect config"));
             ui.label(status_badge(
                 if counts.processing > 0 {
                     "ACTIVE"
@@ -385,7 +378,12 @@ fn overview(
         ui.allocate_ui_with_layout(
             egui::vec2(metric_width, 122.0),
             egui::Layout::top_down(egui::Align::LEFT),
-            |ui| metric(ui, "▣", "READY", counts.ready, "Queued deliveries", BLUE),
+            |ui| metric(ui, "READY", counts.ready, "Queued deliveries", BLUE),
+        );
+        ui.allocate_ui_with_layout(
+            egui::vec2(metric_width, 122.0),
+            egui::Layout::top_down(egui::Align::LEFT),
+            |ui| metric(ui, "PROCESSING", counts.processing, "Leases active", YELLOW),
         );
         ui.allocate_ui_with_layout(
             egui::vec2(metric_width, 122.0),
@@ -393,21 +391,6 @@ fn overview(
             |ui| {
                 metric(
                     ui,
-                    "◌",
-                    "PROCESSING",
-                    counts.processing,
-                    "Leases active",
-                    YELLOW,
-                )
-            },
-        );
-        ui.allocate_ui_with_layout(
-            egui::vec2(metric_width, 122.0),
-            egui::Layout::top_down(egui::Align::LEFT),
-            |ui| {
-                metric(
-                    ui,
-                    "✓",
                     "ACKNOWLEDGED",
                     counts.acknowledged,
                     "Completed deliveries",
@@ -418,7 +401,7 @@ fn overview(
         ui.allocate_ui_with_layout(
             egui::vec2(metric_width, 122.0),
             egui::Layout::top_down(egui::Align::LEFT),
-            |ui| metric(ui, "⚠", "FAILED", counts.failed, "Needs review", RED),
+            |ui| metric(ui, "FAILED", counts.failed, "Needs review", RED),
         );
     });
     ui.add_space(18.0);
@@ -441,13 +424,10 @@ fn overview(
     recent_failures_card(ui, snapshot, commands);
     view_failures
 }
-fn metric(ui: &mut egui::Ui, icon: &str, label: &str, value: i64, detail: &str, color: Color32) {
+fn metric(ui: &mut egui::Ui, label: &str, value: i64, detail: &str, color: Color32) {
     card().show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.label(RichText::new(label).size(13.0).color(color));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new(icon).size(28.0).color(color));
-            });
         });
         ui.add_space(10.0);
         ui.label(RichText::new(format_count(value)).size(30.0));
@@ -529,7 +509,7 @@ fn throughput_card(ui: &mut egui::Ui, values: &[f64]) {
             ui.vertical(|ui| {
                 ui.label(RichText::new("THROUGHPUT").strong());
                 ui.label(
-                    RichText::new("ACK/s  ·  last 60 seconds")
+                    RichText::new("ACK/s | last 60 seconds")
                         .small()
                         .color(MUTED),
                 );
@@ -582,7 +562,7 @@ fn throughput_card(ui: &mut egui::Ui, values: &[f64]) {
             painter.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                "Collecting acknowledgement samples…",
+                "Collecting acknowledgement samples...",
                 egui::FontId::proportional(13.0),
                 MUTED,
             );
@@ -595,18 +575,16 @@ fn diagnostics_card(ui: &mut egui::Ui, snapshot: &ConsoleSnapshot) {
         ui.label(RichText::new("DIAGNOSTICS").strong());
         ui.add_space(10.0);
         if let Some(config) = &snapshot.config {
-            diagnostic_row(ui, "◌", "Active leases", &config.active_leases.to_string());
+            diagnostic_row(ui, "Active leases", &config.active_leases.to_string());
             diagnostic_row(
                 ui,
-                "↻",
                 "Retry ceiling",
                 &format!("{} attempts", config.max_max_attempts),
             );
-            diagnostic_row(ui, "⌁", "Concurrency", "Runtime-only");
-            diagnostic_row(ui, "◷", "Lease duration", "Runtime-only");
+            diagnostic_row(ui, "Concurrency", "Runtime-only");
+            diagnostic_row(ui, "Lease duration", "Runtime-only");
             diagnostic_row(
                 ui,
-                "▣",
                 "Journal mode",
                 snapshot
                     .database
@@ -616,7 +594,6 @@ fn diagnostics_card(ui: &mut egui::Ui, snapshot: &ConsoleSnapshot) {
             );
             diagnostic_row(
                 ui,
-                "◫",
                 "Database size",
                 &format_size(snapshot.database.as_ref().and_then(|item| item.size_bytes)),
             );
@@ -631,9 +608,8 @@ fn diagnostics_card(ui: &mut egui::Ui, snapshot: &ConsoleSnapshot) {
         );
     });
 }
-fn diagnostic_row(ui: &mut egui::Ui, icon: &str, label: &str, value: &str) {
+fn diagnostic_row(ui: &mut egui::Ui, label: &str, value: &str) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(icon).color(MUTED));
         ui.label(label);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(RichText::new(value).color(TEXT))
@@ -689,11 +665,11 @@ fn recent_failures_card(
                         );
                         ui.label(format!("{}/{}", failure.attempts, failure.max_attempts));
                         let inspect = ui
-                            .small_button("◉")
+                            .small_button("Inspect")
                             .on_hover_text("Inspect failure")
                             .clicked();
                         let retry = ui
-                            .small_button("↻")
+                            .small_button("Retry")
                             .on_hover_text("Retry delivery")
                             .clicked();
                         if inspect {
@@ -715,7 +691,7 @@ fn subscriptions(ui: &mut egui::Ui, snapshot: &ConsoleSnapshot, commands: &mpsc:
             .selectable_label(
                 snapshot.selected_queue.as_deref() == Some(&subscription.queue),
                 format!(
-                    "{}  ·  {} ready / {} failed",
+                    "{} | {} ready / {} failed",
                     subscription.queue, subscription.counts.ready, subscription.counts.failed
                 ),
             )
@@ -743,7 +719,7 @@ fn executions(ui: &mut egui::Ui, snapshot: &ConsoleSnapshot) {
                     "Active"
                 });
                 ui.label(format!(
-                    "{} acked · {} failed",
+                    "{} acked / {} failed",
                     execution.counts.acknowledged, execution.counts.failed
                 ));
                 ui.end_row();
