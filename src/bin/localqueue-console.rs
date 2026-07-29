@@ -380,30 +380,62 @@ fn overview(
         });
     });
     ui.add_space(16.0);
+    let metric_width = ((ui.available_width() - 36.0) / 4.0).max(160.0);
     ui.horizontal(|ui| {
-        metric(ui, "▣", "READY", counts.ready, "Queued deliveries", BLUE);
-        metric(
-            ui,
-            "◌",
-            "PROCESSING",
-            counts.processing,
-            "Leases active",
-            YELLOW,
+        ui.allocate_ui_with_layout(
+            egui::vec2(metric_width, 122.0),
+            egui::Layout::top_down(egui::Align::LEFT),
+            |ui| metric(ui, "▣", "READY", counts.ready, "Queued deliveries", BLUE),
         );
-        metric(
-            ui,
-            "✓",
-            "ACKNOWLEDGED",
-            counts.acknowledged,
-            "Completed deliveries",
-            GREEN,
+        ui.allocate_ui_with_layout(
+            egui::vec2(metric_width, 122.0),
+            egui::Layout::top_down(egui::Align::LEFT),
+            |ui| {
+                metric(
+                    ui,
+                    "◌",
+                    "PROCESSING",
+                    counts.processing,
+                    "Leases active",
+                    YELLOW,
+                )
+            },
         );
-        metric(ui, "⚠", "FAILED", counts.failed, "Needs review", RED);
+        ui.allocate_ui_with_layout(
+            egui::vec2(metric_width, 122.0),
+            egui::Layout::top_down(egui::Align::LEFT),
+            |ui| {
+                metric(
+                    ui,
+                    "✓",
+                    "ACKNOWLEDGED",
+                    counts.acknowledged,
+                    "Completed deliveries",
+                    GREEN,
+                )
+            },
+        );
+        ui.allocate_ui_with_layout(
+            egui::vec2(metric_width, 122.0),
+            egui::Layout::top_down(egui::Align::LEFT),
+            |ui| metric(ui, "⚠", "FAILED", counts.failed, "Needs review", RED),
+        );
     });
     ui.add_space(18.0);
-    ui.columns(2, |columns| {
-        throughput_card(&mut columns[0], &snapshot.throughput);
-        diagnostics_card(&mut columns[1], snapshot);
+    let charts_width = ui.available_width();
+    let graph_width = (charts_width * 0.64 - 6.0).max(320.0);
+    let diagnostics_width = (charts_width - graph_width - 12.0).max(230.0);
+    ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(graph_width, 360.0),
+            egui::Layout::top_down(egui::Align::LEFT),
+            |ui| throughput_card(ui, &snapshot.throughput),
+        );
+        ui.allocate_ui_with_layout(
+            egui::vec2(diagnostics_width, 360.0),
+            egui::Layout::top_down(egui::Align::LEFT),
+            |ui| diagnostics_card(ui, snapshot),
+        );
     });
     ui.add_space(14.0);
     recent_failures_card(ui, snapshot, commands);
@@ -411,7 +443,6 @@ fn overview(
 }
 fn metric(ui: &mut egui::Ui, icon: &str, label: &str, value: i64, detail: &str, color: Color32) {
     card().show(ui, |ui| {
-        ui.set_min_width(198.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new(label).size(13.0).color(color));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
