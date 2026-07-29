@@ -362,7 +362,8 @@ jobs:
             echo "main and tag already point to the approved candidate"
           elif [[ -z "$tag_sha" ]]; then
             candidate_main_files=$(git diff --name-only "$candidate_sha" "$main_sha")
-            if [[ -n "$candidate_main_files" && "$candidate_main_files" != ".github/workflows/wheels.yml" ]]; then
+            allowed_promotion_files=$'.github/workflows/wheels.yml\ntests/test_release_documentation.py'
+            if [[ -n "$candidate_main_files" && "$candidate_main_files" != "$allowed_promotion_files" ]]; then
               echo "main contains changes beyond the trusted promotion workflow" >&2
               exit 1
             fi
@@ -373,7 +374,7 @@ jobs:
           fi
           git fetch origin main --tags
           candidate_main_files=$(git diff --name-only "$candidate_sha" origin/main)
-          test -z "$candidate_main_files" || test "$candidate_main_files" = ".github/workflows/wheels.yml"
+          test -z "$candidate_main_files" || test "$candidate_main_files" = "$allowed_promotion_files"
           test "$(git rev-parse "v$CANDIDATE_VERSION^{commit}")" = "$candidate_sha"
 
       - name: Create or validate the draft GitHub Release
