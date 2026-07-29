@@ -127,9 +127,13 @@ jobs:
           test "$(wc -w <<<"$parents")" -eq 2
           parent_sha=$(awk '{print $2}' <<<"$parents")
           current_main=$(git rev-parse origin/main)
+          candidate_main_files=$(git diff --name-only "$CANDIDATE_SHA" "$current_main")
+          allowed_promotion_files=$'.github/workflows/wheels.yml\ntests/test_release_documentation.py'
           if [[ "$current_main" != "$parent_sha" && "$current_main" != "$CANDIDATE_SHA" ]]; then
-            echo "main advanced beyond the candidate; prepare a new candidate" >&2
-            exit 1
+            if [[ "$candidate_main_files" != "$allowed_promotion_files" ]]; then
+              echo "main advanced beyond the candidate; prepare a new candidate" >&2
+              exit 1
+            fi
           fi
           if [[ "$current_main" != "$CANDIDATE_SHA" ]]; then
             git diff-tree --no-commit-id --name-only -r "$CANDIDATE_SHA" | sort > candidate-files.txt
