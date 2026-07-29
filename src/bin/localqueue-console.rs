@@ -261,34 +261,23 @@ impl eframe::App for ConsoleApp {
             .default_width(252.0)
             .frame(sidebar_frame())
             .show(ctx, |ui| {
-                ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    egui::Frame::new()
-                        .fill(Color32::from_rgb(19, 53, 110))
-                        .corner_radius(8.0)
-                        .inner_margin(egui::Margin::same(10))
-                        .show(ui, |ui| {
-                            ui.label(RichText::new("LQ").size(16.0).color(BLUE));
-                        });
+                    sidebar_logo(ui);
+                    ui.add_space(10.0);
                     ui.vertical(|ui| {
                         ui.label(RichText::new("LOCALQUEUE").strong().size(16.0));
                         ui.label(RichText::new("Console v0.1.0").small().color(MUTED));
                     });
                 });
-                ui.add_space(28.0);
+                ui.add_space(26.0);
                 for (index, label) in ["Overview", "Subscriptions", "Executions", "Failures"]
                     .iter()
                     .enumerate()
                 {
-                    if ui
-                        .add_sized(
-                            [218.0, 42.0],
-                            egui::Button::new(*label).selected(self.page == index),
-                        )
-                        .clicked()
-                    {
+                    if sidebar_item(ui, index, label, self.page == index).clicked() {
                         self.page = index;
                     }
+                    ui.add_space(4.0);
                 }
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                     ui.separator();
@@ -434,6 +423,122 @@ fn metric(ui: &mut egui::Ui, label: &str, value: i64, detail: &str, color: Color
         ui.add_space(8.0);
         ui.label(RichText::new(detail).small().color(MUTED));
     });
+}
+
+fn sidebar_logo(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(40.0, 40.0), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 8.0, Color32::from_rgb(17, 57, 120));
+    let stroke = egui::Stroke::new(1.5, Color32::from_rgb(115, 173, 255));
+    let center = rect.center();
+    painter.rect_stroke(
+        egui::Rect::from_center_size(center - egui::vec2(5.0, 4.0), egui::vec2(8.0, 8.0)),
+        1.5,
+        stroke,
+        egui::StrokeKind::Inside,
+    );
+    painter.rect_stroke(
+        egui::Rect::from_center_size(center + egui::vec2(5.0, 4.0), egui::vec2(8.0, 8.0)),
+        1.5,
+        stroke,
+        egui::StrokeKind::Inside,
+    );
+    painter.line_segment(
+        [
+            center + egui::vec2(-1.0, 5.0),
+            center + egui::vec2(6.0, -5.0),
+        ],
+        stroke,
+    );
+}
+
+fn sidebar_item(ui: &mut egui::Ui, index: usize, label: &str, selected: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(218.0, 38.0), egui::Sense::click());
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let painter = ui.painter_at(rect);
+    if selected {
+        painter.rect_filled(rect, 8.0, Color32::from_rgb(20, 59, 123));
+    } else if response.hovered() {
+        painter.rect_filled(rect, 8.0, Color32::from_rgb(9, 33, 59));
+    }
+    draw_sidebar_icon(
+        &painter,
+        index,
+        egui::Rect::from_min_size(rect.min + egui::vec2(12.0, 9.0), egui::vec2(20.0, 20.0)),
+        if selected { TEXT } else { MUTED },
+    );
+    painter.text(
+        rect.min + egui::vec2(52.0, 19.0),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(15.0),
+        if selected { TEXT } else { MUTED },
+    );
+    response
+}
+
+fn draw_sidebar_icon(painter: &egui::Painter, index: usize, rect: egui::Rect, color: Color32) {
+    let stroke = egui::Stroke::new(1.8, color);
+    match index {
+        0 => {
+            let roof = [
+                rect.left_top() + egui::vec2(1.0, 9.0),
+                rect.center_top() + egui::vec2(0.0, 1.0),
+                rect.right_top() + egui::vec2(-1.0, 9.0),
+            ];
+            painter.line_segment([roof[0], roof[1]], stroke);
+            painter.line_segment([roof[1], roof[2]], stroke);
+            painter.rect_stroke(
+                egui::Rect::from_min_max(
+                    rect.min + egui::vec2(4.0, 9.0),
+                    rect.max - egui::vec2(4.0, 1.0),
+                ),
+                1.5,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+        1 => {
+            for offset in [3.0, 10.0, 17.0] {
+                painter.circle_filled(rect.min + egui::vec2(3.0, offset), 1.4, color);
+                painter.line_segment(
+                    [
+                        rect.min + egui::vec2(7.0, offset),
+                        rect.right_top() + egui::vec2(-1.0, offset),
+                    ],
+                    stroke,
+                );
+            }
+        }
+        2 => {
+            painter.rect_stroke(rect.shrink(1.0), 2.0, stroke, egui::StrokeKind::Inside);
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    rect.min + egui::vec2(8.0, 5.0),
+                    rect.min + egui::vec2(8.0, 15.0),
+                    rect.min + egui::vec2(15.0, 10.0),
+                ],
+                color,
+                egui::Stroke::NONE,
+            ));
+        }
+        _ => {
+            let points = vec![
+                rect.center_top() + egui::vec2(0.0, 1.0),
+                rect.right_bottom() + egui::vec2(-1.0, -1.0),
+                rect.left_bottom() + egui::vec2(1.0, -1.0),
+            ];
+            painter.add(egui::Shape::closed_line(points, stroke));
+            painter.line_segment(
+                [
+                    rect.center_top() + egui::vec2(0.0, 7.0),
+                    rect.center_bottom() + egui::vec2(0.0, 1.0),
+                ],
+                stroke,
+            );
+            painter.circle_filled(rect.center_bottom() + egui::vec2(0.0, -4.0), 1.2, color);
+        }
+    }
 }
 
 fn apply_console_theme(ctx: &egui::Context) {
