@@ -338,12 +338,23 @@ fn overview(
     let mut view_failures = false;
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
-            ui.heading(
-                snapshot
-                    .selected_queue
-                    .as_deref()
-                    .unwrap_or("No subscription"),
-            );
+            ui.horizontal(|ui| {
+                ui.heading(
+                    snapshot
+                        .selected_queue
+                        .as_deref()
+                        .unwrap_or("No subscription"),
+                );
+                ui.add_space(8.0);
+                ui.label(status_badge(
+                    if counts.processing > 0 {
+                        "ACTIVE"
+                    } else {
+                        "IDLE"
+                    },
+                    if counts.processing > 0 { GREEN } else { MUTED },
+                ));
+            });
             ui.label(RichText::new("Subscription | Last refreshed just now").color(MUTED));
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -361,14 +372,6 @@ fn overview(
                     .fill(SURFACE)
                     .stroke(egui::Stroke::new(1.0, BORDER)),
             );
-            ui.label(status_badge(
-                if counts.processing > 0 {
-                    "ACTIVE"
-                } else {
-                    "IDLE"
-                },
-                if counts.processing > 0 { GREEN } else { MUTED },
-            ));
         });
     });
     ui.add_space(16.0);
