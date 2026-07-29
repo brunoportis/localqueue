@@ -295,11 +295,37 @@ fn top_bar(ui: &mut egui::Ui, app: &mut ConsoleApp) {
     panel_frame().show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.label(RichText::new("PATH").size(12.0).color(MUTED));
-            ui.add_sized(
-                [275.0, 32.0],
-                egui::TextEdit::singleline(&mut app.path_input).text_color(BLUE),
-            );
-            if ui.button("Open").clicked() {
+            let open_path = egui::Frame::new()
+                .fill(SURFACE)
+                .stroke(egui::Stroke::new(1.0, BORDER))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::symmetric(8, 4))
+                .show(ui, |ui| {
+                    ui.set_width(275.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let open = ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new(regular::FOLDER).size(18.0).color(MUTED),
+                                )
+                                .frame(false)
+                                .min_size(egui::vec2(24.0, 24.0)),
+                            )
+                            .on_hover_text("Open LocalQueue path");
+                        let path = ui.add_sized(
+                            [ui.available_width(), 24.0],
+                            egui::TextEdit::singleline(&mut app.path_input)
+                                .frame(false)
+                                .text_color(BLUE),
+                        );
+                        open.clicked()
+                            || (path.lost_focus()
+                                && ui.input(|input| input.key_pressed(egui::Key::Enter)))
+                    })
+                    .inner
+                })
+                .inner;
+            if open_path {
                 let _ = app
                     .commands
                     .send(Command::Open(PathBuf::from(app.path_input.trim())));
