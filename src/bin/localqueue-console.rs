@@ -1003,7 +1003,15 @@ fn main() -> eframe::Result<()> {
                 path_input: path.display().to_string(),
                 file_dialog: FileDialog::new()
                     .initial_directory(path.clone())
-                    .show_new_folder_button(false),
+                    .title("Open LocalQueue path")
+                    .as_modal(true)
+                    .default_size([760.0, 460.0])
+                    .min_size([640.0, 360.0])
+                    .default_folder_icon(regular::FOLDER)
+                    .show_left_panel(false)
+                    .show_menu_button(false)
+                    .show_new_folder_button(false)
+                    .show_path_edit_button(false),
                 icon_font_loaded: false,
             }))
         }),
