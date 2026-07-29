@@ -1,4 +1,5 @@
 use eframe::egui::{self, Color32, RichText};
+use egui_file_dialog::FileDialog;
 use egui_phosphor::regular;
 use localqueue::admin::{
     AdminStore, DatabaseInfo, DeliveryCounts, ExecutionSummary, FailedDelivery, FailureDetail,
@@ -189,6 +190,7 @@ struct ConsoleApp {
     refresh: u64,
     page: usize,
     path_input: String,
+    file_dialog: FileDialog,
     icon_font_loaded: bool,
 }
 impl ConsoleApp {
@@ -288,6 +290,11 @@ impl eframe::App for ConsoleApp {
                         });
                     });
             });
+        self.file_dialog.update(ctx);
+        if let Some(path) = self.file_dialog.take_picked() {
+            self.path_input = path.display().to_string();
+            let _ = self.commands.send(Command::Open(path));
+        }
     }
 }
 
@@ -295,7 +302,7 @@ fn top_bar(ui: &mut egui::Ui, app: &mut ConsoleApp) {
     panel_frame().show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.label(RichText::new("PATH").size(12.0).color(MUTED));
-            let open_path = egui::Frame::new()
+            let (choose_path, open_path) = egui::Frame::new()
                 .fill(SURFACE)
                 .stroke(egui::Stroke::new(1.0, BORDER))
                 .corner_radius(6.0)
@@ -318,13 +325,20 @@ fn top_bar(ui: &mut egui::Ui, app: &mut ConsoleApp) {
                                 .frame(false)
                                 .text_color(BLUE),
                         );
-                        open.clicked()
-                            || (path.lost_focus()
-                                && ui.input(|input| input.key_pressed(egui::Key::Enter)))
+                        (
+                            open.clicked(),
+                            path.lost_focus()
+                                && ui.input(|input| input.key_pressed(egui::Key::Enter)),
+                        )
                     })
                     .inner
                 })
                 .inner;
+            if choose_path {
+                app.file_dialog.config_mut().initial_directory =
+                    PathBuf::from(app.path_input.trim());
+                app.file_dialog.pick_directory();
+            }
             if open_path {
                 let _ = app
                     .commands
@@ -987,6 +1001,9 @@ fn main() -> eframe::Result<()> {
                 refresh: 1_000,
                 page: 0,
                 path_input: path.display().to_string(),
+                file_dialog: FileDialog::new()
+                    .initial_directory(path.clone())
+                    .show_new_folder_button(false),
                 icon_font_loaded: false,
             }))
         }),
