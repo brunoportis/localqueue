@@ -415,14 +415,93 @@ fn overview(
 }
 fn metric(ui: &mut egui::Ui, label: &str, value: i64, detail: &str, color: Color32) {
     card().show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
         ui.horizontal(|ui| {
             ui.label(RichText::new(label).size(13.0).color(color));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::hover());
+                draw_metric_icon(ui.painter_at(rect), label, rect, color);
+            });
         });
         ui.add_space(10.0);
         ui.label(RichText::new(format_count(value)).size(30.0));
         ui.add_space(8.0);
         ui.label(RichText::new(detail).small().color(MUTED));
     });
+}
+
+fn draw_metric_icon(painter: egui::Painter, label: &str, rect: egui::Rect, color: Color32) {
+    let stroke = egui::Stroke::new(2.4, color);
+    match label {
+        "READY" => {
+            painter.rect_stroke(rect.shrink(3.0), 2.5, stroke, egui::StrokeKind::Inside);
+            painter.line_segment(
+                [
+                    rect.left_top() + egui::vec2(9.0, 3.0),
+                    rect.left_top() + egui::vec2(9.0, 8.0),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    rect.right_top() - egui::vec2(9.0, -3.0),
+                    rect.right_top() - egui::vec2(9.0, -8.0),
+                ],
+                stroke,
+            );
+        }
+        "PROCESSING" => {
+            painter.circle_stroke(rect.center(), 11.0, stroke);
+            painter.line_segment(
+                [
+                    rect.center_top() + egui::vec2(0.0, 1.0),
+                    rect.center_top() + egui::vec2(0.0, 7.0),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    rect.center_bottom() - egui::vec2(0.0, 1.0),
+                    rect.center_bottom() - egui::vec2(0.0, 7.0),
+                ],
+                stroke,
+            );
+        }
+        "ACKNOWLEDGED" => {
+            painter.circle_stroke(rect.center(), 12.0, stroke);
+            painter.line_segment(
+                [
+                    rect.min + egui::vec2(8.0, 16.0),
+                    rect.min + egui::vec2(13.0, 21.0),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    rect.min + egui::vec2(13.0, 21.0),
+                    rect.min + egui::vec2(23.0, 10.0),
+                ],
+                stroke,
+            );
+        }
+        _ => {
+            let points = vec![
+                rect.center_top() + egui::vec2(0.0, 2.0),
+                rect.right_bottom() - egui::vec2(2.0, 3.0),
+                rect.left_bottom() + egui::vec2(2.0, -3.0),
+            ];
+            painter.add(egui::Shape::closed_line(points, stroke));
+            painter.line_segment(
+                [
+                    rect.center_top() + egui::vec2(0.0, 10.0),
+                    rect.center_bottom() - egui::vec2(0.0, 7.0),
+                ],
+                stroke,
+            );
+            painter.circle_filled(rect.center_bottom() - egui::vec2(0.0, 4.0), 1.5, color);
+        }
+    }
 }
 
 fn sidebar_logo(ui: &mut egui::Ui) {
