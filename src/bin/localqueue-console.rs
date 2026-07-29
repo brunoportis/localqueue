@@ -348,9 +348,19 @@ fn overview(
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             view_failures = ui
-                .add_sized([152.0, 36.0], egui::Button::new("View failures"))
+                .add_sized(
+                    [154.0, 44.0],
+                    egui::Button::new(RichText::new("View failures").color(TEXT))
+                        .fill(Color32::from_rgb(25, 76, 168))
+                        .stroke(egui::Stroke::new(1.0, BLUE)),
+                )
                 .clicked();
-            ui.add_enabled(false, egui::Button::new("Inspect config"));
+            ui.add_sized(
+                [148.0, 44.0],
+                egui::Button::new(RichText::new("Inspect config").color(MUTED))
+                    .fill(SURFACE)
+                    .stroke(egui::Stroke::new(1.0, BORDER)),
+            );
             ui.label(status_badge(
                 if counts.processing > 0 {
                     "ACTIVE"
@@ -363,7 +373,7 @@ fn overview(
     });
     ui.add_space(16.0);
     let metric_width = ((ui.available_width() - 36.0) / 4.0).max(160.0);
-    ui.horizontal(|ui| {
+    ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(
             egui::vec2(metric_width, 122.0),
             egui::Layout::top_down(egui::Align::LEFT),
