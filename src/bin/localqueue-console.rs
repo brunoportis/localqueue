@@ -314,7 +314,7 @@ fn top_bar(ui: &mut egui::Ui, app: &mut ConsoleApp) {
                 .corner_radius(7.0)
                 .inner_margin(egui::Margin::symmetric(8, 4))
                 .show(ui, |ui| {
-                    ui.set_width(176.0);
+                    ui.set_width(200.0);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let open = ui
                             .add(
