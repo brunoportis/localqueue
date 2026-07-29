@@ -505,6 +505,18 @@ filesystem, and run; it is not a product performance promise.
 
 ## Development
 
+## LocalQueue Console (v0)
+
+The optional native console opens one local queue directory:
+
+```bash
+cargo run --features console --bin localqueue-console -- /data/contacts
+```
+
+It is a local, read-only-first inspector. It can inspect a failed payload and
+retry one failed delivery; it does not expose worker controls, HTTP, alerts, or
+persistent telemetry. See [the console architecture note](docs/localqueue-console.md).
+
 Build the extension in a local virtual environment and run the test suite:
 
 ```bash

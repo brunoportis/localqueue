@@ -1,3 +1,4 @@
+pub mod admin;
 mod backup;
 mod diagnostics;
 mod error;
