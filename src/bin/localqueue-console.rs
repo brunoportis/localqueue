@@ -267,7 +267,7 @@ impl eframe::App for ConsoleApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(BACKGROUND))
             .show(ctx, |ui| {
-                top_bar(ui, self, &snapshot);
+                top_bar(ui, self);
                 egui::Frame::new()
                     .inner_margin(egui::Margin::same(18))
                     .show(ui, |ui| {
@@ -291,7 +291,7 @@ impl eframe::App for ConsoleApp {
     }
 }
 
-fn top_bar(ui: &mut egui::Ui, app: &mut ConsoleApp, snapshot: &ConsoleSnapshot) {
+fn top_bar(ui: &mut egui::Ui, app: &mut ConsoleApp) {
     panel_frame().show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.label(RichText::new("PATH").size(12.0).color(MUTED));
@@ -304,15 +304,6 @@ fn top_bar(ui: &mut egui::Ui, app: &mut ConsoleApp, snapshot: &ConsoleSnapshot) 
                     .commands
                     .send(Command::Open(PathBuf::from(app.path_input.trim())));
             }
-            ui.separator();
-            ui.label(
-                snapshot
-                    .database
-                    .as_ref()
-                    .map_or("Opening database...".to_owned(), |info| {
-                        info.path.display().to_string()
-                    }),
-            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(RichText::new(regular::GEAR).size(20.0).color(MUTED));
                 ui.label(RichText::new(regular::SUN).size(21.0).color(MUTED));
