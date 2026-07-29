@@ -1,0 +1,1144 @@
+use eframe::egui::{self, Color32, RichText};
+use egui_file_dialog::FileDialog;
+use egui_phosphor::regular;
+use localqueue::admin::{
+    AdminStore, DatabaseInfo, DeliveryCounts, ExecutionSummary, FailedDelivery, FailureDetail,
+    Page, SubscriptionConfig, SubscriptionSummary,
+};
+use std::collections::VecDeque;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
+
+const PAGE_SIZE: u64 = 25;
+const BACKGROUND: Color32 = Color32::from_rgb(3, 13, 23);
+const SURFACE: Color32 = Color32::from_rgb(7, 22, 36);
+const SURFACE_ALT: Color32 = Color32::from_rgb(9, 29, 46);
+const BORDER: Color32 = Color32::from_rgb(27, 48, 67);
+const TEXT: Color32 = Color32::from_rgb(231, 237, 245);
+const MUTED: Color32 = Color32::from_rgb(161, 177, 196);
+const BLUE: Color32 = Color32::from_rgb(58, 132, 255);
+const GREEN: Color32 = Color32::from_rgb(45, 212, 146);
+const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
+const RED: Color32 = Color32::from_rgb(248, 92, 100);
+
+#[derive(Clone, Default)]
+struct ConsoleSnapshot {
+    database: Option<DatabaseInfo>,
+    subscriptions: Vec<SubscriptionSummary>,
+    selected_queue: Option<String>,
+    config: Option<SubscriptionConfig>,
+    failures: Option<Page<FailedDelivery>>,
+    executions: Option<Page<ExecutionSummary>>,
+    failure_detail: Option<FailureDetail>,
+    throughput: Vec<f64>,
+    error: Option<String>,
+}
+
+enum Command {
+    SelectQueue(String),
+    FailurePage(u64),
+    InspectFailure(i64),
+    Retry(i64),
+    Open(PathBuf),
+}
+
+struct Throughput {
+    samples: VecDeque<(Instant, i64)>,
+}
+impl Throughput {
+    fn push(&mut self, at: Instant, acknowledged: i64) {
+        self.samples.push_back((at, acknowledged));
+        while self
+            .samples
+            .front()
+            .is_some_and(|(time, _)| at.duration_since(*time) > Duration::from_secs(60))
+        {
+            self.samples.pop_front();
+        }
+    }
+    fn values(&self) -> Vec<f64> {
+        self.samples
+            .iter()
+            .zip(self.samples.iter().skip(1))
+            .map(|(before, after)| {
+                let seconds = after.0.duration_since(before.0).as_secs_f64();
+                if seconds > 0.0 {
+                    (after.1 - before.1).max(0) as f64 / seconds
+                } else {
+                    0.0
+                }
+            })
+            .collect()
+    }
+}
+
+fn start_sampler(
+    path: PathBuf,
+    refresh_ms: Arc<AtomicU64>,
+) -> (mpsc::Sender<Command>, Arc<Mutex<ConsoleSnapshot>>) {
+    let (tx, rx) = mpsc::channel();
+    let snapshot = Arc::new(Mutex::new(ConsoleSnapshot::default()));
+    let destination = snapshot.clone();
+    thread::spawn(move || {
+        let mut store = AdminStore::open(path).ok();
+        let mut selected_queue = None;
+        let mut failure_offset = 0;
+        let mut selected_failure = None;
+        let mut throughput = Throughput {
+            samples: VecDeque::new(),
+        };
+        loop {
+            let timeout =
+                Duration::from_millis(refresh_ms.load(Ordering::Relaxed).clamp(500, 1_000));
+            match rx.recv_timeout(timeout) {
+                Ok(Command::SelectQueue(queue)) => selected_queue = Some(queue),
+                Ok(Command::FailurePage(offset)) => failure_offset = offset,
+                Ok(Command::InspectFailure(id)) => selected_failure = Some(id),
+                Ok(Command::Retry(id)) => {
+                    if let Some(store) = &store {
+                        if let Err(error) = store.retry_failed(id) {
+                            let current = destination.lock().unwrap().clone();
+                            *destination.lock().unwrap() = ConsoleSnapshot {
+                                error: Some(error.to_string()),
+                                ..current
+                            };
+                        }
+                    }
+                }
+                Ok(Command::Open(path)) => {
+                    store = AdminStore::open(path).ok();
+                    selected_queue = None;
+                    failure_offset = 0;
+                    selected_failure = None;
+                    throughput = Throughput {
+                        samples: VecDeque::new(),
+                    };
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            let next = match &store {
+                Some(store) => sample(
+                    store,
+                    &mut selected_queue,
+                    failure_offset,
+                    selected_failure,
+                    &mut throughput,
+                ),
+                None => ConsoleSnapshot {
+                    error: Some("Unable to open LocalQueue database".to_owned()),
+                    ..ConsoleSnapshot::default()
+                },
+            };
+            *destination.lock().unwrap() = next;
+        }
+    });
+    (tx, snapshot)
+}
+
+fn sample(
+    store: &AdminStore,
+    selected_queue: &mut Option<String>,
+    failure_offset: u64,
+    selected_failure: Option<i64>,
+    throughput: &mut Throughput,
+) -> ConsoleSnapshot {
+    let subscriptions = match store.subscriptions() {
+        Ok(value) => value,
+        Err(error) => {
+            return ConsoleSnapshot {
+                error: Some(error.to_string()),
+                ..ConsoleSnapshot::default()
+            }
+        }
+    };
+    if selected_queue.as_ref().is_none_or(|queue| {
+        !subscriptions
+            .iter()
+            .any(|subscription| &subscription.queue == queue)
+    }) {
+        *selected_queue = subscriptions.first().map(|item| item.queue.clone());
+    }
+    let config = selected_queue
+        .as_deref()
+        .and_then(|queue| store.subscription_config(queue).ok().flatten());
+    let acknowledged = selected_queue
+        .as_deref()
+        .and_then(|queue| subscriptions.iter().find(|item| item.queue == queue))
+        .map_or(0, |item| item.counts.acknowledged);
+    throughput.push(Instant::now(), acknowledged);
+    ConsoleSnapshot {
+        database: store.database_info().ok(),
+        subscriptions,
+        selected_queue: selected_queue.clone(),
+        config,
+        failures: store.failed_deliveries(failure_offset, PAGE_SIZE).ok(),
+        executions: store.executions(0, PAGE_SIZE).ok(),
+        failure_detail: selected_failure.and_then(|id| store.failure_detail(id).ok().flatten()),
+        throughput: throughput.values(),
+        error: None,
+    }
+}
+
+struct ConsoleApp {
+    commands: mpsc::Sender<Command>,
+    snapshot: Arc<Mutex<ConsoleSnapshot>>,
+    refresh_ms: Arc<AtomicU64>,
+    refresh: u64,
+    page: usize,
+    path_input: String,
+    file_dialog: FileDialog,
+    icon_font_loaded: bool,
+}
+impl ConsoleApp {
+    fn counts(snapshot: &ConsoleSnapshot) -> DeliveryCounts {
+        snapshot
+            .selected_queue
+            .as_ref()
+            .and_then(|queue| {
+                snapshot
+                    .subscriptions
+                    .iter()
+                    .find(|item| &item.queue == queue)
+            })
+            .map(|item| item.counts.clone())
+            .unwrap_or_default()
+    }
+}
+impl eframe::App for ConsoleApp {
+    fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+        if !self.icon_font_loaded {
+            let mut fonts = egui::FontDefinitions::default();
+            egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+            ctx.set_fonts(fonts);
+            self.icon_font_loaded = true;
+        }
+        apply_console_theme(ctx);
+        ctx.request_repaint_after(Duration::from_millis(100));
+        let snapshot = self.snapshot.lock().unwrap().clone();
+        egui::SidePanel::left("sidebar")
+            .resizable(false)
+            .default_width(252.0)
+            .frame(sidebar_frame())
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    sidebar_logo(ui);
+                    ui.add_space(10.0);
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new("LOCALQUEUE").strong().size(16.0));
+                        ui.label(RichText::new("Console v0.1.0").small().color(MUTED));
+                    });
+                });
+                ui.add_space(26.0);
+                for (index, label) in ["Overview", "Subscriptions", "Executions", "Failures"]
+                    .iter()
+                    .enumerate()
+                {
+                    if sidebar_item(ui, index, label, self.page == index).clicked() {
+                        self.page = index;
+                    }
+                    ui.add_space(4.0);
+                }
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                    ui.separator();
+                    if let Some(database) = &snapshot.database {
+                        ui.label(RichText::new(format_size(database.size_bytes)).color(MUTED));
+                        ui.label(RichText::new("Size").small().color(MUTED));
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new(database.path.display().to_string())
+                                .small()
+                                .color(MUTED),
+                        );
+                        ui.label(RichText::new("File").small().color(MUTED));
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new(format!(
+                                "SQLite ({})",
+                                database.journal_mode.to_uppercase()
+                            ))
+                            .color(MUTED),
+                        );
+                        ui.label(RichText::new("Connected to").small().color(MUTED));
+                    }
+                });
+            });
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(BACKGROUND))
+            .show(ctx, |ui| {
+                top_bar(ui, self);
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::same(18))
+                    .show(ui, |ui| {
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            if let Some(error) = &snapshot.error {
+                                ui.colored_label(Color32::RED, error);
+                            }
+                            match self.page {
+                                0 => {
+                                    if overview(ui, &snapshot, &self.commands) {
+                                        self.page = 3;
+                                    }
+                                }
+                                1 => subscriptions(ui, &snapshot, &self.commands),
+                                2 => executions(ui, &snapshot),
+                                _ => failures(ui, &snapshot, &self.commands),
+                            }
+                        });
+                    });
+            });
+        self.file_dialog.update(ctx);
+        if let Some(path) = self.file_dialog.take_picked() {
+            self.path_input = path.display().to_string();
+            let _ = self.commands.send(Command::Open(path));
+        }
+    }
+}
+
+fn top_bar(ui: &mut egui::Ui, app: &mut ConsoleApp) {
+    panel_frame().show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(32.0, 32.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.label(RichText::new("PATH").size(11.0).color(MUTED));
+                },
+            );
+            let (choose_path, open_path) = egui::Frame::new()
+                .fill(SURFACE)
+                .stroke(egui::Stroke::new(1.0, BORDER))
+                .corner_radius(7.0)
+                .inner_margin(egui::Margin::symmetric(8, 4))
+                .show(ui, |ui| {
+                    ui.set_width(200.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let open = ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new(regular::FOLDER).size(18.0).color(MUTED),
+                                )
+                                .frame(false)
+                                .min_size(egui::vec2(22.0, 24.0)),
+                            )
+                            .on_hover_text("Open LocalQueue path");
+                        let path = ui.add_sized(
+                            [ui.available_width(), 24.0],
+                            egui::TextEdit::singleline(&mut app.path_input)
+                                .frame(false)
+                                .text_color(BLUE),
+                        );
+                        (
+                            open.clicked(),
+                            path.lost_focus()
+                                && ui.input(|input| input.key_pressed(egui::Key::Enter)),
+                        )
+                    })
+                    .inner
+                })
+                .inner;
+            if choose_path {
+                app.file_dialog.config_mut().initial_directory =
+                    PathBuf::from(app.path_input.trim());
+                app.file_dialog.pick_directory();
+            }
+            if open_path {
+                let _ = app
+                    .commands
+                    .send(Command::Open(PathBuf::from(app.path_input.trim())));
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(RichText::new(regular::GEAR).size(20.0).color(MUTED));
+                ui.label(RichText::new(regular::SUN).size(21.0).color(MUTED));
+                egui::ComboBox::from_id_salt("refresh")
+                    .width(128.0)
+                    .selected_text(format!("Refresh: {} s", app.refresh / 1_000))
+                    .show_ui(ui, |ui| {
+                        for ms in [500, 1_000] {
+                            if ui
+                                .selectable_value(&mut app.refresh, ms, format!("{} ms", ms))
+                                .changed()
+                            {
+                                app.refresh_ms.store(ms, Ordering::Relaxed);
+                            }
+                        }
+                    });
+                ui.label(RichText::new("LIVE").color(GREEN));
+            });
+        });
+    });
+}
+
+fn overview(
+    ui: &mut egui::Ui,
+    snapshot: &ConsoleSnapshot,
+    commands: &mpsc::Sender<Command>,
+) -> bool {
+    let counts = ConsoleApp::counts(snapshot);
+    let mut view_failures = false;
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(subscription_title(
+                        snapshot
+                            .selected_queue
+                            .as_deref()
+                            .unwrap_or("No subscription"),
+                    ))
+                    .size(20.0)
+                    .strong()
+                    .color(TEXT),
+                );
+                ui.add_space(10.0);
+                status_pill(
+                    ui,
+                    if counts.processing > 0 {
+                        "ACTIVE"
+                    } else {
+                        "IDLE"
+                    },
+                    if counts.processing > 0 { GREEN } else { MUTED },
+                );
+            });
+            ui.label(
+                RichText::new("Subscription  •  Last refreshed just now")
+                    .size(13.0)
+                    .color(MUTED),
+            );
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            view_failures = ui
+                .add_sized(
+                    [154.0, 44.0],
+                    egui::Button::new(RichText::new("View failures").color(TEXT))
+                        .fill(Color32::from_rgb(25, 76, 168))
+                        .stroke(egui::Stroke::new(1.0, BLUE)),
+                )
+                .clicked();
+            ui.add_sized(
+                [148.0, 44.0],
+                egui::Button::new(RichText::new("Inspect config").color(MUTED))
+                    .fill(SURFACE)
+                    .stroke(egui::Stroke::new(1.0, BORDER)),
+            );
+        });
+    });
+    ui.add_space(16.0);
+    let metric_width = ((ui.available_width() - 36.0) / 4.0).max(160.0);
+    ui.horizontal_top(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(metric_width, 122.0),
+            egui::Layout::top_down(egui::Align::LEFT),
+            |ui| metric(ui, "READY", counts.ready, "Queued deliveries", BLUE),
+        );
+        ui.allocate_ui_with_layout(
+            egui::vec2(metric_width, 122.0),
+            egui::Layout::top_down(egui::Align::LEFT),
+            |ui| metric(ui, "PROCESSING", counts.processing, "Leases active", YELLOW),
+        );
+        ui.allocate_ui_with_layout(
+            egui::vec2(metric_width, 122.0),
+            egui::Layout::top_down(egui::Align::LEFT),
+            |ui| {
+                metric(
+                    ui,
+                    "ACKNOWLEDGED",
+                    counts.acknowledged,
+                    "Completed deliveries",
+                    GREEN,
+                )
+            },
+        );
+        ui.allocate_ui_with_layout(
+            egui::vec2(metric_width, 122.0),
+            egui::Layout::top_down(egui::Align::LEFT),
+            |ui| metric(ui, "FAILED", counts.failed, "Needs review", RED),
+        );
+    });
+    ui.add_space(18.0);
+    let charts_width = ui.available_width();
+    let graph_width = (charts_width * 0.64 - 6.0).max(320.0);
+    let diagnostics_width = (charts_width - graph_width - 12.0).max(230.0);
+    ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(graph_width, 360.0),
+            egui::Layout::top_down(egui::Align::LEFT),
+            |ui| throughput_card(ui, &snapshot.throughput),
+        );
+        ui.allocate_ui_with_layout(
+            egui::vec2(diagnostics_width, 360.0),
+            egui::Layout::top_down(egui::Align::LEFT),
+            |ui| diagnostics_card(ui, snapshot),
+        );
+    });
+    ui.add_space(14.0);
+    recent_failures_card(ui, snapshot, commands);
+    view_failures
+}
+fn metric(ui: &mut egui::Ui, label: &str, value: i64, detail: &str, color: Color32) {
+    card().show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(label).size(13.0).color(color));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::hover());
+                draw_metric_icon(ui.painter_at(rect), label, rect, color);
+            });
+        });
+        ui.add_space(10.0);
+        ui.label(RichText::new(format_count(value)).size(30.0));
+        ui.add_space(8.0);
+        ui.label(RichText::new(detail).small().color(MUTED));
+    });
+}
+
+fn draw_metric_icon(painter: egui::Painter, label: &str, rect: egui::Rect, color: Color32) {
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        metric_icon(label),
+        egui::FontId::proportional(30.0),
+        color,
+    );
+}
+
+fn metric_icon(label: &str) -> &'static str {
+    match label {
+        "READY" => regular::ARCHIVE_BOX,
+        "PROCESSING" => regular::CIRCLE_NOTCH,
+        "ACKNOWLEDGED" => regular::CHECK_CIRCLE,
+        _ => regular::WARNING,
+    }
+}
+
+fn sidebar_logo(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(40.0, 40.0), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 8.0, Color32::from_rgb(17, 57, 120));
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        regular::QUEUE,
+        egui::FontId::proportional(23.0),
+        Color32::from_rgb(115, 173, 255),
+    );
+}
+
+fn sidebar_item(ui: &mut egui::Ui, index: usize, label: &str, selected: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(218.0, 38.0), egui::Sense::click());
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let painter = ui.painter_at(rect);
+    if selected {
+        painter.rect_filled(rect, 8.0, Color32::from_rgb(20, 59, 123));
+    } else if response.hovered() {
+        painter.rect_filled(rect, 8.0, Color32::from_rgb(9, 33, 59));
+    }
+    painter.text(
+        rect.min + egui::vec2(22.0, 19.0),
+        egui::Align2::CENTER_CENTER,
+        sidebar_icon(index),
+        egui::FontId::proportional(21.0),
+        if selected { TEXT } else { MUTED },
+    );
+    painter.text(
+        rect.min + egui::vec2(52.0, 19.0),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(15.0),
+        if selected { TEXT } else { MUTED },
+    );
+    response
+}
+
+#[allow(dead_code)]
+fn draw_sidebar_icon(painter: &egui::Painter, index: usize, rect: egui::Rect, color: Color32) {
+    let stroke = egui::Stroke::new(1.8, color);
+    match index {
+        0 => {
+            let roof = [
+                rect.left_top() + egui::vec2(1.0, 9.0),
+                rect.center_top() + egui::vec2(0.0, 1.0),
+                rect.right_top() + egui::vec2(-1.0, 9.0),
+            ];
+            painter.line_segment([roof[0], roof[1]], stroke);
+            painter.line_segment([roof[1], roof[2]], stroke);
+            painter.rect_stroke(
+                egui::Rect::from_min_max(
+                    rect.min + egui::vec2(4.0, 9.0),
+                    rect.max - egui::vec2(4.0, 1.0),
+                ),
+                1.5,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+        1 => {
+            for offset in [3.0, 10.0, 17.0] {
+                painter.circle_filled(rect.min + egui::vec2(3.0, offset), 1.4, color);
+                painter.line_segment(
+                    [
+                        rect.min + egui::vec2(7.0, offset),
+                        rect.right_top() + egui::vec2(-1.0, offset),
+                    ],
+                    stroke,
+                );
+            }
+        }
+        2 => {
+            painter.rect_stroke(rect.shrink(1.0), 2.0, stroke, egui::StrokeKind::Inside);
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    rect.min + egui::vec2(8.0, 5.0),
+                    rect.min + egui::vec2(8.0, 15.0),
+                    rect.min + egui::vec2(15.0, 10.0),
+                ],
+                color,
+                egui::Stroke::NONE,
+            ));
+        }
+        _ => {
+            let points = vec![
+                rect.center_top() + egui::vec2(0.0, 1.0),
+                rect.right_bottom() + egui::vec2(-1.0, -1.0),
+                rect.left_bottom() + egui::vec2(1.0, -1.0),
+            ];
+            painter.add(egui::Shape::closed_line(points, stroke));
+            painter.line_segment(
+                [
+                    rect.center_top() + egui::vec2(0.0, 7.0),
+                    rect.center_bottom() + egui::vec2(0.0, 1.0),
+                ],
+                stroke,
+            );
+            painter.circle_filled(rect.center_bottom() + egui::vec2(0.0, -4.0), 1.2, color);
+        }
+    }
+}
+
+fn sidebar_icon(index: usize) -> &'static str {
+    match index {
+        0 => regular::HOUSE,
+        1 => regular::LIST_BULLETS,
+        2 => regular::PLAY_CIRCLE,
+        _ => regular::WARNING,
+    }
+}
+
+fn apply_console_theme(ctx: &egui::Context) {
+    let mut visuals = egui::Visuals::dark();
+    visuals.panel_fill = BACKGROUND;
+    visuals.window_fill = SURFACE;
+    visuals.extreme_bg_color = BACKGROUND;
+    visuals.faint_bg_color = SURFACE_ALT;
+    visuals.widgets.inactive.bg_fill = SURFACE_ALT;
+    visuals.widgets.inactive.fg_stroke.color = TEXT;
+    visuals.widgets.hovered.bg_fill = Color32::from_rgb(16, 47, 84);
+    visuals.widgets.active.bg_fill = Color32::from_rgb(21, 65, 129);
+    visuals.selection.bg_fill = Color32::from_rgb(27, 73, 143);
+    visuals.window_stroke = egui::Stroke::new(1.0, BORDER);
+    ctx.set_visuals(visuals);
+}
+
+fn panel_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(BACKGROUND)
+        .stroke(egui::Stroke::new(1.0, BORDER))
+        .inner_margin(egui::Margin::symmetric(28, 16))
+}
+fn sidebar_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(Color32::from_rgb(2, 14, 26))
+        .stroke(egui::Stroke::new(1.0, BORDER))
+        .inner_margin(egui::Margin::symmetric(18, 20))
+}
+fn card() -> egui::Frame {
+    egui::Frame::new()
+        .fill(SURFACE)
+        .stroke(egui::Stroke::new(1.0, BORDER))
+        .corner_radius(7.0)
+        .inner_margin(egui::Margin::same(18))
+}
+fn subscription_title(queue: &str) -> String {
+    let queue = queue
+        .split_once(':')
+        .filter(|(prefix, _)| prefix.starts_with("__bus__") || prefix.starts_with("_bus__"))
+        .map_or(queue, |(_, name)| name);
+    queue.replace('-', ".")
+}
+fn format_count(value: i64) -> String {
+    let negative = value < 0;
+    let digits = value.unsigned_abs().to_string();
+    let chunks = digits
+        .as_bytes()
+        .rchunks(3)
+        .rev()
+        .map(std::str::from_utf8)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_default();
+    format!("{}{}", if negative { "-" } else { "" }, chunks.join(","))
+}
+fn format_size(bytes: Option<u64>) -> String {
+    match bytes {
+        Some(bytes) if bytes >= 1_000_000 => format!("{:.1} MB", bytes as f64 / 1_000_000.0),
+        Some(bytes) if bytes >= 1_000 => format!("{:.1} KB", bytes as f64 / 1_000.0),
+        Some(bytes) => format!("{bytes} B"),
+        None => "Unknown".into(),
+    }
+}
+fn status_badge(label: &str, color: Color32) -> RichText {
+    RichText::new(format!("  {label}  "))
+        .small()
+        .strong()
+        .color(color)
+        .background_color(Color32::from_rgba_unmultiplied(
+            color.r(),
+            color.g(),
+            color.b(),
+            32,
+        ))
+}
+fn status_pill(ui: &mut egui::Ui, label: &str, color: Color32) {
+    egui::Frame::new()
+        .fill(Color32::from_rgba_unmultiplied(
+            color.r(),
+            color.g(),
+            color.b(),
+            32,
+        ))
+        .corner_radius(8.0)
+        .inner_margin(egui::Margin::symmetric(7, 3))
+        .show(ui, |ui| {
+            ui.label(RichText::new(label).size(11.0).strong().color(color));
+        });
+}
+
+fn throughput_card(ui: &mut egui::Ui, values: &[f64]) {
+    card().show(ui, |ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), 38.0),
+            egui::Layout::left_to_right(egui::Align::TOP),
+            |ui| {
+                ui.vertical(|ui| {
+                    ui.label(RichText::new("THROUGHPUT").strong());
+                    ui.label(
+                        RichText::new("ACK/s | last 60 seconds")
+                            .small()
+                            .color(MUTED),
+                    );
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                    let peak = values.iter().copied().fold(0.0, f64::max);
+                    let current = values.last().copied().unwrap_or_default();
+                    throughput_stat(ui, "Peak", peak, TEXT);
+                    ui.add_space(26.0);
+                    throughput_stat(ui, "Current", current, BLUE);
+                });
+            },
+        );
+        ui.add_space(16.0);
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), 220.0),
+            egui::Sense::hover(),
+        );
+        let painter = ui.painter_at(rect);
+        let plot = egui::Rect::from_min_max(
+            egui::pos2(rect.left() + 38.0, rect.top()),
+            egui::pos2(rect.right(), rect.bottom() - 24.0),
+        );
+        let peak = values.iter().copied().fold(0.0_f64, f64::max).max(1.0);
+        for part in 0..=4 {
+            let y = plot.top() + plot.height() * part as f32 / 4.0;
+            painter.line_segment(
+                [egui::pos2(plot.left(), y), egui::pos2(plot.right(), y)],
+                egui::Stroke::new(1.0, Color32::from_rgb(16, 42, 64)),
+            );
+            painter.text(
+                egui::pos2(plot.left() - 8.0, y),
+                egui::Align2::RIGHT_CENTER,
+                format_rate(peak * (4 - part) as f64 / 4.0),
+                egui::FontId::proportional(11.0),
+                MUTED,
+            );
+        }
+        for part in 0..=5 {
+            let x = plot.left() + plot.width() * part as f32 / 5.0;
+            painter.line_segment(
+                [egui::pos2(x, plot.top()), egui::pos2(x, plot.bottom())],
+                egui::Stroke::new(1.0, Color32::from_rgb(12, 33, 52)),
+            );
+            painter.text(
+                egui::pos2(x, plot.bottom() + 14.0),
+                egui::Align2::CENTER_CENTER,
+                format!("-{}s", 60 - part * 12),
+                egui::FontId::proportional(11.0),
+                MUTED,
+            );
+        }
+        if values.len() > 1 {
+            let points: Vec<_> = values
+                .iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    egui::pos2(
+                        plot.left() + plot.width() * index as f32 / (values.len() - 1) as f32,
+                        plot.bottom() - plot.height() * (*value as f32 / peak as f32),
+                    )
+                })
+                .collect();
+            let mut fill = points.clone();
+            fill.push(plot.right_bottom());
+            fill.push(plot.left_bottom());
+            painter.add(egui::Shape::convex_polygon(
+                fill,
+                Color32::from_rgba_unmultiplied(BLUE.r(), BLUE.g(), BLUE.b(), 28),
+                egui::Stroke::NONE,
+            ));
+            painter.line(points, egui::Stroke::new(2.0, BLUE));
+        } else {
+            painter.text(
+                plot.center(),
+                egui::Align2::CENTER_CENTER,
+                "Collecting acknowledgement samples...",
+                egui::FontId::proportional(13.0),
+                MUTED,
+            );
+        }
+    });
+}
+
+fn throughput_stat(ui: &mut egui::Ui, label: &str, value: f64, color: Color32) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(74.0, 38.0),
+        egui::Layout::top_down(egui::Align::RIGHT),
+        |ui| {
+            ui.label(RichText::new(label).small().color(MUTED));
+            ui.label(
+                RichText::new(format!("{value:.0} /s"))
+                    .size(16.0)
+                    .color(color),
+            );
+        },
+    );
+}
+
+fn format_rate(value: f64) -> String {
+    if value >= 1_000.0 {
+        format!("{:.1}k", value / 1_000.0)
+    } else {
+        format!("{value:.0}")
+    }
+}
+
+fn diagnostics_card(ui: &mut egui::Ui, snapshot: &ConsoleSnapshot) {
+    card().show(ui, |ui| {
+        ui.label(RichText::new("DIAGNOSTICS").strong());
+        ui.add_space(10.0);
+        if let Some(config) = &snapshot.config {
+            diagnostic_row(ui, "Active leases", &config.active_leases.to_string());
+            diagnostic_row(
+                ui,
+                "Retry ceiling",
+                &format!("{} attempts", config.max_max_attempts),
+            );
+            diagnostic_row(ui, "Concurrency", "Runtime-only");
+            diagnostic_row(ui, "Lease duration", "Runtime-only");
+            diagnostic_row(
+                ui,
+                "Journal mode",
+                snapshot
+                    .database
+                    .as_ref()
+                    .map(|item| item.journal_mode.as_str())
+                    .unwrap_or("Unknown"),
+            );
+            diagnostic_row(
+                ui,
+                "Database size",
+                &format_size(snapshot.database.as_ref().and_then(|item| item.size_bytes)),
+            );
+        } else {
+            ui.label(RichText::new("No queue-owned configuration available.").color(MUTED));
+        }
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new("Runtime policy is intentionally not guessed from the database.")
+                .small()
+                .color(MUTED),
+        );
+    });
+}
+fn diagnostic_row(ui: &mut egui::Ui, label: &str, value: &str) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(RichText::new(value).color(TEXT))
+        });
+    });
+    ui.separator();
+}
+
+fn recent_failures_card(
+    ui: &mut egui::Ui,
+    snapshot: &ConsoleSnapshot,
+    commands: &mpsc::Sender<Command>,
+) {
+    card().show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("RECENT FAILURES").strong());
+            let total = snapshot.failures.as_ref().map_or(0, |page| page.total);
+            ui.label(status_badge(&total.to_string(), RED));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    RichText::new("Use Failures for full pagination")
+                        .small()
+                        .color(MUTED),
+                )
+            });
+        });
+        ui.add_space(8.0);
+        egui::Grid::new("overview_failures")
+            .striped(true)
+            .min_col_width(90.0)
+            .show(ui, |ui| {
+                for header in [
+                    "Delivery",
+                    "Subscription",
+                    "Category / error",
+                    "Attempts",
+                    "Actions",
+                ] {
+                    ui.label(RichText::new(header).small().color(MUTED));
+                }
+                ui.end_row();
+                if let Some(page) = &snapshot.failures {
+                    for failure in page.items.iter().take(5) {
+                        ui.label(RichText::new(format!("#{}", failure.id)).color(BLUE));
+                        ui.label(&failure.queue);
+                        ui.label(
+                            failure
+                                .failure_category
+                                .as_deref()
+                                .or(failure.failure_reason.as_deref())
+                                .or(failure.last_error.as_deref())
+                                .unwrap_or("Unknown"),
+                        );
+                        ui.label(format!("{}/{}", failure.attempts, failure.max_attempts));
+                        let inspect = ui
+                            .small_button("Inspect")
+                            .on_hover_text("Inspect failure")
+                            .clicked();
+                        let retry = ui
+                            .small_button("Retry")
+                            .on_hover_text("Retry delivery")
+                            .clicked();
+                        if inspect {
+                            let _ = commands.send(Command::InspectFailure(failure.id));
+                        }
+                        if retry {
+                            let _ = commands.send(Command::Retry(failure.id));
+                        }
+                        ui.end_row();
+                    }
+                }
+            });
+    });
+}
+fn subscriptions(ui: &mut egui::Ui, snapshot: &ConsoleSnapshot, commands: &mpsc::Sender<Command>) {
+    ui.heading("Subscriptions");
+    for subscription in &snapshot.subscriptions {
+        if ui
+            .selectable_label(
+                snapshot.selected_queue.as_deref() == Some(&subscription.queue),
+                format!(
+                    "{} | {} ready / {} failed",
+                    subscription.queue, subscription.counts.ready, subscription.counts.failed
+                ),
+            )
+            .clicked()
+        {
+            let _ = commands.send(Command::SelectQueue(subscription.queue.clone()));
+        }
+    }
+}
+fn executions(ui: &mut egui::Ui, snapshot: &ConsoleSnapshot) {
+    ui.heading("Executions");
+    egui::Grid::new("executions").striped(true).show(ui, |ui| {
+        ui.label("Execution");
+        ui.label("Source");
+        ui.label("State");
+        ui.label("Deliveries");
+        ui.end_row();
+        if let Some(page) = &snapshot.executions {
+            for execution in &page.items {
+                ui.label(&execution.execution_id);
+                ui.label(&execution.source_name);
+                ui.label(if execution.completed_at.is_some() {
+                    "Complete"
+                } else {
+                    "Active"
+                });
+                ui.label(format!(
+                    "{} acked / {} failed",
+                    execution.counts.acknowledged, execution.counts.failed
+                ));
+                ui.end_row();
+            }
+        }
+    });
+}
+fn failures(ui: &mut egui::Ui, snapshot: &ConsoleSnapshot, commands: &mpsc::Sender<Command>) {
+    ui.heading("Recent failures");
+    egui::Grid::new("failures").striped(true).show(ui, |ui| {
+        ui.label("Delivery");
+        ui.label("Subscription");
+        ui.label("Reason");
+        ui.label("Actions");
+        ui.end_row();
+        if let Some(page) = &snapshot.failures {
+            for failure in &page.items {
+                ui.label(failure.id.to_string());
+                ui.label(&failure.queue);
+                ui.label(
+                    failure
+                        .failure_reason
+                        .as_deref()
+                        .or(failure.last_error.as_deref())
+                        .unwrap_or("Unknown"),
+                );
+                let inspect = ui.button("Inspect").clicked();
+                let retry = ui.button("Retry").clicked();
+                if inspect {
+                    let _ = commands.send(Command::InspectFailure(failure.id));
+                }
+                if retry {
+                    let _ = commands.send(Command::Retry(failure.id));
+                }
+                ui.end_row();
+            }
+        }
+    });
+    if let Some(page) = &snapshot.failures {
+        ui.horizontal(|ui| {
+            let previous = ui
+                .add_enabled(page.offset > 0, egui::Button::new("Previous"))
+                .clicked();
+            let next = ui
+                .add_enabled(
+                    page.offset + page.limit < page.total as u64,
+                    egui::Button::new("Next"),
+                )
+                .clicked();
+            if previous {
+                let _ = commands.send(Command::FailurePage(page.offset.saturating_sub(PAGE_SIZE)));
+            }
+            if next {
+                let _ = commands.send(Command::FailurePage(page.offset + PAGE_SIZE));
+            }
+            ui.label(format!("{} failures", page.total));
+        });
+    }
+    if let Some(detail) = &snapshot.failure_detail {
+        ui.separator();
+        ui.heading(format!("Failed delivery #{}", detail.delivery.id));
+        ui.label(
+            detail
+                .delivery
+                .last_error
+                .as_deref()
+                .unwrap_or("No error text stored"),
+        );
+        let mut payload = String::from_utf8_lossy(&detail.payload).into_owned();
+        if ui.button("Copy payload").clicked() {
+            ui.ctx().copy_text(payload.clone());
+        }
+        ui.add(
+            egui::TextEdit::multiline(&mut payload)
+                .desired_rows(6)
+                .interactive(false),
+        );
+    }
+}
+
+fn main() -> eframe::Result<()> {
+    let path = std::env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            eprintln!("usage: localqueue-console /data/contacts");
+            std::process::exit(2)
+        });
+    let refresh_ms = Arc::new(AtomicU64::new(1_000));
+    let (commands, snapshot) = start_sampler(path.clone(), refresh_ms.clone());
+    eframe::run_native(
+        "LocalQueue Console",
+        eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default().with_inner_size([1536.0, 1024.0]),
+            ..Default::default()
+        },
+        Box::new(move |_| {
+            Ok(Box::new(ConsoleApp {
+                commands,
+                snapshot,
+                refresh_ms,
+                refresh: 1_000,
+                page: 0,
+                path_input: path.display().to_string(),
+                file_dialog: FileDialog::new()
+                    .initial_directory(path.clone())
+                    .title("Open LocalQueue path")
+                    .as_modal(true)
+                    .default_size([760.0, 460.0])
+                    .min_size([640.0, 360.0])
+                    .default_folder_icon(regular::FOLDER)
+                    .show_left_panel(false)
+                    .show_menu_button(false)
+                    .show_new_folder_button(false)
+                    .show_path_edit_button(false),
+                icon_font_loaded: false,
+            }))
+        }),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn throughput_uses_acknowledgement_delta_per_second() {
+        let start = Instant::now();
+        let mut sampler = Throughput {
+            samples: VecDeque::new(),
+        };
+        sampler.push(start, 10);
+        sampler.push(start + Duration::from_secs(2), 16);
+        assert_eq!(sampler.values(), vec![3.0]);
+    }
+    #[test]
+    fn snapshot_replacement_is_atomic_from_the_ui_point_of_view() {
+        let snapshot = Arc::new(Mutex::new(ConsoleSnapshot::default()));
+        *snapshot.lock().unwrap() = ConsoleSnapshot {
+            error: Some("new snapshot".into()),
+            ..ConsoleSnapshot::default()
+        };
+        assert_eq!(
+            snapshot.lock().unwrap().error.as_deref(),
+            Some("new snapshot")
+        );
+    }
+    #[test]
+    fn subscription_title_hides_the_default_bus_prefix() {
+        assert_eq!(
+            subscription_title("__bus__default:contact.creation-requested"),
+            "contact.creation.requested"
+        );
+        assert_eq!(
+            subscription_title("_bus__default:contact.creation-requested"),
+            "contact.creation.requested"
+        );
+    }
+}
