@@ -382,13 +382,18 @@ fn overview(
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
-                ui.heading(
-                    snapshot
-                        .selected_queue
-                        .as_deref()
-                        .unwrap_or("No subscription"),
+                ui.label(
+                    RichText::new(subscription_title(
+                        snapshot
+                            .selected_queue
+                            .as_deref()
+                            .unwrap_or("No subscription"),
+                    ))
+                    .size(20.0)
+                    .strong()
+                    .color(TEXT),
                 );
-                ui.add_space(8.0);
+                ui.add_space(10.0);
                 ui.label(status_badge(
                     if counts.processing > 0 {
                         "ACTIVE"
@@ -398,7 +403,11 @@ fn overview(
                     if counts.processing > 0 { GREEN } else { MUTED },
                 ));
             });
-            ui.label(RichText::new("Subscription | Last refreshed just now").color(MUTED));
+            ui.label(
+                RichText::new("Subscription  •  Last refreshed just now")
+                    .size(13.0)
+                    .color(MUTED),
+            );
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             view_failures = ui
@@ -652,6 +661,12 @@ fn card() -> egui::Frame {
         .stroke(egui::Stroke::new(1.0, BORDER))
         .corner_radius(7.0)
         .inner_margin(egui::Margin::same(18))
+}
+fn subscription_title(queue: &str) -> String {
+    queue
+        .strip_prefix("__bus__default:")
+        .unwrap_or(queue)
+        .replace('-', ".")
 }
 fn format_count(value: i64) -> String {
     let negative = value < 0;
@@ -1047,6 +1062,13 @@ mod tests {
         assert_eq!(
             snapshot.lock().unwrap().error.as_deref(),
             Some("new snapshot")
+        );
+    }
+    #[test]
+    fn subscription_title_hides_the_default_bus_prefix() {
+        assert_eq!(
+            subscription_title("__bus__default:contact.creation-requested"),
+            "contact.creation.requested"
         );
     }
 }
