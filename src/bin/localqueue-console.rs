@@ -302,19 +302,19 @@ fn top_bar(ui: &mut egui::Ui, app: &mut ConsoleApp) {
     panel_frame().show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.allocate_ui_with_layout(
-                egui::vec2(40.0, 32.0),
+                egui::vec2(32.0, 32.0),
                 egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {
-                    ui.label(RichText::new("PATH").size(12.0).color(MUTED));
+                    ui.label(RichText::new("PATH").size(11.0).color(MUTED));
                 },
             );
             let (choose_path, open_path) = egui::Frame::new()
                 .fill(SURFACE)
                 .stroke(egui::Stroke::new(1.0, BORDER))
-                .corner_radius(6.0)
+                .corner_radius(7.0)
                 .inner_margin(egui::Margin::symmetric(8, 4))
                 .show(ui, |ui| {
-                    ui.set_width(275.0);
+                    ui.set_width(176.0);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let open = ui
                             .add(
@@ -322,7 +322,7 @@ fn top_bar(ui: &mut egui::Ui, app: &mut ConsoleApp) {
                                     RichText::new(regular::FOLDER).size(18.0).color(MUTED),
                                 )
                                 .frame(false)
-                                .min_size(egui::vec2(24.0, 24.0)),
+                                .min_size(egui::vec2(22.0, 24.0)),
                             )
                             .on_hover_text("Open LocalQueue path");
                         let path = ui.add_sized(
