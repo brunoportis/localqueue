@@ -719,62 +719,89 @@ fn status_pill(ui: &mut egui::Ui, label: &str, color: Color32) {
 
 fn throughput_card(ui: &mut egui::Ui, values: &[f64]) {
     card().show(ui, |ui| {
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.label(RichText::new("THROUGHPUT").strong());
-                ui.label(
-                    RichText::new("ACK/s | last 60 seconds")
-                        .small()
-                        .color(MUTED),
-                );
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                let peak = values.iter().copied().fold(0.0, f64::max);
-                let current = values.last().copied().unwrap_or_default();
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), 38.0),
+            egui::Layout::left_to_right(egui::Align::TOP),
+            |ui| {
                 ui.vertical(|ui| {
-                    ui.label(RichText::new(format!("{peak:.0} /s")).size(16.0));
-                    ui.label(RichText::new("Peak").small().color(MUTED));
-                });
-                ui.add_space(20.0);
-                ui.vertical(|ui| {
+                    ui.label(RichText::new("THROUGHPUT").strong());
                     ui.label(
-                        RichText::new(format!("{current:.0} /s"))
-                            .size(16.0)
-                            .color(BLUE),
+                        RichText::new("ACK/s | last 60 seconds")
+                            .small()
+                            .color(MUTED),
                     );
-                    ui.label(RichText::new("Current").small().color(MUTED));
                 });
-            });
-        });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                    let peak = values.iter().copied().fold(0.0, f64::max);
+                    let current = values.last().copied().unwrap_or_default();
+                    throughput_stat(ui, "Peak", peak, TEXT);
+                    ui.add_space(26.0);
+                    throughput_stat(ui, "Current", current, BLUE);
+                });
+            },
+        );
         ui.add_space(16.0);
         let (rect, _) = ui.allocate_exact_size(
             egui::vec2(ui.available_width(), 220.0),
             egui::Sense::hover(),
         );
         let painter = ui.painter_at(rect);
-        for part in 0..5 {
-            let y = rect.top() + rect.height() * part as f32 / 4.0;
+        let plot = egui::Rect::from_min_max(
+            egui::pos2(rect.left() + 38.0, rect.top()),
+            egui::pos2(rect.right(), rect.bottom() - 24.0),
+        );
+        let peak = values.iter().copied().fold(0.0_f64, f64::max).max(1.0);
+        for part in 0..=4 {
+            let y = plot.top() + plot.height() * part as f32 / 4.0;
             painter.line_segment(
-                [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+                [egui::pos2(plot.left(), y), egui::pos2(plot.right(), y)],
                 egui::Stroke::new(1.0, Color32::from_rgb(16, 42, 64)),
+            );
+            painter.text(
+                egui::pos2(plot.left() - 8.0, y),
+                egui::Align2::RIGHT_CENTER,
+                format_rate(peak * (4 - part) as f64 / 4.0),
+                egui::FontId::proportional(11.0),
+                MUTED,
+            );
+        }
+        for part in 0..=5 {
+            let x = plot.left() + plot.width() * part as f32 / 5.0;
+            painter.line_segment(
+                [egui::pos2(x, plot.top()), egui::pos2(x, plot.bottom())],
+                egui::Stroke::new(1.0, Color32::from_rgb(12, 33, 52)),
+            );
+            painter.text(
+                egui::pos2(x, plot.bottom() + 14.0),
+                egui::Align2::CENTER_CENTER,
+                format!("-{}s", 60 - part * 12),
+                egui::FontId::proportional(11.0),
+                MUTED,
             );
         }
         if values.len() > 1 {
-            let max = values.iter().copied().fold(1.0_f64, f64::max) as f32;
             let points: Vec<_> = values
                 .iter()
                 .enumerate()
                 .map(|(index, value)| {
                     egui::pos2(
-                        rect.left() + rect.width() * index as f32 / (values.len() - 1) as f32,
-                        rect.bottom() - rect.height() * (*value as f32 / max),
+                        plot.left() + plot.width() * index as f32 / (values.len() - 1) as f32,
+                        plot.bottom() - plot.height() * (*value as f32 / peak as f32),
                     )
                 })
                 .collect();
+            let mut fill = points.clone();
+            fill.push(plot.right_bottom());
+            fill.push(plot.left_bottom());
+            painter.add(egui::Shape::convex_polygon(
+                fill,
+                Color32::from_rgba_unmultiplied(BLUE.r(), BLUE.g(), BLUE.b(), 28),
+                egui::Stroke::NONE,
+            ));
             painter.line(points, egui::Stroke::new(2.0, BLUE));
         } else {
             painter.text(
-                rect.center(),
+                plot.center(),
                 egui::Align2::CENTER_CENTER,
                 "Collecting acknowledgement samples...",
                 egui::FontId::proportional(13.0),
@@ -782,6 +809,29 @@ fn throughput_card(ui: &mut egui::Ui, values: &[f64]) {
             );
         }
     });
+}
+
+fn throughput_stat(ui: &mut egui::Ui, label: &str, value: f64, color: Color32) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(74.0, 38.0),
+        egui::Layout::top_down(egui::Align::RIGHT),
+        |ui| {
+            ui.label(RichText::new(label).small().color(MUTED));
+            ui.label(
+                RichText::new(format!("{value:.0} /s"))
+                    .size(16.0)
+                    .color(color),
+            );
+        },
+    );
+}
+
+fn format_rate(value: f64) -> String {
+    if value >= 1_000.0 {
+        format!("{:.1}k", value / 1_000.0)
+    } else {
+        format!("{value:.0}")
+    }
 }
 
 fn diagnostics_card(ui: &mut egui::Ui, snapshot: &ConsoleSnapshot) {
