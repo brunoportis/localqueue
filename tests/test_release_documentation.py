@@ -73,6 +73,12 @@ def test_release_workflows_have_no_automatic_publication_trigger() -> None:
     assert '"uv==0.11.6"' in wheels
 
 
+def test_promotion_accepts_a_pr_rewrite_of_the_validated_candidate() -> None:
+    wheels = (ROOT / ".github/workflows/wheels.yml").read_text(encoding="utf-8")
+    assert 'git diff --name-only "$candidate_sha" "$main_sha"' in wheels
+    assert 'git push origin "$candidate_sha:refs/tags/v$CANDIDATE_VERSION"' in wheels
+
+
 def test_every_external_action_is_pinned_to_a_full_sha() -> None:
     pattern = re.compile(r"^\s*-?\s*uses:\s+[^@\s]+@([^\s#]+)", re.MULTILINE)
     for workflow in sorted((ROOT / ".github/workflows").glob("*.yml")):
