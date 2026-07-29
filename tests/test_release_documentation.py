@@ -76,6 +76,7 @@ def test_release_workflows_have_no_automatic_publication_trigger() -> None:
 def test_promotion_accepts_a_pr_rewrite_of_the_validated_candidate() -> None:
     wheels = (ROOT / ".github/workflows/wheels.yml").read_text(encoding="utf-8")
     assert 'git diff --name-only "$candidate_sha" "$main_sha"' in wheels
+    assert 'git diff --name-only "$CANDIDATE_SHA" "$current_main"' in wheels
     assert "tests/test_release_documentation.py" in wheels
     assert 'git push origin "$candidate_sha:refs/tags/v$CANDIDATE_VERSION"' in wheels
 
