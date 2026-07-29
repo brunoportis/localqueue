@@ -217,53 +217,6 @@ impl eframe::App for ConsoleApp {
         apply_console_theme(ctx);
         ctx.request_repaint_after(Duration::from_millis(100));
         let snapshot = self.snapshot.lock().unwrap().clone();
-        egui::TopBottomPanel::top("top")
-            .frame(panel_frame())
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("PATH").size(12.0).color(MUTED));
-                    ui.add_sized(
-                        [275.0, 32.0],
-                        egui::TextEdit::singleline(&mut self.path_input).text_color(BLUE),
-                    );
-                    if ui.button("Open").clicked() {
-                        let _ = self
-                            .commands
-                            .send(Command::Open(PathBuf::from(self.path_input.trim())));
-                    }
-                    ui.separator();
-                    ui.label(
-                        snapshot
-                            .database
-                            .as_ref()
-                            .map_or("Opening database...".to_owned(), |info| {
-                                info.path.display().to_string()
-                            }),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new(regular::GEAR).size(20.0).color(MUTED));
-                        ui.label(RichText::new(regular::SUN).size(21.0).color(MUTED));
-                        egui::ComboBox::from_id_salt("refresh")
-                            .width(128.0)
-                            .selected_text(format!("Refresh: {} s", self.refresh / 1_000))
-                            .show_ui(ui, |ui| {
-                                for ms in [500, 1_000] {
-                                    if ui
-                                        .selectable_value(
-                                            &mut self.refresh,
-                                            ms,
-                                            format!("{} ms", ms),
-                                        )
-                                        .changed()
-                                    {
-                                        self.refresh_ms.store(ms, Ordering::Relaxed);
-                                    }
-                                }
-                            });
-                        ui.label(RichText::new("LIVE").color(GREEN));
-                    });
-                });
-            });
         egui::SidePanel::left("sidebar")
             .resizable(false)
             .default_width(252.0)
@@ -312,29 +265,74 @@ impl eframe::App for ConsoleApp {
                 });
             });
         egui::CentralPanel::default()
-            .frame(
-                egui::Frame::new()
-                    .fill(BACKGROUND)
-                    .inner_margin(egui::Margin::same(18)),
-            )
+            .frame(egui::Frame::new().fill(BACKGROUND))
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    if let Some(error) = &snapshot.error {
-                        ui.colored_label(Color32::RED, error);
-                    }
-                    match self.page {
-                        0 => {
-                            if overview(ui, &snapshot, &self.commands) {
-                                self.page = 3;
+                top_bar(ui, self, &snapshot);
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::same(18))
+                    .show(ui, |ui| {
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            if let Some(error) = &snapshot.error {
+                                ui.colored_label(Color32::RED, error);
                             }
-                        }
-                        1 => subscriptions(ui, &snapshot, &self.commands),
-                        2 => executions(ui, &snapshot),
-                        _ => failures(ui, &snapshot, &self.commands),
-                    }
-                });
+                            match self.page {
+                                0 => {
+                                    if overview(ui, &snapshot, &self.commands) {
+                                        self.page = 3;
+                                    }
+                                }
+                                1 => subscriptions(ui, &snapshot, &self.commands),
+                                2 => executions(ui, &snapshot),
+                                _ => failures(ui, &snapshot, &self.commands),
+                            }
+                        });
+                    });
             });
     }
+}
+
+fn top_bar(ui: &mut egui::Ui, app: &mut ConsoleApp, snapshot: &ConsoleSnapshot) {
+    panel_frame().show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("PATH").size(12.0).color(MUTED));
+            ui.add_sized(
+                [275.0, 32.0],
+                egui::TextEdit::singleline(&mut app.path_input).text_color(BLUE),
+            );
+            if ui.button("Open").clicked() {
+                let _ = app
+                    .commands
+                    .send(Command::Open(PathBuf::from(app.path_input.trim())));
+            }
+            ui.separator();
+            ui.label(
+                snapshot
+                    .database
+                    .as_ref()
+                    .map_or("Opening database...".to_owned(), |info| {
+                        info.path.display().to_string()
+                    }),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(RichText::new(regular::GEAR).size(20.0).color(MUTED));
+                ui.label(RichText::new(regular::SUN).size(21.0).color(MUTED));
+                egui::ComboBox::from_id_salt("refresh")
+                    .width(128.0)
+                    .selected_text(format!("Refresh: {} s", app.refresh / 1_000))
+                    .show_ui(ui, |ui| {
+                        for ms in [500, 1_000] {
+                            if ui
+                                .selectable_value(&mut app.refresh, ms, format!("{} ms", ms))
+                                .changed()
+                            {
+                                app.refresh_ms.store(ms, Ordering::Relaxed);
+                            }
+                        }
+                    });
+                ui.label(RichText::new("LIVE").color(GREEN));
+            });
+        });
+    });
 }
 
 fn overview(
